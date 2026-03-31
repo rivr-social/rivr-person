@@ -187,6 +187,19 @@ export async function middleware(request: NextRequest) {
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
 
+  const forcePublicPrefixes = [
+    "/api/mcp",
+    "/api/profile/",
+    "/.well-known/mcp",
+  ];
+
+  if (forcePublicPrefixes.some((prefix) => pathname.startsWith(prefix))) {
+    const response = NextResponse.next({
+      request: { headers: requestHeaders },
+    });
+    return applySecurityHeaders(response, cspHeader, nonce);
+  }
+
   if (isPublicRoute(pathname)) {
     const response = NextResponse.next({
       request: { headers: requestHeaders },
