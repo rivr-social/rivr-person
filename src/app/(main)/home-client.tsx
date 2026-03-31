@@ -1,0 +1,451 @@
+"use client"
+
+import { useState, useMemo, useCallback } from "react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PostFeed } from "@/components/post-feed"
+import { GroupFeed } from "@/components/group-feed"
+import { PeopleFeed } from "@/components/people-feed"
+import { EventFeed } from "@/components/event-feed"
+import type { Group, Post, User, MarketplaceListing, Basin, Chapter } from "@/lib/types"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import Image from "next/image"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useRouter } from "next/navigation"
+import { Search, ChevronRight } from "lucide-react"
+import Link from "next/link"
+import { ChapterHeader } from "@/components/chapter-header"
+import { MarketplaceFeed } from "@/components/marketplace-feed"
+import { GigsFeed } from "@/components/gigs-feed"
+import { useToast } from "@/components/ui/use-toast"
+import { useAppContext } from "@/contexts/app-context"
+import { useUser } from "@/contexts/user-context"
+import {
+  setEventRsvp,
+  toggleFollowAgent,
+  toggleJoinGroup,
+  toggleLikeOnTarget,
+  toggleSaveListing,
+} from "@/app/actions/interactions"
+
+type GraphEvent = ReturnType<typeof import("@/lib/graph-adapters").agentToEvent>
+type GraphPlace = ReturnType<typeof import("@/lib/graph-adapters").agentToPlace>
+
+interface HomeClientProps {
+  initialPeople: User[]
+  initialGroups: Group[]
+  initialEvents: GraphEvent[]
+  initialPlaces: GraphPlace[]
+  initialMarketplace: MarketplaceListing[]
+  initialPosts: Post[]
+  initialBasins: Basin[]
+  initialLocales: Chapter[]
+}
+
+export default function HomeClient({
+  initialPeople,
+  initialGroups,
+  initialEvents,
+  initialPlaces: _initialPlaces,
+  initialMarketplace,
+  initialPosts,
+  initialBasins,
+  initialLocales,
+}: HomeClientProps) {
+  const router = useRouter()
+  const { toast } = useToast()
+  const { state: appState, setSelectedChapter } = useAppContext()
+  const { currentUser } = useUser()
+  const isAuthenticated = !!currentUser
+  const selectedLocale = appState.selectedChapter || "all"
+  const [activeTab, setActiveTab] = useState("posts")
+  const [groupTypeFilter, setGroupTypeFilter] = useState<string>("all")
+  const [groupSearchQuery, setGroupSearchQuery] = useState("")
+  const [savedListings, setSavedListings] = useState<string[]>([])
+  const [rsvpStatuses, setRsvpStatuses] = useState<Record<string, "going" | "interested" | "none">>({})
+
+  const activePeople = initialPeople
+  const activeGroups = initialGroups as Group[]
+  const activeEvents = initialEvents
+  const activeMarketplace = initialMarketplace
+  const activePosts = initialPosts
+  const localeData = {
+    basins: initialBasins,
+    locales: initialLocales,
+  }
+
+  const handleCreatePost = () => {
+    router.push("/create?tab=post")
+  }
+
+  const handleLike = async (postId: string) => {
+    const result = await toggleLikeOnTarget(postId, "post")
+    toast({
+      title: result.success ? (result.active ? "Liked" : "Unliked") : "Could not like post",
+      description: result.message,
+      variant: result.success ? "default" : "destructive",
+    })
+  }
+
+  const handleComment = (postId: string) => {
+    router.push(`/posts/${postId}?focus=comments`)
+  }
+
+  const handleShare = async (postId: string) => {
+    const shareUrl = `${window.location.origin}/posts/${postId}`
+    if (navigator.share) {
+      await navigator.share({ title: "Post", url: shareUrl })
+      return
+    }
+    await navigator.clipboard.writeText(shareUrl)
+    toast({
+      title: "Link copied",
+      description: "Post link copied to clipboard.",
+    })
+  }
+
+  const handleJoin = async (groupId: string) => {
+    const result = await toggleJoinGroup(groupId, "group")
+    toast({
+      title: result.success ? (result.active ? "Joined group" : "Left group") : "Could not join group",
+      description: result.message,
+      variant: result.success ? "default" : "destructive",
+    })
+  }
+
+  const handleConnect = async (userId: string) => {
+    const result = await toggleFollowAgent(userId)
+    toast({
+      title: result.success ? (result.active ? "Connected" : "Disconnected") : "Could not connect",
+      description: result.message,
+      variant: result.success ? "default" : "destructive",
+    })
+  }
+
+  const handleEventRsvp = async (eventId: string, status: "going" | "interested" | "maybe" | "none") => {
+    const normalizedStatus = status === "maybe" ? "interested" : status
+    const result = await setEventRsvp(eventId, normalizedStatus)
+    if (!result.success) {
+      toast({
+        title: "Could not update RSVP",
+        description: result.message,
+        variant: "destructive",
+      })
+      return
+    }
+    setRsvpStatuses((prev) => ({ ...prev, [eventId]: normalizedStatus }))
+    toast({
+      title: "RSVP updated",
+      description: result.message,
+    })
+  }
+
+  const handleSaveMarketplace = async (listingId: string) => {
+    const result = await toggleSaveListing(listingId)
+    if (!result.success) {
+      toast({
+        title: "Could not save listing",
+        description: result.message,
+        variant: "destructive",
+      })
+      return
+    }
+    setSavedListings((prev) => (
+      result.active ? [...prev, listingId] : prev.filter((id) => id !== listingId)
+    ))
+    toast({
+      title: result.active ? "Listing saved" : "Listing removed",
+      description: result.message,
+    })
+  }
+
+  const handleContactMarketplace = (listingId: string) => {
+    const listing = activeMarketplace.find((item) => item.id === listingId)
+    const sellerId = listing?.seller?.id
+
+    router.push(sellerId ? `/messages?user=${sellerId}` : `/messages?listing=${listingId}`)
+  }
+
+  const handleShareListing = async (listingId: string) => {
+    const shareUrl = `${window.location.origin}/marketplace/${listingId}`
+    if (navigator.share) {
+      await navigator.share({ title: "Mart listing", url: shareUrl })
+      return
+    }
+    await navigator.clipboard.writeText(shareUrl)
+    toast({
+      title: "Link copied",
+      description: "Listing link copied to clipboard.",
+    })
+  }
+
+  const basinIds = useMemo(() => new Set(localeData.basins.map((basin) => basin.id)), [localeData.basins])
+  const selectedLocaleRecord = useMemo(
+    () => localeData.locales.find((locale) => locale.id === selectedLocale),
+    [localeData.locales, selectedLocale]
+  )
+  const selectedScopeAliases = useMemo(
+    () => new Set([selectedLocale, selectedLocaleRecord?.slug].filter((value): value is string => !!value)),
+    [selectedLocale, selectedLocaleRecord?.slug]
+  )
+  const selectedBasinLocaleIds = useMemo(
+    () =>
+      selectedLocale !== "all" && basinIds.has(selectedLocale)
+        ? new Set(
+            localeData.locales
+              .filter((locale) => locale.basinId === selectedLocale)
+              .flatMap((locale) => [locale.id, locale.slug].filter((value): value is string => !!value))
+          )
+        : null,
+    [selectedLocale, basinIds, localeData.locales]
+  )
+
+  const matchesScope = useCallback(
+    (tags: string[] | undefined) =>
+      selectedLocale === "all" ||
+      !!tags?.some((tag) => selectedScopeAliases.has(tag)) ||
+      !!(selectedBasinLocaleIds && tags?.some((tag) => selectedBasinLocaleIds.has(tag))),
+    [selectedLocale, selectedScopeAliases, selectedBasinLocaleIds]
+  )
+
+  const filteredPosts = useMemo(
+    () => selectedLocale === "all"
+      ? activePosts
+      : activePosts.filter((post) =>
+          matchesScope(post.tags) ||
+          matchesScope(post.groupTags) ||
+          matchesScope(post.chapterTags)
+        ),
+    [activePosts, selectedLocale, matchesScope]
+  )
+
+  const filteredEvents = useMemo(
+    () => activeEvents.filter((event) =>
+      matchesScope((event as { chapterTags?: string[] }).chapterTags)
+    ),
+    [activeEvents, matchesScope]
+  )
+
+  const filteredGroups = useMemo(
+    () => activeGroups.filter((group) => {
+      const g = group as Group & { type?: string; tags?: string[] }
+      const localeMatch = matchesScope(g.tags) || matchesScope(g.chapterTags)
+      const groupType = g.type as string | undefined
+      const typeMatch = groupTypeFilter === "all" ||
+        (groupTypeFilter === "org" && (!groupType || groupType === "org" || groupType === "group" || groupType === "organization")) ||
+        (groupTypeFilter === "ring" && groupType === "ring") ||
+        (groupTypeFilter === "basic" && groupType === "basic")
+      const searchMatch = !groupSearchQuery ||
+        g.name.toLowerCase().includes(groupSearchQuery.toLowerCase()) ||
+        g.description?.toLowerCase().includes(groupSearchQuery.toLowerCase())
+      const isFamilyType = groupType === "family"
+      return localeMatch && typeMatch && searchMatch && !isFamilyType
+    }),
+    [activeGroups, matchesScope, groupTypeFilter, groupSearchQuery]
+  )
+
+  const filteredPeople = useMemo(
+    () => activePeople.filter((user) => matchesScope(user.chapterTags)),
+    [activePeople, matchesScope]
+  )
+
+  const filteredMarketplace = useMemo(
+    () => activeMarketplace.filter((listing) => matchesScope(listing.tags)),
+    [activeMarketplace, matchesScope]
+  )
+
+  const localeNameMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const locale of initialLocales) {
+      map.set(locale.id, locale.name)
+      if (locale.slug) map.set(locale.slug, locale.name)
+    }
+    for (const basin of initialBasins) {
+      map.set(basin.id, basin.name)
+    }
+    return map
+  }, [initialLocales, initialBasins])
+
+  const resolveChapterName = useCallback(
+    (id: string) => localeNameMap.get(id) || id,
+    [localeNameMap]
+  )
+
+  const currentLocaleName =
+    selectedLocale === "all" ? "All Locales" : localeData.locales.find((l) => l.id === selectedLocale)?.name || "All Locales"
+
+  const fallbackUser: User = {
+    id: "",
+    name: "Unknown User",
+    username: "unknown",
+    avatar: "/placeholder-user.jpg",
+    followers: 0,
+    following: 0,
+  }
+
+  const getUser = (userId: string) => {
+    return activePeople.find((user) => user.id === userId) || activePeople[0] || fallbackUser
+  }
+
+  const getGroup = (groupId: string) => {
+    return activeGroups.find((group) => group.id === groupId) || activeGroups[0] || ({
+      id: "",
+      name: "Unknown Group",
+      description: "",
+      image: "",
+      memberCount: 0,
+      createdAt: "1970-01-01T00:00:00.000Z",
+    } as Group)
+  }
+
+  const getGroupName = (groupId: string) => getGroup(groupId).name
+  const getGroupId = (groupId: string) => groupId
+
+  const getEventCreator = (eventId: string) => {
+    const event = activeEvents.find((e) => e.id === eventId)
+    const creatorId = event?.creator || (typeof event?.organizer === "string" ? event.organizer : "")
+    if (creatorId) {
+      const found = activePeople.find((p) => p.id === creatorId)
+      if (found) return found
+    }
+    return fallbackUser
+  }
+
+  const getCreatorName = (eventId: string) => getEventCreator(eventId).name
+  const getCreatorUsername = (eventId: string) => getEventCreator(eventId).username
+
+  return (
+    <div className="container max-w-4xl mx-auto px-4 py-6">
+      <div className="mb-4">
+        {selectedLocale !== "all" ? (
+          <Link href={`/locales/${selectedLocale}`} className="inline-flex items-center gap-2 group">
+            {localeData.locales.find((l) => l.id === selectedLocale)?.image && (
+              <Image
+                src={localeData.locales.find((l) => l.id === selectedLocale)!.image}
+                alt={currentLocaleName}
+                width={36}
+                height={36}
+                className="h-9 w-9 rounded-full object-cover border"
+              />
+            )}
+            <h2 className="text-xl font-bold group-hover:text-primary transition-colors">{currentLocaleName}</h2>
+            <ChevronRight className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" />
+          </Link>
+        ) : (
+          <h2 className="text-xl font-bold">{currentLocaleName}</h2>
+        )}
+      </div>
+
+      {selectedLocale !== "all" && (
+        <ChapterHeader
+          selectedChapter={selectedLocale}
+          onChapterChange={setSelectedChapter}
+        />
+      )}
+
+      {isAuthenticated && (
+        <div className="mb-6 p-4">
+          <div className="flex gap-3">
+            <Avatar className="h-10 w-10">
+              <AvatarImage src={currentUser?.avatar} alt={currentUser?.name || "Your profile"} />
+              <AvatarFallback>{currentUser?.name?.substring(0, 2).toUpperCase() || "U"}</AvatarFallback>
+            </Avatar>
+            <Input
+              placeholder="What's happening in your community?"
+              className="bg-muted border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-base cursor-pointer"
+              onClick={handleCreatePost}
+              readOnly
+            />
+          </div>
+        </div>
+      )}
+
+      <Tabs defaultValue="posts" value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="flex w-full mb-4 gap-0">
+          <TabsTrigger value="posts" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Posts</TabsTrigger>
+          <TabsTrigger value="events" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Events</TabsTrigger>
+          <TabsTrigger value="groups" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Groups</TabsTrigger>
+          <TabsTrigger value="people" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">People</TabsTrigger>
+          <TabsTrigger value="gigs" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Gigs</TabsTrigger>
+          <TabsTrigger value="marketplace" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Mart</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="posts" className="mt-0">
+          <PostFeed
+            posts={filteredPosts as Post[]}
+            events={[]}
+            groups={[]}
+            listings={activeMarketplace}
+            getUser={getUser}
+            getGroup={getGroup}
+            onLike={handleLike}
+            onComment={handleComment}
+            onShare={handleShare}
+            onRsvp={handleEventRsvp}
+            includeAllTypes={false}
+            resolveChapterName={resolveChapterName}
+          />
+        </TabsContent>
+
+        <TabsContent value="events" className="mt-0">
+          <EventFeed
+            events={filteredEvents}
+            getGroupName={getGroupName}
+            getGroupId={getGroupId}
+            getCreatorName={getCreatorName}
+            getCreatorUsername={getCreatorUsername}
+            onRsvpChange={handleEventRsvp}
+            initialRsvpStatuses={rsvpStatuses}
+          />
+        </TabsContent>
+
+        <TabsContent value="groups" className="mt-0">
+          <div className="mb-4 space-y-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Search groups..."
+                value={groupSearchQuery}
+                onChange={(e) => setGroupSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button variant={groupTypeFilter === "all" ? "default" : "outline"} size="sm" onClick={() => setGroupTypeFilter("all")}>All</Button>
+              <Button variant={groupTypeFilter === "org" ? "default" : "outline"} size="sm" onClick={() => setGroupTypeFilter("org")}>Organizations</Button>
+              <Button variant={groupTypeFilter === "ring" ? "default" : "outline"} size="sm" onClick={() => setGroupTypeFilter("ring")}>Rings</Button>
+              <Button variant={groupTypeFilter === "basic" ? "default" : "outline"} size="sm" onClick={() => setGroupTypeFilter("basic")}>Basic</Button>
+            </div>
+          </div>
+          <GroupFeed
+            groups={filteredGroups}
+            onJoinGroup={handleJoin}
+            chapterId={selectedLocale}
+            includeAllTypes={true}
+            resolveLocationName={resolveChapterName}
+          />
+        </TabsContent>
+
+        <TabsContent value="people" className="mt-0">
+          <PeopleFeed people={filteredPeople} onConnect={handleConnect} />
+        </TabsContent>
+
+        <TabsContent value="gigs" className="mt-0">
+          <GigsFeed selectedLocale={selectedLocale} />
+        </TabsContent>
+
+        <TabsContent value="marketplace" className="mt-0">
+          <MarketplaceFeed
+            listings={filteredMarketplace}
+            getSeller={getUser}
+            savedListings={savedListings}
+            onSave={handleSaveMarketplace}
+            onContact={handleContactMarketplace}
+            onShare={handleShareListing}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
