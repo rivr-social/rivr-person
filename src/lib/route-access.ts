@@ -33,7 +33,9 @@ const PUBLIC_API_PREFIXES = [
   "/api/billing/trial-reminders",
   "/api/health",
   "/api/federation",
+  "/api/mcp",
   "/api/murmurations",
+  "/api/profile",
   "/api/universal-manifest",
   "/api/stripe/webhook",
   "/api/stripe/checkout",
@@ -44,6 +46,7 @@ const PUBLIC_API_PREFIXES = [
   "/api/map-tilesets",
   "/api/map-diagnostics",
   "/api/locations/suggest",
+  "/.well-known/mcp",
   "/.well-known/matrix",
   "/.well-known/universal-manifest.json",
 ];
