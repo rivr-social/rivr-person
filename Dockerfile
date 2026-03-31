@@ -27,6 +27,10 @@ ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
 
 RUN pnpm build
 
+RUN mkdir -p .next/standalone/.next && \
+    cp -R .next/static .next/standalone/.next/static && \
+    cp -R public .next/standalone/public
+
 FROM node:20-slim AS runner
 
 ENV PNPM_HOME="/pnpm"
@@ -49,7 +53,7 @@ RUN apt-get update && \
 RUN groupadd --system --gid 1001 nodejs && \
     useradd --system --uid 1001 --gid nodejs nextjs
 
-COPY --from=builder --chown=nextjs:nodejs /app ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 
 USER nextjs
 
