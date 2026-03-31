@@ -23,6 +23,7 @@ import { agents } from "@/db/schema";
 import { SettingsForm, type SettingsInitialData } from "./settings-form";
 import { buildFederationIdentityStatus, type FederationIdentityStatus } from "@/lib/federation-identities";
 import { buildPersonInstanceSetupState, type PersonInstanceSetupState } from "@/lib/person-instance-setup";
+import { buildAppReleaseStatus, type AppReleaseStatus } from "@/lib/app-release";
 
 /**
  * Generates a URL-safe fallback username from the user's display name.
@@ -119,6 +120,17 @@ export default async function SettingsPage() {
     initialFederationStatus = null;
   }
 
+  let initialAppReleaseStatus: AppReleaseStatus | null = null;
+  try {
+    initialAppReleaseStatus = await buildAppReleaseStatus({
+      appName: "rivr-person",
+      defaultVersion: "0.1.0",
+      defaultUpstreamRepo: "rivr-social/rivr-person",
+    });
+  } catch {
+    initialAppReleaseStatus = null;
+  }
+
   const initialPersonInstanceSetup: PersonInstanceSetupState = buildPersonInstanceSetupState({
     metadata,
     fallbackName: currentUser.name,
@@ -131,6 +143,7 @@ export default async function SettingsPage() {
       initialData={initialData}
       initialFederationStatus={initialFederationStatus}
       initialPersonInstanceSetup={initialPersonInstanceSetup}
+      initialAppReleaseStatus={initialAppReleaseStatus}
     />
   );
 }
