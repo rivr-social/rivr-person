@@ -7,6 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -40,10 +41,19 @@ export async function POST(request: Request) {
   }
 
   try {
+    const settings = await getAutobotUserSettings(session.user.id).catch(() => null);
     const response = await fetch(`${OPENCLAW_URL}/api/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text.slice(0, MAX_TEXT_LENGTH) }),
+      body: JSON.stringify({
+        text: text.slice(0, MAX_TEXT_LENGTH),
+        provider: settings?.gpuProvider,
+        providerApiKey: settings?.gpuProviderApiKey || undefined,
+        providerEndpoint: settings?.gpuProviderEndpoint || undefined,
+        voice: settings?.voiceSample?.voiceId || undefined,
+        voiceSampleStoredFileName: settings?.voiceSample?.storedFileName || undefined,
+        username: session.user.name || session.user.email || session.user.id,
+      }),
     });
 
     if (!response.ok) {

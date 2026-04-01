@@ -159,6 +159,8 @@ export function VoiceCloneUpload({
           size: data.sample?.size ?? file.size,
           mimeType: data.sample?.mimeType || file.type || undefined,
           uploadedAt,
+          storedFileName: data.sample?.storedFileName,
+          voiceId: data.sample?.voiceId,
         };
 
         clearInterval(progressInterval);

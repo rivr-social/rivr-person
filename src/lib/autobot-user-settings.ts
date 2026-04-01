@@ -9,6 +9,8 @@ export type VoiceSample = {
   size: number;
   mimeType?: string;
   uploadedAt: string;
+  storedFileName?: string;
+  voiceId?: string;
 };
 
 export type AutobotUserSettings = {
@@ -63,6 +65,14 @@ function sanitizeVoiceSample(input: unknown): VoiceSample | null {
         ? input.mimeType.trim()
         : undefined,
     uploadedAt,
+    storedFileName:
+      typeof input.storedFileName === "string" && input.storedFileName.trim()
+        ? input.storedFileName.trim()
+        : undefined,
+    voiceId:
+      typeof input.voiceId === "string" && input.voiceId.trim()
+        ? input.voiceId.trim()
+        : undefined,
   };
 }
 
