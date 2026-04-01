@@ -53,6 +53,15 @@ export const ALLOWED_MIME_TYPES = [
   'application/json',
   'model/gltf-binary',
 ];
+export const DIGITAL_TWIN_MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1GB
+export const DIGITAL_TWIN_ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+] as const;
 
 /**
  * Resolves a logical bucket name to its configured value from environment
@@ -130,6 +139,14 @@ function generateStorageKey(filename: string): string {
   // Sanitize path fragments so user-supplied names cannot inject object key delimiters.
   const sanitizedFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `uploads/${timestamp}-${randomSuffix}-${sanitizedFilename}`;
+}
+
+function generateScopedStorageKey(scope: string, filename: string): string {
+  const timestamp = Date.now();
+  const randomSuffix = Math.random().toString(36).substring(2, 15);
+  const sanitizedFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const sanitizedScope = scope.replace(/[^a-zA-Z0-9/_-]/g, '_').replace(/^\/+|\/+$/g, '');
+  return `${sanitizedScope}/${timestamp}-${randomSuffix}-${sanitizedFilename}`;
 }
 
 /**
@@ -343,6 +360,49 @@ export async function uploadFiles(
     return await Promise.all(uploadPromises);
   } catch (error) {
     throw new StorageError('Failed to upload one or more files', error);
+  }
+}
+
+export async function uploadDigitalTwinAsset(
+  buffer: Buffer,
+  filename: string,
+  mimeType: string,
+  ownerId: string,
+): Promise<UploadResult> {
+  try {
+    if (buffer.length > DIGITAL_TWIN_MAX_FILE_SIZE) {
+      throw new FileSizeError(buffer.length, DIGITAL_TWIN_MAX_FILE_SIZE);
+    }
+    if (!DIGITAL_TWIN_ALLOWED_MIME_TYPES.includes(mimeType as (typeof DIGITAL_TWIN_ALLOWED_MIME_TYPES)[number])) {
+      throw new InvalidMimeTypeError(mimeType, [...DIGITAL_TWIN_ALLOWED_MIME_TYPES]);
+    }
+    validateMagicBytes(buffer, mimeType);
+
+    const key = generateScopedStorageKey(`digital-twin/${ownerId}`, filename);
+    const bucket = resolveBucket('exports');
+    const params: PutObjectCommandInput = {
+      Bucket: bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType,
+      ContentLength: buffer.length,
+    };
+    const client = getS3Client();
+    await client.send(new PutObjectCommand(params));
+    const url = generatePublicUrl(key, bucket);
+    return {
+      key,
+      url,
+      bucket,
+      size: buffer.length,
+      mimeType,
+      timestamp: Date.now(),
+    };
+  } catch (error) {
+    if (error instanceof StorageError) {
+      throw error;
+    }
+    throw new StorageError('Failed to upload digital twin asset', error);
   }
 }
 

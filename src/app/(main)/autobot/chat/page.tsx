@@ -38,7 +38,12 @@ import { cn } from "@/lib/utils";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { VoiceCloneUpload } from "@/components/voice-clone-upload";
 import Link from "next/link";
-import type { VoiceSample } from "@/lib/autobot-user-settings";
+import type {
+  DigitalTwinAssetKind,
+  DigitalTwinJobMode,
+  DigitalTwinProfile,
+  VoiceSample,
+} from "@/lib/autobot-user-settings";
 
 type BrowserSpeechRecognition = {
   continuous: boolean;
@@ -61,6 +66,9 @@ const CHAT_API_ENDPOINT = "/api/autobot/chat";
 const TTS_API_ENDPOINT = "/api/autobot/tts";
 const GPU_API_ENDPOINT = "/api/autobot/gpu";
 const SETTINGS_API_ENDPOINT = "/api/autobot/settings";
+const DIGITAL_TWIN_API_ENDPOINT = "/api/autobot/digital-twin";
+const DIGITAL_TWIN_UPLOAD_ENDPOINT = "/api/autobot/digital-twin/upload";
+const DIGITAL_TWIN_JOBS_ENDPOINT = "/api/autobot/digital-twin/jobs";
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_DISPLAY_HISTORY = 40;
 const THREADS_STORAGE_KEY = "rivr_autobot_threads";
@@ -112,6 +120,16 @@ type ProcessingState = "idle" | "sending" | "responding";
 type GpuStatus = "stopped" | "running" | "provisioning" | "gpu_starting" | "no_gpu" | "unknown";
 type VoiceMode = "browser" | "clone";
 type GpuProvider = "vast" | "local" | "custom";
+
+const DEFAULT_DIGITAL_TWIN: DigitalTwinProfile = {
+  pipeline: "retalk",
+  model: "edityourself",
+  hostFraming: "medium",
+  backgroundMode: "captured",
+  notes: "",
+  assets: [],
+  jobs: [],
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -531,6 +549,12 @@ export default function AutobotChatPage() {
   const [gpuProvider, setGpuProvider] = useState<GpuProvider>("vast");
   const [gpuProviderApiKey, setGpuProviderApiKey] = useState("");
   const [gpuProviderEndpoint, setGpuProviderEndpoint] = useState("");
+  const [digitalTwin, setDigitalTwin] = useState<DigitalTwinProfile>(DEFAULT_DIGITAL_TWIN);
+  const [digitalTwinUploadKind, setDigitalTwinUploadKind] = useState<DigitalTwinAssetKind>("host-video");
+  const [digitalTwinUploading, setDigitalTwinUploading] = useState(false);
+  const [digitalTwinJobMode, setDigitalTwinJobMode] = useState<DigitalTwinJobMode>("host-update");
+  const [digitalTwinJobText, setDigitalTwinJobText] = useState("");
+  const [digitalTwinQueueing, setDigitalTwinQueueing] = useState(false);
 
   // GPU/Voice state
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>("unknown");
@@ -657,6 +681,9 @@ export default function AutobotChatPage() {
           setVoiceSample(null);
           setVoiceCloneConfigured(false);
           localStorage.removeItem("rivr_voice_clone_sample");
+        }
+        if (settings.digitalTwin && typeof settings.digitalTwin === "object") {
+          setDigitalTwin(settings.digitalTwin as DigitalTwinProfile);
         }
       } catch {
         // Leave local defaults in place if server settings are unavailable.
@@ -1204,6 +1231,62 @@ export default function AutobotChatPage() {
     }).catch(() => {});
   }, []);
 
+  const handleDigitalTwinPatch = useCallback((patch: Partial<DigitalTwinProfile>) => {
+    setDigitalTwin((prev) => ({ ...prev, ...patch }));
+    fetch(DIGITAL_TWIN_API_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).catch(() => {});
+  }, []);
+
+  const handleDigitalTwinUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      setDigitalTwinUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append("kind", digitalTwinUploadKind);
+        formData.append("file", file);
+        const response = await fetch(DIGITAL_TWIN_UPLOAD_ENDPOINT, {
+          method: "POST",
+          body: formData,
+        });
+        const data = await response.json();
+        if (response.ok && data?.digitalTwin) {
+          setDigitalTwin(data.digitalTwin as DigitalTwinProfile);
+        }
+      } finally {
+        setDigitalTwinUploading(false);
+      }
+    },
+    [digitalTwinUploadKind],
+  );
+
+  const handleQueueDigitalTwinJob = useCallback(async () => {
+    const sourceText = digitalTwinJobText.trim();
+    if (!sourceText) return;
+    setDigitalTwinQueueing(true);
+    try {
+      const response = await fetch(DIGITAL_TWIN_JOBS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: digitalTwinJobMode,
+          sourceType: "script",
+          sourceText,
+        }),
+      });
+      const data = await response.json();
+      if (response.ok && Array.isArray(data?.jobs)) {
+        setDigitalTwin((prev) => ({ ...prev, jobs: data.jobs }));
+        setDigitalTwinJobText("");
+      }
+    } finally {
+      setDigitalTwinQueueing(false);
+    }
+  }, [digitalTwinJobMode, digitalTwinJobText]);
+
   const isInputDisabled = processingState !== "idle";
   const canSend = inputValue.trim().length > 0 && !isInputDisabled;
 
@@ -1502,6 +1585,187 @@ export default function AutobotChatPage() {
               )}
             </>
           )}
+
+          <Separator />
+
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Digital twin pipeline</Label>
+              <p className="text-[10px] text-muted-foreground">
+                Local-first host video profile for a self-hosted Cameron clone on Vast. This stores your preferred pipeline, reference assets, and queued generation jobs.
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Pipeline</Label>
+                <Select
+                  value={digitalTwin.pipeline}
+                  onValueChange={(value) => handleDigitalTwinPatch({ pipeline: value as DigitalTwinProfile["pipeline"] })}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="retalk">Retalk real footage</SelectItem>
+                    <SelectItem value="portrait">Portrait animation</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Model</Label>
+                <Select
+                  value={digitalTwin.model}
+                  onValueChange={(value) => handleDigitalTwinPatch({ model: value as DigitalTwinProfile["model"] })}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="edityourself">EditYourself</SelectItem>
+                    <SelectItem value="liveportrait">LivePortrait</SelectItem>
+                    <SelectItem value="skyreels">SkyReels</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Host framing</Label>
+                <Select
+                  value={digitalTwin.hostFraming}
+                  onValueChange={(value) => handleDigitalTwinPatch({ hostFraming: value as DigitalTwinProfile["hostFraming"] })}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tight-medium">Tight medium</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="wide">Wide</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Background mode</Label>
+                <Select
+                  value={digitalTwin.backgroundMode}
+                  onValueChange={(value) => handleDigitalTwinPatch({ backgroundMode: value as DigitalTwinProfile["backgroundMode"] })}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="captured">Captured</SelectItem>
+                    <SelectItem value="clean">Clean keyed</SelectItem>
+                    <SelectItem value="generated">Generated composite</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Reference asset kind</Label>
+              <Select
+                value={digitalTwinUploadKind}
+                onValueChange={(value) => setDigitalTwinUploadKind(value as DigitalTwinAssetKind)}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="host-video">Host video</SelectItem>
+                  <SelectItem value="reference-portrait">Reference portrait</SelectItem>
+                  <SelectItem value="idle-video">Idle video</SelectItem>
+                  <SelectItem value="background-plate">Background plate</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                className="h-8 text-xs"
+                disabled={digitalTwinUploading}
+                onChange={(event) => {
+                  void handleDigitalTwinUpload(event.target.files?.[0] ?? null);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Upload canonical host footage, portrait stills, idle clips, and clean background plates. Assets are stored in your own Rivr-controlled object storage.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              {digitalTwin.assets.slice(0, 4).map((asset) => (
+                <Card key={asset.id} className="bg-muted/30">
+                  <CardContent className="px-3 py-2 text-[10px]">
+                    <div className="font-medium">{asset.fileName}</div>
+                    <div className="text-muted-foreground">
+                      {asset.kind} · {Math.round(asset.size / 1024)} KB
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {digitalTwin.assets.length === 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  No digital twin assets uploaded yet.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Queue host video job</Label>
+              <Select
+                value={digitalTwinJobMode}
+                onValueChange={(value) => setDigitalTwinJobMode(value as DigitalTwinJobMode)}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="host-update">Host update</SelectItem>
+                  <SelectItem value="event-recap">Event recap</SelectItem>
+                  <SelectItem value="marketplace-promo">Marketplace promo</SelectItem>
+                </SelectContent>
+              </Select>
+              <textarea
+                value={digitalTwinJobText}
+                onChange={(event) => setDigitalTwinJobText(event.target.value)}
+                placeholder="Write the script or transcript excerpt for the host clip..."
+                className="w-full min-h-[84px] rounded-md border bg-background px-3 py-2 text-xs"
+              />
+              <Button
+                size="sm"
+                className="h-8 text-xs"
+                disabled={digitalTwinQueueing || !digitalTwinJobText.trim()}
+                onClick={() => void handleQueueDigitalTwinJob()}
+              >
+                Queue digital twin job
+              </Button>
+            </div>
+
+            <div className="grid gap-2">
+              {digitalTwin.jobs.slice(0, 4).map((job) => (
+                <Card key={job.id} className="bg-muted/30">
+                  <CardContent className="px-3 py-2 text-[10px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{job.mode}</span>
+                      <Badge variant="outline" className="text-[9px] py-0 h-4">
+                        {job.status}
+                      </Badge>
+                    </div>
+                    <div className="text-muted-foreground line-clamp-2">{job.sourceText}</div>
+                  </CardContent>
+                </Card>
+              ))}
+              {digitalTwin.jobs.length === 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  No digital twin jobs queued yet.
+                </p>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
