@@ -7,6 +7,7 @@ import {
   listMcpToolsForMode,
   type McpToolCallContext,
 } from "@/lib/federation/mcp-tools";
+import { logMcpProvenance } from "@/lib/federation/mcp-provenance";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
@@ -188,6 +189,7 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
       return errorResponse(id, -32003, `Tool ${toolName} is not enabled for this auth mode.`);
     }
 
+    const startTime = Date.now();
     try {
       const result = await runWithMcpExecutionContext(
         {
@@ -198,9 +200,28 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
         async () => tool.handler(toolArgs, authContext),
       );
 
+      const durationMs = Date.now() - startTime;
+      logMcpProvenance({
+        toolName,
+        context: authContext,
+        args: toolArgs,
+        resultStatus: "success",
+        durationMs,
+      }).catch(() => {});
+
       return successResponse(id, toToolContent(result));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Tool execution failed.";
+      const durationMs = Date.now() - startTime;
+      logMcpProvenance({
+        toolName,
+        context: authContext,
+        args: toolArgs,
+        resultStatus: "error",
+        errorMessage: message,
+        durationMs,
+      }).catch(() => {});
+
       return successResponse(id, toToolContent({ success: false, error: message }, true));
     }
   }

@@ -20,7 +20,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { Calendar, Clock, MapPin, DollarSign, ImageIcon, Users, Building2, Plus, X, AlertCircle, Briefcase, Eye, Globe, Loader2 } from "lucide-react"
+import { Calendar, Clock, MapPin, DollarSign, ImageIcon, User, Users, Building2, Plus, X, AlertCircle, Briefcase, Eye, Globe, Loader2 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useToast } from "@/components/ui/use-toast"
 import { useHomeFeed, useLocalesAndBasins } from "@/lib/hooks/use-graph-data"
@@ -219,6 +219,26 @@ export default function CreatePage() {
     () => liveGroups.filter((group) => group.type === GroupType.Ring),
     [liveGroups]
   )
+
+  // --- Federated scope picker state ---
+  const PUBLISH_SCOPE_LOCAL = "local" as const
+  const PUBLISH_SCOPE_GLOBAL = "global" as const
+  const [publishScope, setPublishScope] = useState<string>(PUBLISH_SCOPE_LOCAL)
+
+  /** Build the list of available publish scopes from groups and locales. */
+  const publishScopes = useMemo(() => {
+    const scopes: Array<{ id: string; label: string; type: "local" | "group" | "locale" | "global" }> = [
+      { id: PUBLISH_SCOPE_LOCAL, label: "My Profile", type: "local" },
+    ]
+    for (const group of liveGroups) {
+      scopes.push({ id: `group:${group.id}`, label: group.name, type: "group" })
+    }
+    for (const locale of localeData.locales) {
+      scopes.push({ id: `locale:${locale.id}`, label: locale.name, type: "locale" })
+    }
+    scopes.push({ id: PUBLISH_SCOPE_GLOBAL, label: "Global", type: "global" })
+    return scopes
+  }, [liveGroups, localeData.locales])
 
   // Client-side data fetching for venue and badge resource pickers used by event/project/job flows.
   useEffect(() => {
@@ -1476,8 +1496,31 @@ export default function CreatePage() {
 
   return (
     <div className="container max-w-4xl mx-auto px-4 py-6">
-      <div className="mb-6">
+      <div className="mb-6 space-y-3">
         <h1 className="text-2xl font-bold">Create</h1>
+
+        {/* Federated scope picker — choose where to publish */}
+        <div className="flex items-center gap-2">
+          <Label htmlFor="publish-scope" className="text-sm font-medium whitespace-nowrap">Publish to</Label>
+          <Select value={publishScope} onValueChange={setPublishScope}>
+            <SelectTrigger id="publish-scope" className="w-[240px]">
+              <SelectValue placeholder="Select scope" />
+            </SelectTrigger>
+            <SelectContent>
+              {publishScopes.map((scope) => (
+                <SelectItem key={scope.id} value={scope.id}>
+                  <span className="flex items-center gap-2">
+                    {scope.type === "local" && <User className="h-3.5 w-3.5 text-muted-foreground" />}
+                    {scope.type === "group" && <Users className="h-3.5 w-3.5 text-muted-foreground" />}
+                    {scope.type === "locale" && <MapPin className="h-3.5 w-3.5 text-muted-foreground" />}
+                    {scope.type === "global" && <Globe className="h-3.5 w-3.5 text-muted-foreground" />}
+                    {scope.label}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Conditional rendering switches form content by active tab selection. */}

@@ -1,8 +1,16 @@
 # Rivr Person
 
-Standalone Rivr person-instance app and deployment guide.
+**Sovereign, autobot-native Rivr instance for individuals.**
 
-This repo is the small sovereign-profile distribution for people who want to run their own Rivr home instance, point their existing Rivr agent at it, and cut over cleanly from a shared host such as `b.rivr.social`.
+Rivr Person is a standalone deployment that gives you full ownership of your Rivr identity — your profile, your data, your domain. It ships with a built-in MCP server so AI agents (autobots) can read and write on your behalf, a control plane UI for managing personas and reviewing autobot activity, and federation support for staying connected to the wider Rivr network.
+
+## What Makes It Autobot-Native
+
+- **MCP server built-in** — `POST /api/mcp` with token auth. Discovery at `GET /.well-known/mcp`.
+- **Provenance logging** — every MCP tool call is recorded with actor, auth mode, args, result, and timing.
+- **Control plane UI** — `/autobot` page with Status, Personas, and Activity tabs.
+- **Persona management** — create alternate identities that autobots can operate as.
+- **`AIAGENT_MCP_TOKEN`** — first-class env var, not an afterthought.
 
 ## Goal
 
@@ -13,8 +21,9 @@ Someone should be able to:
 3. deploy the person app,
 4. bind their existing Rivr agent,
 5. import their data,
-6. update federation home-instance resolution,
-7. land on their own `rivr.<domain>` profile.
+6. set `AIAGENT_MCP_TOKEN` and point an AI agent at the MCP endpoint,
+7. update federation home-instance resolution,
+8. land on their own `rivr.<domain>` profile with autobot access ready.
 
 ## Required PM Core Links
 
@@ -166,11 +175,37 @@ PROFILE_USERNAME=<your-username> \
 pnpm federation:verify:e2e
 ```
 
+### 7. Enable Autobot Access
+
+Generate a token and add it to your env:
+
+```bash
+AIAGENT_MCP_TOKEN=$(openssl rand -hex 32)
+```
+
+Point your AI agent at the MCP endpoint:
+
+```bash
+# Discovery
+curl https://rivr.<your-domain>/.well-known/mcp
+
+# Authenticated tool call
+curl -X POST https://rivr.<your-domain>/api/mcp \
+  -H "Authorization: Bearer $AIAGENT_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Visit `/autobot` in the app to see MCP status, manage personas, and review autobot activity.
+
+See `docs/AUTOBOT_MCP_SETUP.md` for the full MCP integration guide.
+
 ## Docs
 
 - Quick start: `docs/QUICK_PERSON_INSTANCE.md`
 - Full deploy runbook: `docs/PERSON_APP_DEPLOY_RUNBOOK.md`
 - Cutover details: `docs/PERSON_INSTANCE_CUTOVER.md`
+- Autobot/MCP setup: `docs/AUTOBOT_MCP_SETUP.md`
 
 ## Notes
 

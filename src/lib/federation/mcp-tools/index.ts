@@ -1,12 +1,9 @@
 import { getAllSubscriptionStatusesAction } from "@/app/actions/billing";
 import {
-  getActivePersonaInfo,
-  listMyPersonas,
-} from "@/app/actions/personas";
-import {
   setEventRsvp,
   appendEventTranscriptAction,
 } from "@/app/actions/interactions/events-jobs";
+import { sendThanksTokensAction } from "@/app/actions/interactions/thanks-tokens";
 import { toggleJoinGroup } from "@/app/actions/interactions/social";
 import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
@@ -27,9 +24,14 @@ import {
   getMyWalletsAction,
   getTransactionHistoryAction,
 } from "@/app/actions/wallet";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import { getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
+import { getProvenanceLog } from "@/lib/federation/mcp-provenance";
+import { serializeAgent } from "@/lib/graph-serializers";
+import { and, eq, isNull } from "drizzle-orm";
 
 export type McpToolCallContext = {
   actorId: string;
@@ -121,6 +123,33 @@ async function buildMyProfileBundle(actorId: string) {
   };
 }
 
+async function listPersonasForController(context: McpToolCallContext) {
+  const controllerId = context.controllerId ?? context.actorId;
+
+  const rows = await db
+    .select()
+    .from(agents)
+    .where(
+      and(
+        eq(agents.parentAgentId, controllerId),
+        isNull(agents.deletedAt),
+      ),
+    )
+    .orderBy(agents.createdAt);
+
+  const activePersona =
+    context.actorType === "persona"
+      ? rows.find((row) => row.id === context.actorId) ?? null
+      : null;
+
+  return {
+    success: true,
+    personas: rows.map((row) => serializeAgent(row)),
+    activePersonaId: activePersona?.id ?? null,
+    activePersona: activePersona ? serializeAgent(activePersona) : null,
+  };
+}
+
 export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "rivr.instance.get_context",
@@ -153,14 +182,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       properties: {},
     },
     enabledFor: ["session", "token"],
-    handler: async () => {
-      const [personas, activePersona] = await Promise.all([
-        listMyPersonas(),
-        getActivePersonaInfo(),
-      ]);
-
-      return { personas, activePersona };
-    },
+    handler: async (_args, context) => listPersonasForController(context),
   },
   {
     name: "rivr.profile.get_my_profile",
@@ -367,6 +389,64 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
             ? source
             : undefined,
       });
+    },
+  },
+  {
+    name: "rivr.thanks.send",
+    description: "Send one or more thanks tokens to another agent, optionally attaching a message or resource context.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["recipientId", "count"],
+      properties: {
+        recipientId: { type: "string" },
+        count: { type: "number", minimum: 1 },
+        message: { type: "string" },
+        contextId: { type: "string", description: "Optional resource or post the thanks relates to." },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const recipientId = getString(args.recipientId);
+      const count =
+        typeof args.count === "number" && Number.isFinite(args.count)
+          ? Math.max(1, Math.floor(args.count))
+          : 0;
+
+      if (!recipientId || count <= 0) {
+        throw new Error("recipientId and a positive count are required.");
+      }
+
+      return sendThanksTokensAction(
+        recipientId,
+        count,
+        getString(args.message) ?? undefined,
+        getString(args.contextId) ?? undefined,
+      );
+    },
+  },
+  {
+    name: "rivr.audit.recent",
+    description: "Return recent MCP provenance log entries. Useful for reviewing autobot activity and debugging.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        toolName: { type: "string", description: "Filter by tool name" },
+        actorType: { type: "string", enum: ["human", "persona", "autobot"] },
+        resultStatus: { type: "string", enum: ["success", "error"] },
+        limit: { type: "number", description: "Max entries to return (default 50, max 200)" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const entries = await getProvenanceLog({
+        toolName: getString(args.toolName) ?? undefined,
+        actorType: getString(args.actorType) as "human" | "persona" | "autobot" | undefined,
+        resultStatus: getString(args.resultStatus) as "success" | "error" | undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+      });
+      return { success: true, entries, count: entries.length };
     },
   },
 ];

@@ -59,4 +59,4 @@ USER nextjs
 
 EXPOSE 3000
 
-CMD sh -lc 'pnpm db:migrate && pnpm start'
+CMD ["node", "server.js"]

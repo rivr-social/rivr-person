@@ -59,7 +59,7 @@ export default async function UserProfilePage({ params }: { params: Promise<{ us
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }}
         />
       ) : null}
-      <PublicProfilePageClient />
+      <PublicProfilePageClient agentId={data.profile.username || username} />
     </>
   )
 }

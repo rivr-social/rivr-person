@@ -10,7 +10,7 @@ import { ResponsiveTabsList } from "@/components/responsive-tabs-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowUpRight, Award, Calendar, Camera, Clock, CreditCard, Globe, History, MapPin, MessageSquare, Receipt, Send, Store, Users } from "lucide-react";
+import { ArrowUpRight, Award, Bot, Calendar, Camera, Clock, CreditCard, Globe, Hammer, History, MapPin, MessageCircle, MessageSquare, Receipt, Send, Store, Users } from "lucide-react";
 import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/social-platform-icon";
 import { useToast } from "@/components/ui/use-toast";
 import { MetaMaskConnectButton } from "@/components/metamask-connect-button";
@@ -1324,6 +1324,51 @@ export default function ProfilePage() {
             </div>
           </div>
         </div>
+
+        {/* Control Plane — Builder, Autobot, Autobot Chat (authenticated user only) */}
+        {session && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Link href="/builder" className="group">
+              <Card className="transition-colors hover:border-primary/50">
+                <CardContent className="flex items-center gap-3 py-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/20 transition-colors">
+                    <Hammer className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">Builder</p>
+                    <p className="text-xs text-muted-foreground">Design your instance</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+            <Link href="/autobot" className="group">
+              <Card className="transition-colors hover:border-primary/50">
+                <CardContent className="flex items-center gap-3 py-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/20 transition-colors">
+                    <Bot className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">Autobot</p>
+                    <p className="text-xs text-muted-foreground">Manage automations</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+            <Link href="/autobot/chat" className="group">
+              <Card className="transition-colors hover:border-primary/50">
+                <CardContent className="flex items-center gap-3 py-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/20 transition-colors">
+                    <MessageCircle className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">Autobot Chat</p>
+                    <p className="text-xs text-muted-foreground">Talk to your agent</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          </div>
+        )}
 
         <Tabs value={activeTab} onValueChange={setTab}>
           <ResponsiveTabsList>

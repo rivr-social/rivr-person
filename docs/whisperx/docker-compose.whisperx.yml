@@ -1,0 +1,61 @@
+# WhisperX transcription service for PM Core Docker Lab stack.
+#
+# Usage:
+#   Standalone:
+#     docker compose -f docker-compose.whisperx.yml up -d
+#
+#   With Docker Lab (compose chain):
+#     docker compose -f docker-compose.yml -f docker-compose.whisperx.yml up -d
+#
+# Then set in the rivr-person container:
+#   WHISPER_TRANSCRIBE_URL=http://whisperx:9200/
+#
+# For GPU support, uncomment the deploy section and change WHISPERX_DEVICE to "cuda".
+
+services:
+  whisperx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: whisperx-service:latest
+    container_name: pmdl_whisperx
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      # WhisperX model configuration
+      WHISPERX_MODEL: ${WHISPERX_MODEL:-base}
+      WHISPERX_DEVICE: ${WHISPERX_DEVICE:-cpu}
+      WHISPERX_COMPUTE_TYPE: ${WHISPERX_COMPUTE_TYPE:-int8}
+      WHISPERX_BATCH_SIZE: ${WHISPERX_BATCH_SIZE:-16}
+
+      # HuggingFace token -- required for speaker diarization.
+      # Get one at https://huggingface.co/settings/tokens
+      # Must accept pyannote model terms: https://huggingface.co/pyannote/speaker-diarization-3.1
+      HF_TOKEN: ${HF_TOKEN:-}
+
+      # Optional API key to protect the endpoint.
+      # When set, clients must send Authorization: Bearer <key>.
+      API_KEY: ${WHISPERX_API_KEY:-}
+    volumes:
+      # Cache downloaded models across container restarts.
+      - whisperx-models:/root/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+    # Uncomment below for GPU (NVIDIA) support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  whisperx-models:
+    driver: local

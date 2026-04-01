@@ -8,3 +8,5 @@ export { UpdateFacade, updateFacade } from './update-facade';
 export type { Mutation, MutationResult } from './update-facade';
 export { QueryFacade, queryFacade } from './query-facade';
 export type { QueryResult, DataSource } from './query-facade';
+export { getProfileUrl, buildProfileUrl } from './profile-link';
+export { getGlobalBaseUrl, getGlobalUrl } from './global-url';

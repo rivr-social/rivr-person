@@ -13,7 +13,6 @@ import { Award, Calendar as CalendarIcon, Clock, Drama, Gift, Heart, MapPin, Mes
 import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/social-platform-icon";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 import { agentToEvent, agentToGroup, resourceToPost } from "@/lib/graph-adapters";
-import { useLocalesAndBasins } from "@/lib/hooks/use-graph-data";
 import { usePublicProfileModule } from "@/lib/hooks/use-public-profile-module";
 import { PostFeed } from "@/components/post-feed";
 import { EventFeed } from "@/components/event-feed";
@@ -156,13 +155,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   }, [profileUser]);
   const groupsById = useMemo(() => new Map(userGroups.map((group) => [group.id, group])), [userGroups]);
 
-  const { data: localesData } = useLocalesAndBasins();
-  const homeLocaleName = useMemo(() => {
-    const localeId = asString(metadata.homeLocale);
-    if (!localeId) return "";
-    const locale = localesData.locales.find((entry) => entry.id === localeId);
-    return locale?.name ?? "";
-  }, [localesData.locales, metadata.homeLocale]);
+  const homeLocaleName = asString(metadata.homeLocale);
 
   const offeringResources = useMemo(
     () =>

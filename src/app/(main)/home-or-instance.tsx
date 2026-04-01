@@ -78,7 +78,7 @@ async function renderPersonPage(agentId: string) {
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }}
         />
       ) : null}
-      <PublicProfilePageClient />
+      <PublicProfilePageClient agentId={profile.username} />
     </>
   );
 }

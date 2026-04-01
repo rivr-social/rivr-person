@@ -15,11 +15,17 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { embedResource, scheduleEmbedding } from "@/lib/ai";
 import { syncMurmurationsProfilesForActor } from "@/lib/murmurations";
 import { getHostedNodeForOwner, queueEntityExportEvents } from "@/lib/federation";
+import { getExecutionContext } from "@/lib/federation/execution-context";
 
 import type { ActionResult, CreateResourceInput } from "./types";
 import { GROUP_LIKE_OWNER_AGENT_TYPES } from "./types";
 
 export async function resolveAuthenticatedUserId(): Promise<string | null> {
+  const executionContext = getExecutionContext();
+  if (executionContext) {
+    return executionContext.actorId;
+  }
+
   const session = await auth();
   let resolvedUserId = session?.user?.id ?? null;
 

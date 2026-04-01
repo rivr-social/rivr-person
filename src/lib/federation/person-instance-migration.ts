@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
@@ -187,7 +187,55 @@ export async function importPersonInstanceManifest(
     }
 
     if (manifest.records.agents.length > 0) {
-      await tx.insert(agents).values(manifest.records.agents).onConflictDoNothing();
+      await tx.insert(agents).values(manifest.records.agents).onConflictDoUpdate({
+        target: agents.id,
+        set: {
+          name: sql`excluded.name`,
+          type: sql`excluded.type`,
+          description: sql`excluded.description`,
+          email: sql`excluded.email`,
+          passwordHash: sql`excluded.password_hash`,
+          emailVerified: sql`excluded.email_verified`,
+          visibility: sql`excluded.visibility`,
+          groupPasswordHash: sql`excluded.group_password_hash`,
+          image: sql`excluded.image`,
+          metadata: sql`excluded.metadata`,
+          parentId: sql`excluded.parent_id`,
+          pathIds: sql`excluded.path_ids`,
+          depth: sql`excluded.depth`,
+          location: sql`excluded.location`,
+          embedding: sql`excluded.embedding`,
+          matrixUserId: sql`excluded.matrix_user_id`,
+          matrixAccessToken: sql`excluded.matrix_access_token`,
+          website: sql`excluded.website`,
+          xHandle: sql`excluded.x_handle`,
+          instagram: sql`excluded.instagram`,
+          linkedin: sql`excluded.linkedin`,
+          telegram: sql`excluded.telegram`,
+          signalHandle: sql`excluded.signal_handle`,
+          phoneNumber: sql`excluded.phone_number`,
+          peermeshHandle: sql`excluded.peermesh_handle`,
+          peermeshDid: sql`excluded.peermesh_did`,
+          peermeshPublicKey: sql`excluded.peermesh_public_key`,
+          peermeshManifestId: sql`excluded.peermesh_manifest_id`,
+          peermeshManifestUrl: sql`excluded.peermesh_manifest_url`,
+          peermeshLinkedAt: sql`excluded.peermesh_linked_at`,
+          atprotoHandle: sql`excluded.atproto_handle`,
+          atprotoDid: sql`excluded.atproto_did`,
+          atprotoLinkedAt: sql`excluded.atproto_linked_at`,
+          parentAgentId: sql`excluded.parent_agent_id`,
+          failedLoginAttempts: sql`excluded.failed_login_attempts`,
+          lockedUntil: sql`excluded.locked_until`,
+          sessionVersion: sql`excluded.session_version`,
+          totpSecret: sql`excluded.totp_secret`,
+          totpEnabled: sql`excluded.totp_enabled`,
+          totpRecoveryCodes: sql`excluded.totp_recovery_codes`,
+          searchVector: sql`excluded.search_vector`,
+          deletedAt: sql`excluded.deleted_at`,
+          createdAt: sql`excluded.created_at`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+      });
     }
     if (manifest.records.resources.length > 0) {
       await tx.insert(resources).values(manifest.records.resources).onConflictDoNothing();

@@ -20,6 +20,7 @@ import { db } from '@/db';
 import { agents } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
+import { getExecutionContext } from '@/lib/federation/execution-context';
 import {
   getActivePersonaId,
   setActivePersonaCookie,
@@ -40,6 +41,11 @@ const MAX_BIO_LENGTH = 500;
  * Gets the authenticated user ID or throws.
  */
 async function requireUserId(): Promise<string> {
+  const executionContext = getExecutionContext();
+  if (executionContext?.source === 'mcp') {
+    return executionContext.controllerId ?? executionContext.actorId;
+  }
+
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) throw new Error('Unauthorized');
@@ -347,6 +353,29 @@ export async function getActivePersonaInfo(): Promise<{
   active: boolean;
   persona?: SerializedAgent;
 }> {
+  const executionContext = getExecutionContext();
+  if (executionContext?.source === 'mcp' && executionContext.actorType === 'persona') {
+    const [persona] = await db
+      .select()
+      .from(agents)
+      .where(
+        and(
+          eq(agents.id, executionContext.actorId),
+          isNull(agents.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!persona || !persona.parentAgentId) {
+      return { active: false };
+    }
+
+    return {
+      active: true,
+      persona: serializeAgent(persona),
+    };
+  }
+
   const activeId = await getActivePersonaId();
   if (!activeId) return { active: false };
 

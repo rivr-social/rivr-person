@@ -72,5 +72,6 @@ pnpm federation:person:cutover
 ## Notes
 
 - The export/import scripts preserve the same IDs for the person, personas, owned resources, wallets, subscriptions, ledger history, and relevant federation rows.
+- The importer now upserts agent rows by ID. If the target person instance already has a bootstrap copy of the same person agent, re-import will merge the source profile fields and metadata instead of silently skipping them.
 - Wallet transactions pointing at wallets not present in the manifest are imported with missing external wallet references nulled instead of failing FK checks.
 - The current cutover script updates registry state only. It does not create DNS, databases, Docker services, or secrets for you.

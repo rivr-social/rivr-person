@@ -3,8 +3,10 @@
 
 import type React from "react";
 import { useState } from "react";
+import { Slash } from "lucide-react";
 import { BottomNav } from "@/components/bottom-nav";
 import { CommandBar } from "@/components/CommandBar";
+import { usePathname } from "next/navigation";
 
 export default function MainLayout({
   children,
@@ -12,29 +14,31 @@ export default function MainLayout({
   children: React.ReactNode;
 }) {
   const [commandBarVisible, setCommandBarVisible] = useState(false);
+  const pathname = usePathname();
+  const hideGlobalCommandLauncher = pathname.startsWith("/builder");
 
   return (
     <div className="min-h-screen pb-16">
       {children}
-      <div className="fixed bottom-16 left-0 right-0 z-40 flex justify-center pointer-events-none">
-        <div className="w-full max-w-xl px-4 pointer-events-auto">
-          {commandBarVisible ? (
-            <CommandBar
-              onCommand={() => setCommandBarVisible(false)}
-              placeholder="Type a command (e.g., 'pay alice 50')..."
-            />
-          ) : (
+      {!hideGlobalCommandLauncher ? (
+        <>
+          <div className="fixed bottom-20 left-0 right-0 z-40 flex justify-center pointer-events-none">
             <button
               onClick={() => setCommandBarVisible(true)}
-              className="mx-auto flex items-center gap-1.5 rounded-full bg-muted/80 backdrop-blur-md border border-border/50 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors shadow-sm"
-              aria-label="Open command bar"
+              className="pointer-events-auto inline-flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-background/90 text-muted-foreground shadow-lg backdrop-blur-md transition-colors hover:text-foreground"
+              aria-label="Open command palette"
             >
-              <span className="font-mono">/</span>
-              <span>Command</span>
+              <Slash className="h-4 w-4" />
             </button>
-          )}
-        </div>
-      </div>
+          </div>
+          <CommandBar
+            open={commandBarVisible}
+            onOpenChange={setCommandBarVisible}
+            onCommand={() => setCommandBarVisible(false)}
+            placeholder="Search commands or run a natural-language action..."
+          />
+        </>
+      ) : null}
       <BottomNav />
     </div>
   );

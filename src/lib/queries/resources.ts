@@ -574,6 +574,95 @@ export async function getDocumentsForGroup(groupId: string, limit = 200): Promis
     .map((r) => resourceToDocument(r, groupId));
 }
 
+/**
+ * Returns the transcript document associated with an event, if one exists.
+ *
+ * The transcript is a regular group-owned document resource tagged with
+ * `resourceSubtype = event-transcript` and `metadata.eventId`.
+ */
+export async function getEventTranscriptDocument(eventId: string): Promise<Document | null> {
+  const result = await db.execute(sql`
+    SELECT r.*
+    FROM resources r
+    WHERE r.deleted_at IS NULL
+      AND r.type = 'document'
+      AND r.metadata->>'resourceSubtype' = 'event-transcript'
+      AND r.metadata->>'eventId' = ${eventId}
+    ORDER BY r.updated_at DESC
+    LIMIT 1
+  `);
+
+  const row = (result as Record<string, unknown>[])[0];
+  if (!row) return null;
+
+  const resource = rowToResource(row);
+  const metadata = (resource.metadata ?? {}) as Record<string, unknown>;
+  return resourceToDocument(resource, typeof metadata.groupId === "string" ? metadata.groupId : "");
+}
+
+export async function getEventTranscriptDocuments(eventId: string): Promise<Document[]> {
+  const result = await db.execute(sql`
+    SELECT r.*
+    FROM resources r
+    WHERE r.deleted_at IS NULL
+      AND r.type = 'document'
+      AND r.metadata->>'resourceSubtype' = 'event-transcript'
+      AND r.metadata->>'eventId' = ${eventId}
+    ORDER BY r.updated_at DESC
+  `);
+
+  return (result as Record<string, unknown>[])
+    .map((row) => rowToResource(row))
+    .map((resource) => {
+      const metadata = (resource.metadata ?? {}) as Record<string, unknown>;
+      return resourceToDocument(resource, typeof metadata.groupId === "string" ? metadata.groupId : "");
+    });
+}
+
+export async function getEventTranscriptDocumentForAttendee(
+  eventId: string,
+  attendeeId: string,
+): Promise<Document | null> {
+  const result = await db.execute(sql`
+    SELECT r.*
+    FROM resources r
+    WHERE r.deleted_at IS NULL
+      AND r.type = 'document'
+      AND r.metadata->>'resourceSubtype' = 'event-transcript'
+      AND r.metadata->>'eventId' = ${eventId}
+      AND r.metadata->>'transcriptOwnerId' = ${attendeeId}
+    ORDER BY r.updated_at DESC
+    LIMIT 1
+  `);
+
+  const row = (result as Record<string, unknown>[])[0];
+  if (!row) return null;
+
+  const resource = rowToResource(row);
+  const metadata = (resource.metadata ?? {}) as Record<string, unknown>;
+  return resourceToDocument(resource, typeof metadata.groupId === "string" ? metadata.groupId : "");
+}
+
+export async function getEventTranscriptAggregate(eventId: string): Promise<{
+  content: string;
+  documents: Document[];
+}> {
+  const documents = await getEventTranscriptDocuments(eventId);
+  if (documents.length === 0) {
+    return { content: "", documents: [] };
+  }
+
+  const content = documents
+    .map((document) => {
+      const title = document.title?.trim() || "Transcript";
+      const body = document.content?.trim() || "";
+      return body ? `# ${title}\n\n${body}` : `# ${title}`;
+    })
+    .join("\n\n---\n\n");
+
+  return { content, documents };
+}
+
 // ─── Badge Helper Functions (Ledger-Backed) ──────────────────────────────────
 
 /**
