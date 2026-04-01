@@ -491,18 +491,49 @@ export default function BuilderPage() {
 
     // If the file is HTML and already complete, use it directly
     if (activePreviewFile.endsWith(".html")) {
-      // Inject linked CSS/JS if they exist and aren't already linked
+      // Inline local CSS/JS assets so preview pages don't resolve them against the Rivr app origin.
       let html = file;
-      if (siteFiles["style.css"] && !html.includes("style.css")) {
+      const inlineLocalStyles = Object.entries(siteFiles)
+        .filter(([filename]) => filename.endsWith(".css"))
+        .map(([filename, content]) => {
+          const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          html = html.replace(
+            new RegExp(
+              `<link[^>]+href=["'](?:\\./)?${escaped}["'][^>]*>`,
+              "gi",
+            ),
+            "",
+          );
+          return `<style data-rivr-preview="${filename}">${content}</style>`;
+        })
+        .join("\n");
+
+      if (inlineLocalStyles) {
         html = html.replace(
           "</head>",
-          `<style>${siteFiles["style.css"]}</style>\n</head>`,
+          `${inlineLocalStyles}\n</head>`,
         );
       }
-      if (siteFiles["script.js"] && !html.includes("script.js")) {
+
+      const inlineLocalScripts = Object.entries(siteFiles)
+        .filter(([filename]) => filename.endsWith(".js"))
+        .map(([filename, content]) => {
+          const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          html = html.replace(
+            new RegExp(
+              `<script[^>]+src=["'](?:\\./)?${escaped}["'][^>]*>\\s*</script>`,
+              "gi",
+            ),
+            "",
+          );
+          return `<script data-rivr-preview="${filename}">${content}</script>`;
+        })
+        .join("\n");
+
+      if (inlineLocalScripts) {
         html = html.replace(
           "</body>",
-          `<script>${siteFiles["script.js"]}</script>\n</body>`,
+          `${inlineLocalScripts}\n</body>`,
         );
       }
       const previewBridgeScript = `
