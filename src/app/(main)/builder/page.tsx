@@ -117,6 +117,18 @@ function renderMessageContent(content: string): React.ReactNode {
   return <>{elements}</>;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function injectIntoHtml(html: string, tagName: "head" | "body", snippet: string): string {
+  const closingTag = `</${tagName}>`;
+  if (html.includes(closingTag)) {
+    return html.replace(closingTag, `${snippet}\n${closingTag}`);
+  }
+  return `${html}\n${snippet}`;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -493,13 +505,15 @@ export default function BuilderPage() {
     if (activePreviewFile.endsWith(".html")) {
       // Inline local CSS/JS assets so preview pages don't resolve them against the Rivr app origin.
       let html = file;
+      const availableFiles = Object.keys(siteFiles);
       const inlineLocalStyles = Object.entries(siteFiles)
         .filter(([filename]) => filename.endsWith(".css"))
         .map(([filename, content]) => {
-          const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const escaped = escapeRegExp(filename);
+          const basenameEscaped = escapeRegExp(filename.split("/").pop() ?? filename);
           html = html.replace(
             new RegExp(
-              `<link[^>]+href=["'](?:\\./|/)?${escaped}["'][^>]*>`,
+              `<link[^>]+href=["'](?:\\./|/)?(?:${escaped}|${basenameEscaped})["'][^>]*>`,
               "gi",
             ),
             "",
@@ -509,19 +523,17 @@ export default function BuilderPage() {
         .join("\n");
 
       if (inlineLocalStyles) {
-        html = html.replace(
-          "</head>",
-          `${inlineLocalStyles}\n</head>`,
-        );
+        html = injectIntoHtml(html, "head", inlineLocalStyles);
       }
 
       const inlineLocalScripts = Object.entries(siteFiles)
         .filter(([filename]) => filename.endsWith(".js"))
         .map(([filename, content]) => {
-          const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const escaped = escapeRegExp(filename);
+          const basenameEscaped = escapeRegExp(filename.split("/").pop() ?? filename);
           html = html.replace(
             new RegExp(
-              `<script[^>]+src=["'](?:\\./|/)?${escaped}["'][^>]*>\\s*</script>`,
+              `<script[^>]+src=["'](?:\\./|/)?(?:${escaped}|${basenameEscaped})["'][^>]*>\\s*</script>`,
               "gi",
             ),
             "",
@@ -531,21 +543,30 @@ export default function BuilderPage() {
         .join("\n");
 
       if (inlineLocalScripts) {
-        html = html.replace(
-          "</body>",
-          `${inlineLocalScripts}\n</body>`,
-        );
+        html = injectIntoHtml(html, "body", inlineLocalScripts);
       }
       const previewBridgeScript = `
 <script>
   (function() {
+    var availableFiles = ${JSON.stringify(availableFiles)};
     function resolvePreviewTarget(href) {
       if (!href) return null;
+      var rawHash = href.indexOf('#') >= 0 ? href.slice(href.indexOf('#') + 1) : '';
       var clean = href.split('?')[0].split('#')[0].replace(/^\\.\\//, '').replace(/^\\//, '');
+      if (!clean && rawHash) {
+        return { file: ${JSON.stringify(activePreviewFile)}, hash: rawHash };
+      }
       if (!clean) return null;
-      if (clean.endsWith('.html')) return clean;
-      if (${JSON.stringify(Object.keys(siteFiles))}.includes(clean + '.html')) return clean + '.html';
-      if (${JSON.stringify(Object.keys(siteFiles))}.includes(clean + '/index.html')) return clean + '/index.html';
+      if (availableFiles.includes(clean)) return { file: clean, hash: rawHash };
+      if (clean.endsWith('.html') && availableFiles.includes(clean)) return { file: clean, hash: rawHash };
+      if (availableFiles.includes(clean + '.html')) return { file: clean + '.html', hash: rawHash };
+      if (availableFiles.includes(clean + '/index.html')) return { file: clean + '/index.html', hash: rawHash };
+      if (document.getElementById(clean) || document.querySelector('[name="' + clean.replace(/"/g, '\\"') + '"]')) {
+        return { file: ${JSON.stringify(activePreviewFile)}, hash: clean };
+      }
+      if (availableFiles.includes('index.html')) {
+        return { file: 'index.html', hash: clean || rawHash };
+      }
       return null;
     }
     document.addEventListener('click', function(event) {
@@ -561,12 +582,19 @@ export default function BuilderPage() {
       var previewTarget = resolvePreviewTarget(href);
       if (previewTarget) {
         event.preventDefault();
-        window.parent.postMessage({ type: 'rivr-builder-preview-navigate', file: previewTarget }, '*');
+        if (previewTarget.file === ${JSON.stringify(activePreviewFile)} && previewTarget.hash) {
+          var localTarget = document.getElementById(previewTarget.hash) || document.querySelector('[name="' + previewTarget.hash.replace(/"/g, '\\"') + '"]');
+          if (localTarget && typeof localTarget.scrollIntoView === 'function') {
+            localTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+          }
+        }
+        window.parent.postMessage({ type: 'rivr-builder-preview-navigate', file: previewTarget.file, hash: previewTarget.hash || null }, '*');
       }
     }, true);
   })();
 </script>`;
-      html = html.replace("</body>", `${previewBridgeScript}\n</body>`);
+      html = injectIntoHtml(html, "body", previewBridgeScript);
       return html;
     }
 
@@ -579,7 +607,7 @@ export default function BuilderPage() {
 
   useEffect(() => {
     function handlePreviewNavigation(event: MessageEvent) {
-      const data = event.data as { type?: string; file?: string } | null;
+      const data = event.data as { type?: string; file?: string; hash?: string | null } | null;
       if (!data || data.type !== "rivr-builder-preview-navigate" || !data.file) return;
       if (siteFiles[data.file]) {
         setActivePreviewFile(data.file);
