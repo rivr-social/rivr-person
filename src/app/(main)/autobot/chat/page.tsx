@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { VoiceCloneUpload } from "@/components/voice-clone-upload";
 import Link from "next/link";
+import type { VoiceSample } from "@/lib/autobot-user-settings";
 
 type BrowserSpeechRecognition = {
   continuous: boolean;
@@ -525,6 +526,7 @@ export default function AutobotChatPage() {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [voiceCloneConfigured, setVoiceCloneConfigured] = useState(false);
+  const [voiceSample, setVoiceSample] = useState<VoiceSample | null>(null);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("browser");
   const [gpuProvider, setGpuProvider] = useState<GpuProvider>("vast");
   const [gpuProviderApiKey, setGpuProviderApiKey] = useState("");
@@ -586,7 +588,9 @@ export default function AutobotChatPage() {
 
     // Check voice clone sample
     try {
-      if (localStorage.getItem("rivr_voice_clone_sample")) {
+      const storedVoiceSample = localStorage.getItem("rivr_voice_clone_sample");
+      if (storedVoiceSample) {
+        setVoiceSample(JSON.parse(storedVoiceSample) as VoiceSample);
         setVoiceCloneConfigured(true);
       }
     } catch {
@@ -640,6 +644,19 @@ export default function AutobotChatPage() {
         if (typeof settings.gpuProviderEndpoint === "string") {
           setGpuProviderEndpoint(settings.gpuProviderEndpoint);
           saveStoredGpuProviderEndpoint(settings.gpuProviderEndpoint);
+        }
+        if (settings.voiceSample && typeof settings.voiceSample === "object") {
+          const persistedVoiceSample = settings.voiceSample as VoiceSample;
+          setVoiceSample(persistedVoiceSample);
+          setVoiceCloneConfigured(true);
+          localStorage.setItem(
+            "rivr_voice_clone_sample",
+            JSON.stringify(persistedVoiceSample),
+          );
+        } else if (settings.voiceSample === null) {
+          setVoiceSample(null);
+          setVoiceCloneConfigured(false);
+          localStorage.removeItem("rivr_voice_clone_sample");
         }
       } catch {
         // Leave local defaults in place if server settings are unavailable.
@@ -1472,7 +1489,9 @@ export default function AutobotChatPage() {
               </p>
 
               <VoiceCloneUpload
+                initialSample={voiceSample}
                 onVoiceSampleChange={(sample) => {
+                  setVoiceSample(sample);
                   setVoiceCloneConfigured(sample !== null);
                 }}
               />

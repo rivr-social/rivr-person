@@ -4,6 +4,12 @@ import { agents } from "@/db/schema";
 
 export type VoiceMode = "browser" | "clone";
 export type GpuProvider = "vast" | "local" | "custom";
+export type VoiceSample = {
+  fileName: string;
+  size: number;
+  mimeType?: string;
+  uploadedAt: string;
+};
 
 export type AutobotUserSettings = {
   selectedModel: string;
@@ -12,6 +18,7 @@ export type AutobotUserSettings = {
   gpuProvider: GpuProvider;
   gpuProviderApiKey: string;
   gpuProviderEndpoint: string;
+  voiceSample: VoiceSample | null;
   updatedAt?: string;
 };
 
@@ -24,10 +31,39 @@ const DEFAULT_SETTINGS: AutobotUserSettings = {
   gpuProvider: "vast",
   gpuProviderApiKey: "",
   gpuProviderEndpoint: "",
+  voiceSample: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function sanitizeVoiceSample(input: unknown): VoiceSample | null {
+  if (!isRecord(input)) return null;
+  const fileName =
+    typeof input.fileName === "string" && input.fileName.trim()
+      ? input.fileName.trim()
+      : null;
+  const size =
+    typeof input.size === "number" && Number.isFinite(input.size) && input.size >= 0
+      ? input.size
+      : null;
+  const uploadedAt =
+    typeof input.uploadedAt === "string" && input.uploadedAt.trim()
+      ? input.uploadedAt.trim()
+      : null;
+
+  if (!fileName || size === null || !uploadedAt) return null;
+
+  return {
+    fileName,
+    size,
+    mimeType:
+      typeof input.mimeType === "string" && input.mimeType.trim()
+        ? input.mimeType.trim()
+        : undefined,
+    uploadedAt,
+  };
 }
 
 function sanitizeSettings(input: unknown): AutobotUserSettings {
@@ -51,6 +87,7 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
     typeof record.gpuProviderEndpoint === "string"
       ? record.gpuProviderEndpoint.trim()
       : "";
+  const voiceSample = sanitizeVoiceSample(record.voiceSample);
   const updatedAt =
     typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : undefined;
 
@@ -61,6 +98,7 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
     gpuProvider,
     gpuProviderApiKey,
     gpuProviderEndpoint,
+    voiceSample,
     updatedAt,
   };
 }
