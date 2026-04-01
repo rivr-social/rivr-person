@@ -499,7 +499,7 @@ export default function BuilderPage() {
           const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           html = html.replace(
             new RegExp(
-              `<link[^>]+href=["'](?:\\./)?${escaped}["'][^>]*>`,
+              `<link[^>]+href=["'](?:\\./|/)?${escaped}["'][^>]*>`,
               "gi",
             ),
             "",
@@ -521,7 +521,7 @@ export default function BuilderPage() {
           const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           html = html.replace(
             new RegExp(
-              `<script[^>]+src=["'](?:\\./)?${escaped}["'][^>]*>\\s*</script>`,
+              `<script[^>]+src=["'](?:\\./|/)?${escaped}["'][^>]*>\\s*</script>`,
               "gi",
             ),
             "",
@@ -539,6 +539,15 @@ export default function BuilderPage() {
       const previewBridgeScript = `
 <script>
   (function() {
+    function resolvePreviewTarget(href) {
+      if (!href) return null;
+      var clean = href.split('?')[0].split('#')[0].replace(/^\\.\\//, '').replace(/^\\//, '');
+      if (!clean) return null;
+      if (clean.endsWith('.html')) return clean;
+      if (${JSON.stringify(Object.keys(siteFiles))}.includes(clean + '.html')) return clean + '.html';
+      if (${JSON.stringify(Object.keys(siteFiles))}.includes(clean + '/index.html')) return clean + '/index.html';
+      return null;
+    }
     document.addEventListener('click', function(event) {
       var target = event.target;
       if (!(target instanceof Element)) return;
@@ -549,9 +558,10 @@ export default function BuilderPage() {
       if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:') || href.startsWith('#')) {
         return;
       }
-      if (href.endsWith('.html')) {
+      var previewTarget = resolvePreviewTarget(href);
+      if (previewTarget) {
         event.preventDefault();
-        window.parent.postMessage({ type: 'rivr-builder-preview-navigate', file: href }, '*');
+        window.parent.postMessage({ type: 'rivr-builder-preview-navigate', file: previewTarget }, '*');
       }
     }, true);
   })();
