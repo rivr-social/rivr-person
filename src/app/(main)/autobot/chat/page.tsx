@@ -69,6 +69,7 @@ const SETTINGS_API_ENDPOINT = "/api/autobot/settings";
 const DIGITAL_TWIN_API_ENDPOINT = "/api/autobot/digital-twin";
 const DIGITAL_TWIN_UPLOAD_ENDPOINT = "/api/autobot/digital-twin/upload";
 const DIGITAL_TWIN_JOBS_ENDPOINT = "/api/autobot/digital-twin/jobs";
+const DIGITAL_TWIN_RUN_ENDPOINT = "/api/autobot/digital-twin/run";
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_DISPLAY_HISTORY = 40;
 const THREADS_STORAGE_KEY = "rivr_autobot_threads";
@@ -555,6 +556,7 @@ export default function AutobotChatPage() {
   const [digitalTwinJobMode, setDigitalTwinJobMode] = useState<DigitalTwinJobMode>("host-update");
   const [digitalTwinJobText, setDigitalTwinJobText] = useState("");
   const [digitalTwinQueueing, setDigitalTwinQueueing] = useState(false);
+  const [digitalTwinRunningJobId, setDigitalTwinRunningJobId] = useState<string | null>(null);
 
   // GPU/Voice state
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>("unknown");
@@ -1287,6 +1289,19 @@ export default function AutobotChatPage() {
     }
   }, [digitalTwinJobMode, digitalTwinJobText]);
 
+  const handleRunDigitalTwinJob = useCallback(async (jobId: string, sourceText: string, mode: DigitalTwinJobMode) => {
+    setDigitalTwinRunningJobId(jobId);
+    try {
+      await fetch(DIGITAL_TWIN_RUN_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId, sourceText, mode }),
+      });
+    } finally {
+      setDigitalTwinRunningJobId(null);
+    }
+  }, []);
+
   const isInputDisabled = processingState !== "idle";
   const canSend = inputValue.trim().length > 0 && !isInputDisabled;
 
@@ -1756,6 +1771,17 @@ export default function AutobotChatPage() {
                       </Badge>
                     </div>
                     <div className="text-muted-foreground line-clamp-2">{job.sourceText}</div>
+                    <div className="mt-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[10px]"
+                        disabled={digitalTwinRunningJobId === job.id}
+                        onClick={() => void handleRunDigitalTwinJob(job.id, job.sourceText, job.mode)}
+                      >
+                        {digitalTwinRunningJobId === job.id ? "Running..." : "Run on worker"}
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               ))}
