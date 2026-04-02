@@ -18,14 +18,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  AlertCircle,
   ArrowLeft,
   Bot,
+  Check,
   ChevronDown,
   Cpu,
   Loader2,
   MessageSquarePlus,
   Mic,
   MicOff,
+  Play,
   Plus,
   Send,
   Settings2,
@@ -33,6 +36,7 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { VoiceRecorder } from "@/components/voice-recorder";
@@ -80,6 +84,167 @@ const VOICE_MODE_KEY = "rivr_autobot_voice_mode";
 const GPU_PROVIDER_KEY = "rivr_autobot_gpu_provider";
 const GPU_PROVIDER_API_KEY = "rivr_autobot_gpu_provider_api_key";
 const GPU_PROVIDER_ENDPOINT = "rivr_autobot_gpu_provider_endpoint";
+
+const MCP_API_ENDPOINT = "/api/mcp";
+
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  "rivr.posts.create": "Create Post",
+  "rivr.posts.create_live_invite": "Create Live Invite",
+  "rivr.profile.update_basic": "Update Profile",
+  "rivr.profile.get_my_profile": "Get My Profile",
+  "rivr.groups.join": "Toggle Group Membership",
+  "rivr.events.rsvp": "RSVP to Event",
+  "rivr.events.append_transcript": "Append Transcript",
+  "rivr.thanks.send": "Send Thanks",
+  "rivr.personas.list": "List Personas",
+  "rivr.instance.get_context": "Get Instance Context",
+  "rivr.audit.recent": "Recent Audit Log",
+};
+
+const TOOL_PARAM_LABELS: Record<string, Record<string, string>> = {
+  "rivr.posts.create": {
+    title: "Title",
+    content: "Content",
+    postType: "Post type",
+    groupId: "Group",
+    localeId: "Locale",
+    imageUrl: "Image URL",
+    isGlobal: "Global",
+  },
+  "rivr.posts.create_live_invite": {
+    title: "Title",
+    content: "Content",
+    groupId: "Group",
+    localeId: "Locale",
+    isGlobal: "Global",
+    liveLocation: "Location",
+  },
+  "rivr.profile.update_basic": {
+    name: "Name",
+    bio: "Bio",
+    skills: "Skills",
+    location: "Location",
+  },
+  "rivr.groups.join": {
+    groupId: "Group",
+    type: "Type",
+  },
+  "rivr.events.rsvp": {
+    eventId: "Event",
+    status: "Status",
+  },
+  "rivr.thanks.send": {
+    recipientId: "Recipient",
+    count: "Amount",
+    message: "Message",
+    contextId: "Context",
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool Preview Types & Parsing
+// ---------------------------------------------------------------------------
+
+type ToolPreviewSegment = {
+  type: "tool-preview";
+  toolName: string;
+  params: Record<string, unknown>;
+  rawJson: string;
+  index: number;
+};
+
+type MarkdownSegment = {
+  type: "markdown";
+  content: string;
+};
+
+type MessageSegment = ToolPreviewSegment | MarkdownSegment;
+
+type ToolPreviewState = "pending" | "executing" | "success" | "error" | "cancelled";
+
+type ToolPreviewStatus = {
+  state: ToolPreviewState;
+  result?: unknown;
+  error?: string;
+};
+
+const TOOL_PREVIEW_REGEX = /```tool-preview:([a-zA-Z0-9_.]+)\n([\s\S]*?)```/g;
+
+function parseMessageSegments(content: string): MessageSegment[] {
+  const segments: MessageSegment[] = [];
+  let lastIndex = 0;
+  let toolIndex = 0;
+  let match: RegExpExecArray | null;
+
+  const regex = new RegExp(TOOL_PREVIEW_REGEX.source, "g");
+
+  while ((match = regex.exec(content)) !== null) {
+    // Add any markdown content before this tool-preview block
+    if (match.index > lastIndex) {
+      const mdContent = content.slice(lastIndex, match.index).trim();
+      if (mdContent) {
+        segments.push({ type: "markdown", content: mdContent });
+      }
+    }
+
+    const toolName = match[1];
+    const rawJson = match[2].trim();
+    let params: Record<string, unknown> = {};
+
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        params = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed JSON — show raw content as params with parse error
+      params = { _parseError: true, _raw: rawJson } as Record<string, unknown>;
+    }
+
+    segments.push({
+      type: "tool-preview",
+      toolName,
+      params,
+      rawJson,
+      index: toolIndex++,
+    });
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add any remaining markdown content after the last tool-preview block
+  if (lastIndex < content.length) {
+    const mdContent = content.slice(lastIndex).trim();
+    if (mdContent) {
+      segments.push({ type: "markdown", content: mdContent });
+    }
+  }
+
+  // If no tool-preview blocks were found, return the whole content as markdown
+  if (segments.length === 0) {
+    segments.push({ type: "markdown", content });
+  }
+
+  return segments;
+}
+
+function formatParamValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function getToolDisplayName(toolName: string): string {
+  return TOOL_DISPLAY_NAMES[toolName] || toolName.split(".").pop() || toolName;
+}
+
+function getParamLabel(toolName: string, paramKey: string): string {
+  return TOOL_PARAM_LABELS[toolName]?.[paramKey] || paramKey.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 const MODEL_OPTIONS = [
   { value: "openai/gpt-4o-mini", label: "GPT-4o Mini", provider: "OpenAI" },
@@ -352,12 +517,182 @@ function saveStoredGpuProviderEndpoint(value: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Tool Preview Card
+// ---------------------------------------------------------------------------
+
+function ToolPreviewCard({
+  segment,
+  messageId,
+  status,
+  onConfirm,
+  onCancel,
+}: {
+  segment: ToolPreviewSegment;
+  messageId: string;
+  status: ToolPreviewStatus;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const displayName = getToolDisplayName(segment.toolName);
+  const hasParseError = Boolean(segment.params._parseError);
+  const isPending = status.state === "pending";
+  const isExecuting = status.state === "executing";
+  const isSuccess = status.state === "success";
+  const isError = status.state === "error";
+  const isCancelled = status.state === "cancelled";
+
+  return (
+    <Card className={cn(
+      "my-2 overflow-hidden border",
+      isSuccess && "border-emerald-500/30",
+      isError && "border-destructive/30",
+      isCancelled && "border-muted-foreground/20 opacity-60",
+    )}>
+      {/* Header */}
+      <div className={cn(
+        "flex items-center gap-2 px-3 py-2 border-b",
+        isSuccess ? "bg-emerald-500/5" : isError ? "bg-destructive/5" : "bg-primary/5",
+      )}>
+        <Play className="h-3.5 w-3.5 text-primary" />
+        <span className="text-xs font-semibold flex-1">{displayName}</span>
+        <Badge variant="outline" className="text-[9px] font-mono py-0 h-4">
+          {segment.toolName}
+        </Badge>
+      </div>
+
+      <CardContent className="px-3 py-2 space-y-2">
+        {/* Parameter summary */}
+        {hasParseError ? (
+          <div className="space-y-1">
+            <div className="flex items-center gap-1 text-destructive">
+              <AlertCircle className="h-3 w-3" />
+              <span className="text-[10px] font-medium">Malformed JSON parameters</span>
+            </div>
+            <pre className="text-[10px] font-mono bg-muted rounded p-2 overflow-x-auto whitespace-pre-wrap">
+              {segment.rawJson}
+            </pre>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {Object.entries(segment.params).map(([key, value]) => {
+              const formatted = formatParamValue(value);
+              const label = getParamLabel(segment.toolName, key);
+              const isLongValue = formatted.length > 80;
+
+              return (
+                <div key={key} className={isLongValue ? "space-y-0.5" : "flex items-start gap-2"}>
+                  <span className="text-[10px] font-medium text-muted-foreground shrink-0 min-w-[80px]">
+                    {label}
+                  </span>
+                  <span className={cn(
+                    "text-[11px]",
+                    isLongValue && "block bg-muted/50 rounded px-2 py-1 whitespace-pre-wrap",
+                  )}>
+                    {formatted}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Action buttons */}
+        {isPending && !hasParseError && (
+          <div className="flex items-center gap-2 pt-1">
+            <Button
+              size="sm"
+              className="h-7 text-xs gap-1"
+              onClick={onConfirm}
+            >
+              <Check className="h-3 w-3" />
+              Confirm
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs gap-1 text-muted-foreground"
+              onClick={onCancel}
+            >
+              <X className="h-3 w-3" />
+              Cancel
+            </Button>
+          </div>
+        )}
+
+        {/* Executing state */}
+        {isExecuting && (
+          <div className="flex items-center gap-2 pt-1 text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span className="text-[11px]">Executing...</span>
+          </div>
+        )}
+
+        {/* Success result */}
+        {isSuccess && (
+          <div className="pt-1 space-y-1">
+            <div className="flex items-center gap-1 text-emerald-600">
+              <Check className="h-3 w-3" />
+              <span className="text-[10px] font-medium">Action completed</span>
+            </div>
+            {status.result !== undefined && (
+              <pre className="text-[10px] font-mono bg-muted rounded p-2 overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap">
+                {typeof status.result === "string"
+                  ? status.result
+                  : JSON.stringify(status.result, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+
+        {/* Error result */}
+        {isError && (
+          <div className="pt-1 space-y-1">
+            <div className="flex items-center gap-1 text-destructive">
+              <AlertCircle className="h-3 w-3" />
+              <span className="text-[10px] font-medium">Action failed</span>
+            </div>
+            {status.error && (
+              <p className="text-[10px] text-destructive/80 bg-destructive/5 rounded px-2 py-1">
+                {status.error}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Cancelled */}
+        {isCancelled && (
+          <div className="flex items-center gap-1 pt-1 text-muted-foreground">
+            <X className="h-3 w-3" />
+            <span className="text-[10px]">Cancelled</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Message Bubble
 // ---------------------------------------------------------------------------
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  toolPreviewStatuses,
+  onToolConfirm,
+  onToolCancel,
+}: {
+  message: ChatMessage;
+  toolPreviewStatuses: Record<string, ToolPreviewStatus>;
+  onToolConfirm: (messageId: string, toolIndex: number, toolName: string, params: Record<string, unknown>) => void;
+  onToolCancel: (messageId: string, toolIndex: number) => void;
+}) {
   const isUser = message.role === "user";
   const timestamp = new Date(message.timestamp);
+
+  // Parse message into segments for assistant messages
+  const segments: MessageSegment[] = isUser
+    ? [{ type: "markdown", content: message.content }]
+    : parseMessageSegments(message.content);
 
   return (
     <div
@@ -374,7 +709,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         </div>
       )}
 
-      <div className="space-y-1.5 min-w-0">
+      <div className="space-y-1.5 min-w-0 flex-1">
         {/* Model badge for assistant messages */}
         {!isUser && message.model && (
           <Badge variant="outline" className="text-[9px] font-mono py-0 h-4">
@@ -382,21 +717,43 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           </Badge>
         )}
 
-        {/* Message content */}
-        <div
-          className={cn(
-            "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-            isUser
-              ? "bg-primary text-primary-foreground rounded-br-md"
-              : "bg-muted rounded-bl-md",
-          )}
-        >
-          <div
-            dangerouslySetInnerHTML={{
-              __html: renderMarkdown(message.content),
-            }}
-          />
-        </div>
+        {/* Message segments */}
+        {segments.map((segment, idx) => {
+          if (segment.type === "markdown") {
+            return (
+              <div
+                key={`md-${idx}`}
+                className={cn(
+                  "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+                  isUser
+                    ? "bg-primary text-primary-foreground rounded-br-md"
+                    : "bg-muted rounded-bl-md",
+                )}
+              >
+                <div
+                  dangerouslySetInnerHTML={{
+                    __html: renderMarkdown(segment.content),
+                  }}
+                />
+              </div>
+            );
+          }
+
+          // Tool preview segment
+          const statusKey = `${message.id}:${segment.index}`;
+          const status = toolPreviewStatuses[statusKey] || { state: "pending" as ToolPreviewState };
+
+          return (
+            <ToolPreviewCard
+              key={`tool-${idx}`}
+              segment={segment}
+              messageId={message.id}
+              status={status}
+              onConfirm={() => onToolConfirm(message.id, segment.index, segment.toolName, segment.params)}
+              onCancel={() => onToolCancel(message.id, segment.index)}
+            />
+          );
+        })}
 
         {/* Timestamp */}
         <p
@@ -557,6 +914,9 @@ export default function AutobotChatPage() {
   const [digitalTwinJobText, setDigitalTwinJobText] = useState("");
   const [digitalTwinQueueing, setDigitalTwinQueueing] = useState(false);
   const [digitalTwinRunningJobId, setDigitalTwinRunningJobId] = useState<string | null>(null);
+
+  // Tool preview state — keyed by "messageId:toolIndex"
+  const [toolPreviewStatuses, setToolPreviewStatuses] = useState<Record<string, ToolPreviewStatus>>({});
 
   // GPU/Voice state
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>("unknown");
@@ -1302,6 +1662,86 @@ export default function AutobotChatPage() {
     }
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // Tool preview confirm / cancel handlers
+  // ---------------------------------------------------------------------------
+
+  const handleToolConfirm = useCallback(
+    async (messageId: string, toolIndex: number, toolName: string, params: Record<string, unknown>) => {
+      const statusKey = `${messageId}:${toolIndex}`;
+
+      // Skip if already past pending
+      const current = toolPreviewStatuses[statusKey];
+      if (current && current.state !== "pending") return;
+
+      setToolPreviewStatuses((prev) => ({
+        ...prev,
+        [statusKey]: { state: "executing" },
+      }));
+
+      try {
+        const response = await fetch(MCP_API_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: statusKey,
+            method: "tools/call",
+            params: {
+              name: toolName,
+              arguments: params,
+            },
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+          setToolPreviewStatuses((prev) => ({
+            ...prev,
+            [statusKey]: {
+              state: "error",
+              error: data.error.message || "Tool execution failed",
+            },
+          }));
+          return;
+        }
+
+        // Extract structured content from MCP response
+        const resultContent = data.result?.structuredContent ?? data.result?.content ?? data.result;
+
+        setToolPreviewStatuses((prev) => ({
+          ...prev,
+          [statusKey]: {
+            state: "success",
+            result: resultContent,
+          },
+        }));
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Network error executing tool";
+        setToolPreviewStatuses((prev) => ({
+          ...prev,
+          [statusKey]: {
+            state: "error",
+            error: errorMessage,
+          },
+        }));
+      }
+    },
+    [toolPreviewStatuses],
+  );
+
+  const handleToolCancel = useCallback(
+    (messageId: string, toolIndex: number) => {
+      const statusKey = `${messageId}:${toolIndex}`;
+      setToolPreviewStatuses((prev) => ({
+        ...prev,
+        [statusKey]: { state: "cancelled" },
+      }));
+    },
+    [],
+  );
+
   const isInputDisabled = processingState !== "idle";
   const canSend = inputValue.trim().length > 0 && !isInputDisabled;
 
@@ -1583,7 +2023,7 @@ export default function AutobotChatPage() {
               )}
 
               <p className="text-[10px] text-muted-foreground">
-                Provider preferences are saved to your Rivr profile settings and mirrored locally for fast startup. Server-backed provider runtimes still use the deployment-level OpenClaw credentials until per-user runtime overrides are wired through.
+                Provider preferences are saved to your Rivr profile settings and mirrored locally for fast startup. Your Vast.ai API key is used for GPU provisioning and discovery; the Chatterbox TTS auth token is managed by the deployment.
               </p>
 
               <VoiceCloneUpload
@@ -1833,7 +2273,13 @@ export default function AutobotChatPage() {
           )}
 
           {messages.map((message) => (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble
+              key={message.id}
+              message={message}
+              toolPreviewStatuses={toolPreviewStatuses}
+              onToolConfirm={handleToolConfirm}
+              onToolCancel={handleToolCancel}
+            />
           ))}
           <TypingIndicator state={processingState} />
           <div ref={scrollEndRef} />

@@ -28,10 +28,33 @@ export async function POST(
 
   try {
     const transcription = await transcribeAudioFile(file);
+
+    // Resolve speaker label: prefer user-provided, fall back to dominant speaker from diarization segments.
+    let resolvedSpeakerLabel: string | null = typeof speakerLabel === "string" && speakerLabel.trim() ? speakerLabel.trim() : null;
+    if (!resolvedSpeakerLabel && transcription.segments?.length) {
+      const speakerCounts = new Map<string, number>();
+      for (const seg of transcription.segments) {
+        if (seg.speaker) {
+          speakerCounts.set(seg.speaker, (speakerCounts.get(seg.speaker) ?? 0) + 1);
+        }
+      }
+      if (speakerCounts.size > 0) {
+        let dominant = "";
+        let maxCount = 0;
+        for (const [speaker, count] of speakerCounts) {
+          if (count > maxCount) {
+            dominant = speaker;
+            maxCount = count;
+          }
+        }
+        resolvedSpeakerLabel = dominant;
+      }
+    }
+
     const appendResult = await appendEventTranscriptAction({
       eventId,
       text: transcription.text,
-      speakerLabel: typeof speakerLabel === "string" ? speakerLabel : null,
+      speakerLabel: resolvedSpeakerLabel,
       source: transcription.provider === "whisper" ? "whisper" : "whisper-gateway",
     });
 
