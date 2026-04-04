@@ -2,7 +2,7 @@ FROM node:20-slim AS deps
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@8.15.8 --activate
+RUN corepack enable && corepack prepare pnpm@10.7.0 --activate
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ FROM node:20-slim AS builder
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@8.15.8 --activate
+RUN corepack enable && corepack prepare pnpm@10.7.0 --activate
 
 WORKDIR /app
 
@@ -35,7 +35,7 @@ FROM node:20-slim AS runner
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@8.15.8 --activate
+RUN corepack enable && corepack prepare pnpm@10.7.0 --activate
 
 WORKDIR /app
 
