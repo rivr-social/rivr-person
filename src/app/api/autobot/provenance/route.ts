@@ -10,6 +10,7 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const toolName = url.searchParams.get("toolName") ?? undefined;
+  const actorId = url.searchParams.get("actorId") ?? undefined;
   const actorType = url.searchParams.get("actorType") as
     | "human"
     | "persona"
@@ -23,12 +24,30 @@ export async function GET(request: Request) {
     ? Number(url.searchParams.get("limit"))
     : undefined;
 
+  const startDateRaw = url.searchParams.get("startDate");
+  const endDateRaw = url.searchParams.get("endDate");
+  const startDate = startDateRaw ? new Date(startDateRaw) : undefined;
+  const endDate = endDateRaw ? new Date(endDateRaw) : undefined;
+
   const entries = await getProvenanceLog({
     toolName,
+    actorId,
     actorType,
     resultStatus,
+    startDate,
+    endDate,
     limit,
   });
 
-  return NextResponse.json({ entries, count: entries.length });
+  // Collect distinct tool names for the filter dropdown when no toolName filter
+  // is active. This avoids a separate endpoint.
+  const distinctToolNames = Array.from(
+    new Set(entries.map((e) => e.toolName))
+  ).sort();
+
+  return NextResponse.json({
+    entries,
+    count: entries.length,
+    distinctToolNames,
+  });
 }

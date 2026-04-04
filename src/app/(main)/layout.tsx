@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Slash } from "lucide-react";
 import { BottomNav } from "@/components/bottom-nav";
 import { CommandBar } from "@/components/CommandBar";
+import { GpuStatusBadge } from "@/components/gpu-status-badge";
 import { usePathname } from "next/navigation";
 
 export default function MainLayout({
@@ -18,7 +19,7 @@ export default function MainLayout({
   const hideGlobalCommandLauncher = pathname.startsWith("/builder");
 
   return (
-    <div className="min-h-screen pb-16">
+    <div className={pathname.startsWith("/builder") ? "h-dvh flex flex-col overflow-hidden" : "min-h-screen pb-16"}>
       {children}
       {!hideGlobalCommandLauncher ? (
         <>
@@ -39,6 +40,7 @@ export default function MainLayout({
           />
         </>
       ) : null}
+      <GpuStatusBadge />
       <BottomNav />
     </div>
   );

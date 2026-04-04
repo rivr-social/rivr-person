@@ -24,7 +24,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { Drama, Edit2, Plus, Trash2, UserCheck, UserX } from "lucide-react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Bot, ChevronDown, Drama, Edit2, Plus, Trash2, UserCheck, UserX } from "lucide-react";
 import {
   createPersona,
   deletePersona,
@@ -32,6 +37,7 @@ import {
   switchActivePersona,
   updatePersona,
 } from "@/app/actions/personas";
+import { AutobotControlPane } from "@/components/autobot-control-pane";
 import type { SerializedAgent } from "@/lib/graph-serializers";
 
 interface PersonaFormState {
@@ -55,6 +61,9 @@ export function PersonaManager() {
   const [editingPersona, setEditingPersona] = useState<SerializedAgent | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState<PersonaFormState>(EMPTY_FORM);
+
+  // Autobot control pane expanded state (persona id -> boolean)
+  const [expandedPanes, setExpandedPanes] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -241,76 +250,117 @@ export function PersonaManager() {
                   typeof metadata.username === "string" ? metadata.username : null;
                 const bio = typeof metadata.bio === "string" ? metadata.bio : null;
                 const isActive = persona.id === activePersonaId;
+                const isAutobotEnabled = metadata.autobotEnabled === true;
+                const isPaneOpen = expandedPanes[persona.id] === true;
 
                 return (
-                  <div
+                  <Collapsible
                     key={persona.id}
-                    className={`flex items-center gap-3 rounded-md border p-3 transition-colors ${
-                      isActive ? "border-primary bg-primary/5" : "border-border"
-                    }`}
+                    open={isPaneOpen}
+                    onOpenChange={(open) =>
+                      setExpandedPanes((prev) => ({ ...prev, [persona.id]: open }))
+                    }
                   >
-                    <div className="relative">
-                      <Avatar className="h-10 w-10">
-                        <AvatarImage src={persona.image ?? undefined} alt={persona.name} />
-                        <AvatarFallback>
-                          {persona.name.substring(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      {isActive && (
-                        <div className="absolute -bottom-1 -right-1 rounded-full bg-primary p-0.5">
-                          <Drama className="h-3 w-3 text-primary-foreground" />
+                    <div
+                      className={`rounded-md border transition-colors ${
+                        isActive ? "border-primary bg-primary/5" : "border-border"
+                      }`}
+                    >
+                      {/* ── Persona identity row ── */}
+                      <div className="flex items-center gap-3 p-3">
+                        <div className="relative">
+                          <Avatar className="h-10 w-10">
+                            <AvatarImage src={persona.image ?? undefined} alt={persona.name} />
+                            <AvatarFallback>
+                              {persona.name.substring(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          {isActive && (
+                            <div className="absolute -bottom-1 -right-1 rounded-full bg-primary p-0.5">
+                              <Drama className="h-3 w-3 text-primary-foreground" />
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm truncate">{persona.name}</span>
-                        {username && (
-                          <span className="text-xs text-muted-foreground">@{username}</span>
-                        )}
-                        {isActive && (
-                          <Badge variant="default" className="text-xs">
-                            Active
-                          </Badge>
-                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-sm truncate">{persona.name}</span>
+                            {username && (
+                              <span className="text-xs text-muted-foreground">@{username}</span>
+                            )}
+                            {isActive && (
+                              <Badge variant="default" className="text-xs">
+                                Active
+                              </Badge>
+                            )}
+                            {isAutobotEnabled && (
+                              <Badge variant="secondary" className="text-xs gap-1">
+                                <Bot className="h-3 w-3" />
+                                Autobot
+                              </Badge>
+                            )}
+                          </div>
+                          {bio && (
+                            <p className="text-xs text-muted-foreground truncate">{bio}</p>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <CollapsibleTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title={isPaneOpen ? "Collapse autobot controls" : "Expand autobot controls"}
+                            >
+                              <ChevronDown
+                                className={`h-4 w-4 transition-transform ${
+                                  isPaneOpen ? "rotate-180" : ""
+                                }`}
+                              />
+                            </Button>
+                          </CollapsibleTrigger>
+                          {!isActive && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleSwitch(persona.id)}
+                              disabled={actionLoading}
+                              title="Switch to this persona"
+                            >
+                              <UserCheck className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openEdit(persona)}
+                            title="Edit persona"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setDeleteConfirmId(persona.id)}
+                            title="Delete persona"
+                            className="text-destructive hover:text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
-                      {bio && (
-                        <p className="text-xs text-muted-foreground truncate">{bio}</p>
-                      )}
-                    </div>
 
-                    <div className="flex items-center gap-1">
-                      {!isActive && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleSwitch(persona.id)}
-                          disabled={actionLoading}
-                          title="Switch to this persona"
-                        >
-                          <UserCheck className="h-4 w-4" />
-                        </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => openEdit(persona)}
-                        title="Edit persona"
-                      >
-                        <Edit2 className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setDeleteConfirmId(persona.id)}
-                        title="Delete persona"
-                        className="text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      {/* ── Autobot control pane (expandable) ── */}
+                      <CollapsibleContent>
+                        <div className="px-3 pb-3">
+                          <AutobotControlPane
+                            persona={persona}
+                            onSettingsChanged={refresh}
+                          />
+                        </div>
+                      </CollapsibleContent>
                     </div>
-                  </div>
+                  </Collapsible>
                 );
               })}
             </div>

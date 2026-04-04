@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Award, Calendar as CalendarIcon, Clock, Drama, Gift, Heart, MapPin, MessageSquare, Users } from "lucide-react";
+import { PersonaChatWidget } from "@/components/persona-chat-widget";
 import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/social-platform-icon";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 import { agentToEvent, agentToGroup, resourceToPost } from "@/lib/graph-adapters";
@@ -19,6 +20,8 @@ import { EventFeed } from "@/components/event-feed";
 import { ProfileGroupFeed } from "@/components/profile-group-feed";
 import { ThankModule } from "@/components/thank-module";
 import { AgentGraph } from "@/components/agent-graph";
+import { toggleFollowAgent } from "@/app/actions/interactions/social";
+import { useToast } from "@/components/ui/use-toast";
 import type { Group, User, Post } from "@/lib/types";
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
@@ -46,6 +49,36 @@ const DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS = [
   "connections",
 ] as const;
 type GraphEvent = ReturnType<typeof agentToEvent>;
+type HomeInstanceInfo = {
+  nodeId: string;
+  instanceType: string;
+  slug: string;
+  baseUrl: string;
+  isLocal: boolean;
+  migrationStatus: string;
+  publicKey?: string | null;
+};
+type ProfileFederationInfo = {
+  localInstanceId: string;
+  localInstanceType: string;
+  localInstanceSlug: string;
+  homeInstance: HomeInstanceInfo | null;
+  isHomeInstance: boolean;
+};
+type RemoteActorContext = {
+  actorId: string;
+  homeBaseUrl: string;
+  assertionType: "session" | "token" | "signed";
+  assertion: string;
+  issuedAt: string;
+  expiresAt: string;
+};
+type RemoteViewerAuthState = {
+  actor: RemoteActorContext;
+  sessionToken: string;
+  displayName?: string;
+  homeBaseUrl: string;
+};
 
 function getStableTimestamp(...values: Array<string | null | undefined>): string {
   for (const value of values) {
@@ -70,10 +103,16 @@ function getEventStart(event: Record<string, unknown>): string {
 export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) {
   const params = useParams<{ username: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
+  const { toast } = useToast();
   const targetUsername = agentId || params?.username || "";
   const { bundle, manifest, state, error, statusCode } = usePublicProfileModule(targetUsername);
   const [activeTab, setActiveTab] = useState<PublicProfileTab>("about");
+  const [remoteViewerAuth, setRemoteViewerAuth] = useState<RemoteViewerAuthState | null>(null);
+  const [remoteViewerError, setRemoteViewerError] = useState<string | null>(null);
+  const [connectPending, setConnectPending] = useState(false);
+  const [connectActive, setConnectActive] = useState(false);
 
   const visibleSectionIds = useMemo(
     () => new Set(manifest?.sections.map((section) => section.id) ?? DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS),
@@ -114,6 +153,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const userGroups = useMemo(() => groupAgents.map(agentToGroup), [groupAgents]);
   const profileResources = (profile?.resources as SerializedResource[]) ?? [];
   const profileActivity = profile?.recentActivity ?? [];
+  const federation = (bundle?.federation as ProfileFederationInfo | undefined) ?? null;
 
   const metadata = (agent?.metadata ?? {}) as Record<string, unknown>;
   const socialLinks = asRecord(metadata.socialLinks ?? metadata.social_links);
@@ -147,6 +187,13 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   );
   const profileSkills = profileUser.skills ?? [];
   const canGiveToProfileUser = Boolean(session?.user?.id && session.user.id !== profileUser.id);
+  const canConnectToProfileUser = Boolean(
+    profileUser.id &&
+      (
+        (session?.user?.id && session.user.id !== profileUser.id) ||
+        (remoteViewerAuth?.actor.actorId && remoteViewerAuth.actor.actorId !== profileUser.id)
+      ),
+  );
 
   const usersById = useMemo(() => {
     const map = new Map<string, User>();
@@ -309,6 +356,169 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
     { label: "Enneagram", value: profileUser.enneagram },
   ].filter((item) => item.value && item.value.length > 0);
 
+  useEffect(() => {
+    if (session?.user?.id) {
+      setRemoteViewerAuth(null);
+      setRemoteViewerError(null);
+      return;
+    }
+
+    const remoteActorId = searchParams.get("remoteActorId");
+    const remoteHomeBaseUrl = searchParams.get("remoteHomeBaseUrl");
+    const remoteAssertionType = searchParams.get("remoteAssertionType");
+    const remoteAssertion = searchParams.get("remoteAssertion");
+    const remoteIssuedAt = searchParams.get("remoteIssuedAt");
+    const remoteExpiresAt = searchParams.get("remoteExpiresAt");
+
+    if (
+      !remoteActorId ||
+      !remoteHomeBaseUrl ||
+      !remoteAssertionType ||
+      !remoteAssertion ||
+      !remoteIssuedAt ||
+      !remoteExpiresAt
+    ) {
+      return;
+    }
+
+    const actor: RemoteActorContext = {
+      actorId: remoteActorId,
+      homeBaseUrl: remoteHomeBaseUrl,
+      assertionType:
+        remoteAssertionType === "token" || remoteAssertionType === "signed"
+          ? remoteAssertionType
+          : "session",
+      assertion: remoteAssertion,
+      issuedAt: remoteIssuedAt,
+      expiresAt: remoteExpiresAt,
+    };
+
+    let cancelled = false;
+
+    async function bootstrapRemoteViewer() {
+      try {
+        const response = await fetch("/api/federation/remote-auth", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify(actor),
+        });
+
+        const json = (await response.json()) as {
+          success?: boolean;
+          error?: string;
+          sessionToken?: string;
+          homeBaseUrl?: string;
+          displayName?: string;
+        };
+
+        if (!response.ok || !json.success || !json.sessionToken) {
+          throw new Error(json.error || "Remote viewer authentication failed");
+        }
+
+        if (cancelled) return;
+
+        setRemoteViewerAuth({
+          actor,
+          sessionToken: json.sessionToken,
+          displayName: json.displayName,
+          homeBaseUrl: json.homeBaseUrl || actor.homeBaseUrl,
+        });
+        setRemoteViewerError(null);
+
+        if (typeof window !== "undefined") {
+          window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
+        }
+      } catch (bootstrapError) {
+        if (cancelled) return;
+        setRemoteViewerAuth(null);
+        setRemoteViewerError(
+          bootstrapError instanceof Error
+            ? bootstrapError.message
+            : "Remote viewer authentication failed",
+        );
+      }
+    }
+
+    void bootstrapRemoteViewer();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, session?.user?.id]);
+
+  const handleConnect = async () => {
+    if (!profileUser.id || connectPending) {
+      return;
+    }
+
+    setConnectPending(true);
+
+    try {
+      if (session?.user?.id) {
+        const result = await toggleFollowAgent(profileUser.id);
+        if (!result.success) {
+          throw new Error(result.message || "Failed to connect");
+        }
+
+        setConnectActive(Boolean(result.active));
+        toast({
+          title: result.active ? "Connected" : "Connection removed",
+          description: result.message,
+        });
+        return;
+      }
+
+      if (!remoteViewerAuth || !federation?.localInstanceId) {
+        throw new Error("Remote viewer session is not ready");
+      }
+
+      const response = await fetch("/api/federation/mutations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-Instance-Id": "remote-browser-viewer",
+          "X-Instance-Slug": "remote-browser-viewer",
+          "X-Remote-Viewer-Token": remoteViewerAuth.sessionToken,
+        },
+        body: JSON.stringify({
+          action: "connect",
+          actor: remoteViewerAuth.actor,
+          targetAgentId: profileUser.id,
+          targetInstanceNodeId: federation.localInstanceId,
+        }),
+      });
+
+      const json = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+        data?: { isNowConnected?: boolean; message?: string };
+      };
+
+      if (!response.ok || !json.success) {
+        throw new Error(json.error || "Failed to connect");
+      }
+
+      setConnectActive(Boolean(json.data?.isNowConnected));
+      toast({
+        title: json.data?.isNowConnected ? "Connected" : "Connection removed",
+        description: json.data?.message || "Interaction routed successfully.",
+      });
+    } catch (connectError) {
+      toast({
+        title: "Connect failed",
+        description:
+          connectError instanceof Error ? connectError.message : "Unable to route connect action.",
+        variant: "destructive",
+      });
+    } finally {
+      setConnectPending(false);
+    }
+  };
+
   if (state === "loading" || state === "idle") {
     return <div className="container max-w-5xl py-6 text-sm text-muted-foreground">Loading profile...</div>;
   }
@@ -354,6 +564,11 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
                 />
               </div>
               <div className="flex items-center gap-2">
+                {canConnectToProfileUser ? (
+                  <Button size="sm" variant={connectActive ? "default" : "outline"} onClick={() => void handleConnect()}>
+                    {connectPending ? "Connecting..." : connectActive ? "Connected" : "Connect"}
+                  </Button>
+                ) : null}
                 {canGiveToProfileUser ? (
                   <ThankModule
                     recipientId={profileUser.id}
@@ -385,6 +600,30 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
                   ) : null}
                 </div>
                 <p className="text-sm text-muted-foreground">@{profileUser.username}</p>
+                {remoteViewerAuth ? (
+                  <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">Remote Viewer</Badge>
+                      <Badge variant="outline">{new URL(remoteViewerAuth.homeBaseUrl).host}</Badge>
+                    </div>
+                    <p className="mt-2 text-muted-foreground">
+                      You are acting as{" "}
+                      <span className="font-medium text-foreground">
+                        {remoteViewerAuth.displayName || "a remote viewer"}
+                      </span>{" "}
+                      from{" "}
+                      <span className="font-medium text-foreground">
+                        {new URL(remoteViewerAuth.homeBaseUrl).host}
+                      </span>
+                      .
+                    </p>
+                  </div>
+                ) : null}
+                {remoteViewerError ? (
+                  <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                    {remoteViewerError}
+                  </div>
+                ) : null}
                 {Object.entries(socialLinks).length > 0 ? (
                   <div className="flex flex-wrap items-center gap-3 text-xs">
                     {Object.entries(socialLinks).map(([key, value]) => (
@@ -639,6 +878,15 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
           </div>
         ) : null}
       </div>
+
+      {/* Persona chat widget — shown when the viewed profile has autobotEnabled */}
+      {metadata.autobotEnabled ? (
+        <PersonaChatWidget
+          username={profileUser.username}
+          personaName={profileUser.name}
+          personaImage={profileUser.avatar !== "/placeholder-user.jpg" ? profileUser.avatar : null}
+        />
+      ) : null}
     </div>
   );
 }

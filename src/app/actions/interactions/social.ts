@@ -31,8 +31,8 @@ export async function toggleFollowAgent(agentId: string): Promise<ActionResult> 
     {
       type: "toggleFollowAgent",
       actorId: userId,
-      targetAgentId: userId,
-      payload: {},
+      targetAgentId: agentId,
+      payload: { agentId },
     },
     async () => {
       const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);

@@ -72,10 +72,13 @@ export type Document = {
   updatedAt: string
   createdBy: string
   groupId: string
+  /** Owner user ID for personal documents (when not group-scoped). */
+  ownerId?: string
   tags?: string[]
   category?: string
   showOnAbout?: boolean
 }
+
 
 // ─── User Badge Types (from mock-user-badges) ──────────────────────────────
 

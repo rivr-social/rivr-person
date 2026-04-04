@@ -39,8 +39,10 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { VoiceRecorder } from "@/components/voice-recorder";
+// VoiceRecorder is available for event/vidchat transcription via WhisperX
+// Chat input uses native SpeechRecognition for low-latency voice input
 import { VoiceCloneUpload } from "@/components/voice-clone-upload";
+import { DigitalTwinPreview } from "@/components/digital-twin-preview";
 import Link from "next/link";
 import type {
   DigitalTwinAssetKind,
@@ -49,15 +51,19 @@ import type {
   VoiceSample,
 } from "@/lib/autobot-user-settings";
 
+type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
+type SpeechRecognitionResultList = ArrayLike<SpeechRecognitionResult> & { length: number };
+
 type BrowserSpeechRecognition = {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onresult: ((event: { results: SpeechRecognitionResultList; resultIndex: number }) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
+  abort: () => void;
 };
 
 type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
@@ -247,13 +253,16 @@ function getParamLabel(toolName: string, paramKey: string): string {
 }
 
 const MODEL_OPTIONS = [
+  { value: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet", provider: "Anthropic" },
   { value: "openai/gpt-4o-mini", label: "GPT-4o Mini", provider: "OpenAI" },
   { value: "openai/gpt-4o", label: "GPT-4o", provider: "OpenAI" },
-  { value: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet", provider: "Anthropic" },
-  { value: "local/ollama", label: "Ollama (Local)", provider: "Local" },
+  { value: "local/ollama", label: "Ollama (Default)", provider: "Local" },
+  { value: "local/llama3.2", label: "Llama 3.2", provider: "Local" },
+  { value: "local/mistral", label: "Mistral", provider: "Local" },
+  { value: "local/codellama", label: "Code Llama", provider: "Local" },
 ] as const;
 
-const DEFAULT_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -922,6 +931,8 @@ export default function AutobotChatPage() {
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>("unknown");
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [micPermissionDenied, setMicPermissionDenied] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
 
   // Refs
   const scrollEndRef = useRef<HTMLDivElement>(null);
@@ -929,6 +940,8 @@ export default function AutobotChatPage() {
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const currentAudioUrlRef = useRef<string | null>(null);
+  const isSpeakingRef = useRef(isSpeaking);
+  const isListeningRef = useRef(isListening);
   const gpuHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -937,6 +950,10 @@ export default function AutobotChatPage() {
 
   const activeThread = threads.find((t) => t.id === activeThreadId) || null;
   const messages = activeThread?.messages || [];
+
+  // Keep refs in sync with state for use inside recognition callbacks
+  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
   // ---------------------------------------------------------------------------
   // Load persisted state on mount
@@ -1221,8 +1238,8 @@ export default function AutobotChatPage() {
             v.name.toLowerCase().includes("male")),
       ) || voices.find((v) => v.lang.startsWith("en-US"));
     if (preferred) utterance.voice = preferred;
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.onend = () => { setIsSpeaking(false); setVoiceStatus(null); };
+    utterance.onerror = () => { setIsSpeaking(false); setVoiceStatus(null); };
     synth.speak(utterance);
   }, []);
 
@@ -1233,26 +1250,39 @@ export default function AutobotChatPage() {
 
       try {
         if (voiceMode === "browser") {
+          setVoiceStatus("Speaking (browser voice)");
           speakBrowserFallback(text);
           return;
         }
 
+        setVoiceStatus("Personal voice initiating…");
         const chunks = chunkTextForSpeech(stripMarkdownForSpeech(text));
         let remoteSucceeded = false;
+        let failureReason = "";
 
-        for (const chunk of chunks) {
+        for (let i = 0; i < chunks.length; i++) {
+          if (i === 0) {
+            setVoiceStatus("Personal voice initiating…");
+          } else {
+            setVoiceStatus("Speaking (personal voice)");
+          }
+
           const res = await fetch(TTS_API_ENDPOINT, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: chunk }),
+            body: JSON.stringify({ text: chunks[i] }),
           });
 
-          if (!res.ok) break;
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            failureReason = errData.error || `TTS returned ${res.status}`;
+            break;
+          }
 
           const contentType = res.headers.get("content-type") || "";
           if (!contentType.startsWith("audio/")) {
             const data = await res.json();
-            if (data.fallback) break;
+            failureReason = data.error || "GPU not ready — no audio returned";
             break;
           }
 
@@ -1262,11 +1292,15 @@ export default function AutobotChatPage() {
         }
 
         if (!remoteSucceeded) {
+          setVoiceStatus(`Personal voice unavailable: ${failureReason || "connection failed"}. Using browser voice.`);
           speakBrowserFallback(text);
         } else {
           setIsSpeaking(false);
+          setVoiceStatus(null);
         }
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "connection failed";
+        setVoiceStatus(`Personal voice error: ${msg}. Using browser voice.`);
         speakBrowserFallback(text);
       }
     },
@@ -1304,28 +1338,50 @@ export default function AutobotChatPage() {
     }
 
     const recognition = new SpeechRecognitionCtor();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
 
-    recognition.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => {
-      const transcript = event.results[0]?.[0]?.transcript;
-      if (transcript?.trim()) {
-        setIsListening(false);
-        // We call sendMessage indirectly by setting inputValue and triggering send
-        setInputValue(transcript.trim());
-        // Auto-send after a brief frame
-        requestAnimationFrame(() => {
-          document
-            .getElementById("autobot-send-btn")
-            ?.click();
-        });
+    recognition.onresult = (event: { results: SpeechRecognitionResultList; resultIndex: number }) => {
+      // Process only final results for sending
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result?.isFinal) {
+          const transcript = result[0]?.transcript;
+          if (transcript?.trim()) {
+            // If the bot is speaking, interrupt it first
+            if (isSpeakingRef.current) {
+              window.speechSynthesis?.cancel();
+              cleanupCurrentAudio();
+              setIsSpeaking(false);
+            }
+            // Set input and auto-send via the send button
+            setInputValue(transcript.trim());
+            requestAnimationFrame(() => {
+              document.getElementById("autobot-send-btn")?.click();
+            });
+          }
+        }
       }
     };
 
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => {
+      setIsListening(false);
+    };
+    // In continuous mode, restart if it ends unexpectedly while still "listening"
+    recognition.onend = () => {
+      // Only restart if we haven't explicitly stopped
+      if (isListeningRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          setIsListening(false);
+        }
+      } else {
+        setIsListening(false);
+      }
+    };
 
     try {
       recognition.start();
@@ -1333,7 +1389,7 @@ export default function AutobotChatPage() {
     } catch {
       setIsListening(false);
     }
-  }, []);
+  }, [cleanupCurrentAudio]);
 
   const toggleListening = useCallback(() => {
     if (isSpeaking) {
@@ -1507,35 +1563,17 @@ export default function AutobotChatPage() {
     [inputValue, sendMessage],
   );
 
-  // Voice transcription callback (from VoiceRecorder component)
-  const handleTranscription = useCallback(
-    (text: string) => {
-      sendMessage(text);
-    },
-    [sendMessage],
-  );
-
-  const handleTranscriptionError = useCallback(
-    (error: string) => {
-      if (!activeThreadId) return;
-      const errorMsg: ChatMessage = {
-        id: `msg_${generateId()}`,
-        role: "assistant",
-        content: `Voice transcription error: ${error}`,
-        timestamp: new Date().toISOString(),
-      };
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.id !== activeThreadId) return t;
-          return {
-            ...t,
-            messages: [...t.messages, errorMsg],
-          };
-        }),
-      );
-    },
-    [activeThreadId],
-  );
+  const handleRetryMicPermission = useCallback(async () => {
+    setMicPermissionDenied(false);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      // Permission granted — try listening again
+      startListening();
+    } catch {
+      setMicPermissionDenied(true);
+    }
+  }, [startListening]);
 
   // ---------------------------------------------------------------------------
   // Settings handlers
@@ -1750,7 +1788,7 @@ export default function AutobotChatPage() {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] max-w-3xl mx-auto">
+    <div className="fixed inset-x-0 top-16 bottom-16 flex flex-col max-w-3xl mx-auto overflow-hidden z-50">
       {/* Header */}
       <div className="shrink-0 px-4 py-3 border-b flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -2200,37 +2238,12 @@ export default function AutobotChatPage() {
               </Button>
             </div>
 
-            <div className="grid gap-2">
-              {digitalTwin.jobs.slice(0, 4).map((job) => (
-                <Card key={job.id} className="bg-muted/30">
-                  <CardContent className="px-3 py-2 text-[10px]">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">{job.mode}</span>
-                      <Badge variant="outline" className="text-[9px] py-0 h-4">
-                        {job.status}
-                      </Badge>
-                    </div>
-                    <div className="text-muted-foreground line-clamp-2">{job.sourceText}</div>
-                    <div className="mt-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-[10px]"
-                        disabled={digitalTwinRunningJobId === job.id}
-                        onClick={() => void handleRunDigitalTwinJob(job.id, job.sourceText, job.mode)}
-                      >
-                        {digitalTwinRunningJobId === job.id ? "Running..." : "Run on worker"}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-              {digitalTwin.jobs.length === 0 && (
-                <p className="text-[10px] text-muted-foreground">
-                  No digital twin jobs queued yet.
-                </p>
-              )}
-            </div>
+            <DigitalTwinPreview
+              jobs={digitalTwin.jobs}
+              onJobsChange={(updatedJobs) =>
+                setDigitalTwin((prev) => ({ ...prev, jobs: updatedJobs }))
+              }
+            />
           </div>
         </div>
       )}
@@ -2301,14 +2314,84 @@ export default function AutobotChatPage() {
         </div>
       )}
 
+      {/* Voice status indicator */}
+      {voiceStatus && (
+        <div className="shrink-0 mx-4 mb-2 flex items-center gap-2 rounded-lg border border-border/50 bg-muted/50 px-3 py-2">
+          {isSpeaking && voiceStatus.startsWith("Personal voice") && !voiceStatus.includes("unavailable") && !voiceStatus.includes("error") ? (
+            <Volume2 className="h-4 w-4 shrink-0 text-emerald-400 animate-pulse" />
+          ) : voiceStatus.includes("unavailable") || voiceStatus.includes("error") ? (
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />
+          ) : (
+            <Loader2 className="h-4 w-4 shrink-0 text-muted-foreground animate-spin" />
+          )}
+          <span className="text-xs text-muted-foreground">{voiceStatus}</span>
+          {(voiceStatus.includes("unavailable") || voiceStatus.includes("error")) && (
+            <button
+              type="button"
+              className="ml-auto shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => setVoiceStatus(null)}
+              aria-label="Dismiss"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Microphone permission banner */}
+      {micPermissionDenied && (
+        <div className="shrink-0 mx-4 mb-2 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <MicOff className="h-5 w-5 shrink-0 text-amber-500" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium text-amber-200">Microphone access denied</p>
+            <p className="text-muted-foreground text-xs mt-0.5">
+              Allow microphone access in your browser to use voice input.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0 border-amber-500/40 text-amber-200 hover:bg-amber-500/20"
+            onClick={handleRetryMicPermission}
+          >
+            <Mic className="h-3.5 w-3.5 mr-1.5" />
+            Grant Access
+          </Button>
+          <button
+            type="button"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={() => setMicPermissionDenied(false)}
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Input area */}
-      <div className="shrink-0 border-t bg-background px-4 py-3 mb-14">
+      <div className="shrink-0 border-t bg-background px-4 py-3">
         <div className="flex items-end gap-2">
-          <VoiceRecorder
-            onTranscription={handleTranscription}
-            onError={handleTranscriptionError}
+          <Button
+            type="button"
+            variant={isListening ? "destructive" : "outline"}
+            size="icon"
+            onClick={toggleListening}
             disabled={isInputDisabled}
-          />
+            className="relative shrink-0"
+            aria-label={isListening ? "Stop listening" : "Start listening"}
+          >
+            {isListening ? (
+              <>
+                <Square className="h-3.5 w-3.5" />
+                <span className="absolute -top-1 -right-1 h-3 w-3">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
+                </span>
+              </>
+            ) : (
+              <Mic className="h-4 w-4" />
+            )}
+          </Button>
 
           <div className="flex-1 relative">
             <textarea

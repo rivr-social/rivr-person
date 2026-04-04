@@ -44,6 +44,10 @@ export type DigitalTwinJob = {
   sourceType: "script" | "transcript";
   sourceText: string;
   status: DigitalTwinJobStatus;
+  workerJobId?: string;
+  videoUrl?: string;
+  outputPath?: string;
+  errorDetail?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -197,7 +201,23 @@ function sanitizeDigitalTwinJob(input: unknown): DigitalTwinJob | null {
   if (!id || !mode || !sourceType || !sourceText || !status || !createdAt || !updatedAt) {
     return null;
   }
-  return { id, mode, sourceType, sourceText, status, createdAt, updatedAt };
+  const workerJobId =
+    typeof input.workerJobId === "string" && input.workerJobId.trim()
+      ? input.workerJobId.trim()
+      : undefined;
+  const videoUrl =
+    typeof input.videoUrl === "string" && input.videoUrl.trim()
+      ? input.videoUrl.trim()
+      : undefined;
+  const outputPath =
+    typeof input.outputPath === "string" && input.outputPath.trim()
+      ? input.outputPath.trim()
+      : undefined;
+  const errorDetail =
+    typeof input.errorDetail === "string" && input.errorDetail.trim()
+      ? input.errorDetail.trim()
+      : undefined;
+  return { id, mode, sourceType, sourceText, status, createdAt, updatedAt, workerJobId, videoUrl, outputPath, errorDetail };
 }
 
 function sanitizeDigitalTwinProfile(input: unknown): DigitalTwinProfile {

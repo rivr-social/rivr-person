@@ -646,7 +646,7 @@ export default function BuilderPage() {
 
   if (moduleState === "loading" || moduleState === "idle") {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-4rem)]">
+      <div className="flex items-center justify-center h-[calc(100dvh-4rem)]">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">Loading your profile data...</p>
@@ -657,7 +657,7 @@ export default function BuilderPage() {
 
   if (moduleState === "error") {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-4rem)]">
+      <div className="flex items-center justify-center h-[calc(100dvh-4rem)]">
         <Card className="max-w-md">
           <CardContent className="py-8 text-center">
             <XCircle className="h-8 w-8 text-destructive mx-auto mb-3" />
@@ -675,7 +675,7 @@ export default function BuilderPage() {
   // -------------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex flex-col h-[calc(100dvh-4rem)] overflow-hidden">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b bg-background/95 backdrop-blur">
         <div className="flex items-center gap-3">

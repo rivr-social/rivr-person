@@ -6,7 +6,7 @@ import {
 } from "@/lib/transcription";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -39,6 +39,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       text: transcription.text,
+      segments: transcription.segments ?? [],
+      language: transcription.language ?? null,
       provider: transcription.provider,
     });
   } catch (error) {

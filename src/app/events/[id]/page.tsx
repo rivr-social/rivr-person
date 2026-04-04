@@ -321,6 +321,30 @@ export default async function EventDetailPage({ params }: { params: Promise<{ id
               </div>
             </div>
           ) : null}
+
+          <div className="bg-background rounded-lg border p-4 space-y-3">
+            <div>
+              <p className="text-sm text-muted-foreground">Sessions</p>
+              <p className="text-lg font-semibold">{event.sessions?.length ?? 0}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Hosts</p>
+              <p className="text-lg font-semibold">{event.hosts?.length ?? 0}</p>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">Project</p>
+              {event.projectId ? (
+                <Link href={`/projects/${event.projectId}`} className="text-sm font-medium hover:underline">
+                  Open linked project
+                </Link>
+              ) : (
+                <p className="text-sm text-muted-foreground">No linked project</p>
+              )}
+            </div>
+            <Link href={`/events/${event.id}/financials`} className="text-sm font-medium hover:underline">
+              Open financials
+            </Link>
+          </div>
         </div>
 
         {/* ================================================================
@@ -396,6 +420,12 @@ export default async function EventDetailPage({ params }: { params: Promise<{ id
             rsvpCount={rsvpCount}
             attendees={attendees}
             ownerId={ownerId}
+            sessionCount={event.sessions?.length ?? 0}
+            hostCount={event.hosts?.length ?? 0}
+            projectId={event.projectId ?? null}
+            revenueCents={event.financialSummary?.revenueCents ?? 0}
+            payoutTotalCents={event.financialSummary?.payoutsCents ?? 0}
+            remainingCents={event.financialSummary?.remainingCents ?? 0}
           />
         </div>
       </div>

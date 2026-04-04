@@ -280,6 +280,103 @@ export function agentToEvent(agent: SerializedAgent) {
     meta.chapterTags,
     toStringArray(meta.tags, agent.pathIds ?? [])
   );
+  const sessions = Array.isArray(meta.sessions)
+    ? meta.sessions
+        .filter((session): session is Record<string, unknown> => Boolean(session && typeof session === "object"))
+        .map((session, index) => ({
+          id: typeof session.id === "string" ? session.id : `${agent.id}-session-${index + 1}`,
+          title: typeof session.title === "string" ? session.title : `Session ${index + 1}`,
+          description: typeof session.description === "string" ? session.description : undefined,
+          start: typeof session.start === "string" ? session.start : (meta.startDate as string) ?? agent.createdAt,
+          end: typeof session.end === "string" ? session.end : (meta.endDate as string) ?? agent.createdAt,
+          location:
+            typeof session.location === "string"
+              ? { name: session.location, address: session.location }
+              : session.location && typeof session.location === "object"
+                ? {
+                    name: String((session.location as Record<string, unknown>).name ?? ""),
+                    address: typeof (session.location as Record<string, unknown>).address === "string"
+                      ? String((session.location as Record<string, unknown>).address)
+                      : undefined,
+                  }
+                : undefined,
+          venueId: typeof session.venueId === "string" ? session.venueId : undefined,
+          capacity: typeof session.capacity === "number" ? session.capacity : undefined,
+          status: typeof session.status === "string" ? session.status : undefined,
+          hostAgentIds: toStringArray(session.hostAgentIds),
+          jobIds: toStringArray(session.jobIds),
+          taskIds: toStringArray(session.taskIds),
+        }))
+    : [];
+  const hosts = Array.isArray(meta.hosts)
+    ? meta.hosts
+        .filter((host): host is Record<string, unknown> => Boolean(host && typeof host === "object"))
+        .map((host) => ({
+          agentId: typeof host.agentId === "string" ? host.agentId : "",
+          displayName: typeof host.displayName === "string" ? host.displayName : undefined,
+          role: typeof host.role === "string" ? host.role : undefined,
+          isLead: host.isLead === true,
+          payoutShareBps: typeof host.payoutShareBps === "number" ? host.payoutShareBps : undefined,
+          payoutFixedCents: typeof host.payoutFixedCents === "number" ? host.payoutFixedCents : undefined,
+          payoutEligible: typeof host.payoutEligible === "boolean" ? host.payoutEligible : undefined,
+        }))
+        .filter((host) => host.agentId.length > 0)
+    : [];
+  const payouts = Array.isArray(meta.payouts)
+    ? meta.payouts
+        .filter((payout): payout is Record<string, unknown> => Boolean(payout && typeof payout === "object"))
+        .map((payout, index) => ({
+          id: typeof payout.id === "string" ? payout.id : `${agent.id}-payout-${index + 1}`,
+          recipientAgentId: typeof payout.recipientAgentId === "string" ? payout.recipientAgentId : "",
+          label: typeof payout.label === "string" ? payout.label : undefined,
+          role: typeof payout.role === "string" ? payout.role : undefined,
+          shareBps: typeof payout.shareBps === "number" ? payout.shareBps : undefined,
+          fixedCents: typeof payout.fixedCents === "number" ? payout.fixedCents : undefined,
+          currency: typeof payout.currency === "string" ? payout.currency : undefined,
+          status: typeof payout.status === "string" ? payout.status : undefined,
+        }))
+        .filter((payout) => payout.recipientAgentId.length > 0)
+    : [];
+  const expenses = Array.isArray(meta.expenses)
+    ? meta.expenses
+        .filter((expense): expense is Record<string, unknown> => Boolean(expense && typeof expense === "object"))
+        .map((expense, index) => ({
+          id: typeof expense.id === "string" ? expense.id : `${agent.id}-expense-${index + 1}`,
+          recipient: typeof expense.recipient === "string" ? expense.recipient : "",
+          description: typeof expense.description === "string" ? expense.description : "",
+          amountCents: typeof expense.amountCents === "number"
+            ? expense.amountCents
+            : typeof expense.amount === "number"
+              ? Math.round(expense.amount * 100)
+              : 0,
+          status: typeof expense.status === "string" ? expense.status : undefined,
+        }))
+        .filter((expense) => expense.recipient.length > 0 || expense.description.length > 0 || expense.amountCents > 0)
+    : [];
+  const financialSummary = meta.financialSummary && typeof meta.financialSummary === "object"
+    ? {
+        revenueCents: typeof (meta.financialSummary as Record<string, unknown>).revenueCents === "number" ? (meta.financialSummary as Record<string, unknown>).revenueCents as number : undefined,
+        expensesCents: typeof (meta.financialSummary as Record<string, unknown>).expensesCents === "number" ? (meta.financialSummary as Record<string, unknown>).expensesCents as number : undefined,
+        payoutsCents: typeof (meta.financialSummary as Record<string, unknown>).payoutsCents === "number" ? (meta.financialSummary as Record<string, unknown>).payoutsCents as number : undefined,
+        profitCents: typeof (meta.financialSummary as Record<string, unknown>).profitCents === "number" ? (meta.financialSummary as Record<string, unknown>).profitCents as number : undefined,
+        remainingCents: typeof (meta.financialSummary as Record<string, unknown>).remainingCents === "number" ? (meta.financialSummary as Record<string, unknown>).remainingCents as number : undefined,
+        currency: typeof (meta.financialSummary as Record<string, unknown>).currency === "string" ? (meta.financialSummary as Record<string, unknown>).currency as string : undefined,
+      }
+    : undefined;
+  const workItems = Array.isArray(meta.workItems)
+    ? meta.workItems
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+        .map((item) => ({
+          resourceId: typeof item.resourceId === "string" ? item.resourceId : "",
+          kind: item.kind === "project" || item.kind === "job" || item.kind === "task" ? item.kind : "task",
+          title: typeof item.title === "string" ? item.title : undefined,
+          projectId: typeof item.projectId === "string" ? item.projectId : undefined,
+          eventId: typeof item.eventId === "string" ? item.eventId : undefined,
+          sessionId: typeof item.sessionId === "string" ? item.sessionId : undefined,
+          status: typeof item.status === "string" ? item.status : undefined,
+        }))
+        .filter((item) => item.resourceId.length > 0)
+    : [];
 
   return {
     id: agent.id,
@@ -304,11 +401,18 @@ export function agentToEvent(agent: SerializedAgent) {
           }
       : undefined,
     admins: (meta.adminIds as string[]) ?? [],
+    hosts,
+    sessions,
+    expenses,
+    payouts,
+    workItems,
+    financialSummary,
     chapterTags: scopeTags,
     tags: toStringArray(meta.tags),
     attendees: (meta.attendeeCount as number) ?? 0,
     price: (meta.price as string) ?? undefined,
     status: (meta.status as string) ?? "active",
+    projectId: (meta.projectId as string) ?? (meta.managingProjectId as string) ?? undefined,
   };
 }
 

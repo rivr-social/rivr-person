@@ -399,3 +399,76 @@ export async function getActivePersonaInfo(): Promise<{
     persona: serializeAgent(persona),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Autobot control-pane metadata types and constants
+// ---------------------------------------------------------------------------
+
+/** Valid autobot control modes for a persona. */
+export type AutobotControlMode = 'direct-only' | 'approval-required' | 'delegated';
+
+const VALID_CONTROL_MODES: readonly AutobotControlMode[] = [
+  'direct-only',
+  'approval-required',
+  'delegated',
+] as const;
+
+/**
+ * Updates autobot-specific metadata fields on a persona.
+ *
+ * Stores `autobotEnabled` and `autobotControlMode` in the persona's
+ * `agents.metadata` JSON column alongside existing profile fields.
+ */
+export async function updatePersonaAutobotSettings(input: {
+  personaId: string;
+  autobotEnabled?: boolean;
+  autobotControlMode?: AutobotControlMode;
+}): Promise<{ success: boolean; error?: string }> {
+  const userId = await requireUserId();
+
+  if (!input.personaId || !UUID_RE.test(input.personaId)) {
+    return { success: false, error: 'Invalid persona ID.' };
+  }
+
+  // Verify ownership
+  const [persona] = await db
+    .select({ id: agents.id, metadata: agents.metadata })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, input.personaId),
+        eq(agents.parentAgentId, userId),
+        isNull(agents.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  if (!persona) {
+    return { success: false, error: 'Persona not found or not owned by you.' };
+  }
+
+  const metadataUpdates: Record<string, unknown> = {
+    ...((persona.metadata ?? {}) as Record<string, unknown>),
+  };
+
+  if (input.autobotEnabled !== undefined) {
+    metadataUpdates.autobotEnabled = Boolean(input.autobotEnabled);
+  }
+
+  if (input.autobotControlMode !== undefined) {
+    if (!VALID_CONTROL_MODES.includes(input.autobotControlMode)) {
+      return { success: false, error: 'Invalid control mode.' };
+    }
+    metadataUpdates.autobotControlMode = input.autobotControlMode;
+  }
+
+  await db
+    .update(agents)
+    .set({
+      metadata: metadataUpdates,
+      updatedAt: new Date(),
+    } as Partial<typeof agents.$inferInsert>)
+    .where(eq(agents.id, input.personaId));
+
+  return { success: true };
+}

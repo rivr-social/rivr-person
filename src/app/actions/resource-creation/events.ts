@@ -19,6 +19,7 @@ import {
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/index";
 import type { ActionResult, EventTicketInput, NormalizedEventTicket } from "./types";
 import { normalizeEventTickets } from "./types";
+import type { EventHost, EventPayout, EventSession, EventWorkItem } from "@/types";
 
 const MAX_EVENT_DESCRIPTION_LENGTH = 50000;
 
@@ -176,6 +177,18 @@ export async function createEventResource(input: {
   capitalValues?: Record<string, number>;
   auditValues?: Record<string, number>;
   ticketTypes?: EventTicketInput[];
+  hosts?: EventHost[];
+  sessions?: EventSession[];
+  payouts?: EventPayout[];
+  financialSummary?: {
+    revenueCents?: number;
+    expensesCents?: number;
+    payoutsCents?: number;
+    profitCents?: number;
+    remainingCents?: number;
+    currency?: string;
+  };
+  workItems?: EventWorkItem[];
 }): Promise<ActionResult> {
   if (!input.title?.trim() || !input.description?.trim() || !input.date || !input.time || !input.location?.trim()) {
     return {
@@ -309,6 +322,7 @@ export async function createEventResource(input: {
           price: normalizedTickets[0]?.priceCents ? normalizedTickets[0].priceCents / 100 : input.price ?? null,
           groupId: input.groupId ?? (ownerId !== resolvedUserId ? ownerId : null),
           projectId: input.projectId ?? null,
+          managingProjectId: input.projectId ?? null,
           venueId: input.venueId ?? null,
           venueStartTime: input.venueStartTime ?? null,
           venueEndTime: input.venueEndTime ?? null,
@@ -320,6 +334,18 @@ export async function createEventResource(input: {
             quantity: ticket.quantity,
             priceCents: ticket.priceCents,
           })),
+          hosts: input.hosts ?? [],
+          hostIds: (input.hosts ?? []).map((host) => host.agentId).filter(Boolean),
+          sessions: input.sessions ?? [],
+          payouts: input.payouts ?? [],
+          financialSummary: input.financialSummary ?? undefined,
+          workItems: input.workItems ?? [],
+          linkedJobIds: (input.workItems ?? [])
+            .filter((item) => item.kind === "job")
+            .map((item) => item.resourceId),
+          linkedTaskIds: (input.workItems ?? [])
+            .filter((item) => item.kind === "task")
+            .map((item) => item.resourceId),
           isGlobal,
           scopedLocaleIds: input.scopedLocaleIds ?? [],
           scopedGroupIds: input.scopedGroupIds ?? [],

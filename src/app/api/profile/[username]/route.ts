@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { fetchProfileData, fetchUserEvents, fetchUserGroups, fetchUserPosts } from "@/app/actions/graph";
 import { PUBLIC_PROFILE_MODULE_ID, resolvePublicProfileAgent } from "@/lib/bespoke/modules/public-profile";
+import type { CanonicalProfileRef, HomeAuthorityRef } from "@/lib/federation/cross-instance-types";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 
@@ -33,6 +34,32 @@ export async function GET(
     ]);
 
     const config = getInstanceConfig();
+    const canonicalUrl = `${homeInstance?.baseUrl ?? config.baseUrl}/profile/${encodeURIComponent(username)}`;
+    const homeAuthority: HomeAuthorityRef | null = homeInstance
+      ? {
+          homeBaseUrl: homeInstance.baseUrl,
+          homeAgentId: agent.id,
+          homeInstanceType: homeInstance.instanceType as HomeAuthorityRef["homeInstanceType"],
+          globalIndexAgentId: homeInstance.nodeId === config.instanceId ? undefined : agent.id,
+          manifestUrl: `${homeInstance.baseUrl}/api/profile/${encodeURIComponent(username)}/manifest`,
+          canonicalProfileUrl: canonicalUrl,
+        }
+      : null;
+    const canonicalProfile: CanonicalProfileRef | null = homeAuthority
+      ? {
+          agentId: agent.id,
+          displayName: agent.name || profile?.agent.name || username,
+          username,
+          avatarUrl: agent.image ?? profile?.agent.image ?? undefined,
+          homeAuthority,
+          isLocallyHomed: homeInstance?.nodeId === config.instanceId,
+          canonicalUrl,
+          globalIndexUrl:
+            homeInstance?.nodeId === config.instanceId
+              ? undefined
+              : `${config.baseUrl}/profile/${encodeURIComponent(username)}`,
+        }
+      : null;
 
     return NextResponse.json(
       {
@@ -54,6 +81,8 @@ export async function GET(
           localInstanceType: config.instanceType,
           localInstanceSlug: config.instanceSlug,
           homeInstance,
+          homeAuthority,
+          canonicalProfile,
           isHomeInstance: homeInstance ? homeInstance.nodeId === config.instanceId : true,
         },
       },

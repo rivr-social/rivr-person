@@ -1,14 +1,18 @@
 "use client"
 
 /**
- * Documents Tab container for the group workspace document feature.
+ * Documents Tab container for the document feature.
  *
  * Used in:
  * - Group detail page/tab where users browse and open documents tied to a specific group.
+ * - Profile page/tab where users browse and manage personal documents.
  *
  * Key props:
- * - `groupId`: Identifier used to scope the document list to a single group.
- * - `documents`: Pre-fetched documents for the group (from server component parent).
+ * - `groupId`: (optional) Identifier used to scope the document list to a single group.
+ * - `ownerId`: (optional) Identifier used to scope the document list to a user's personal docs.
+ * - `documents`: Pre-fetched documents (from server component parent or client fetch).
+ *
+ * Supply either `groupId` (group documents) or `ownerId` (personal documents), not both.
  */
 import { useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -16,35 +20,39 @@ import type { Document } from "@/types/domain"
 import { DocumentList } from "./document-list"
 import { EmptyState } from "./empty-state"
 import { FileText } from "lucide-react"
-import { createDocumentResourceAction } from "@/app/actions/create-resources"
+import { createDocumentResourceAction, createPersonalDocumentAction } from "@/app/actions/create-resources"
 import { useToast } from "@/components/ui/use-toast"
 
 interface DocumentsTabProps {
-  groupId: string
+  /** Group identifier for group-scoped documents. */
+  groupId?: string
+  /** User agent identifier for personal documents. */
+  ownerId?: string
   documents: Document[]
   docsPath: string
 }
 
 /**
- * Controls document list vs. document detail rendering for a group.
+ * Controls document list vs. document detail rendering for a group or user.
  *
  * @param props Component props.
- * @param props.groupId Group identifier used to filter documents.
- * @param props.documents Pre-fetched document array for the group.
+ * @param props.groupId Group identifier used to filter group documents.
+ * @param props.ownerId User identifier used for personal documents.
+ * @param props.documents Pre-fetched document array.
  * @returns Empty state, document list, or selected document viewer depending on current state/data.
  */
-export function DocumentsTab({ groupId, documents, docsPath }: DocumentsTabProps) {
+export function DocumentsTab({ groupId, ownerId, documents, docsPath }: DocumentsTabProps) {
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
+  const isPersonal = !groupId && !!ownerId
 
   const handleCreateDocument = () => {
     startTransition(async () => {
-      const result = await createDocumentResourceAction({
-        groupId,
-        title: "New Document",
-        content: "",
-      })
+      const result = isPersonal
+        ? await createPersonalDocumentAction({ title: "New Document", content: "" })
+        : await createDocumentResourceAction({ groupId: groupId!, title: "New Document", content: "" })
+
       if (result.success && result.resourceId) {
         toast({ title: "Document created", description: "Your new document is ready." })
         router.push(`${docsPath}?doc=${result.resourceId}`)
@@ -54,15 +62,21 @@ export function DocumentsTab({ groupId, documents, docsPath }: DocumentsTabProps
     })
   }
 
-  // Data derivation: filters to only documents that belong to the active group.
-  const groupDocuments = documents.filter(doc => doc.groupId === groupId)
+  // Data derivation: filters to only documents that belong to the active scope.
+  const scopedDocuments = isPersonal
+    ? documents.filter(doc => doc.ownerId === ownerId)
+    : documents.filter(doc => doc.groupId === groupId)
 
-  // Conditional rendering: show empty state when no documents exist for the provided group.
-  if (groupDocuments.length === 0) {
+  const emptyDescription = isPersonal
+    ? "You don't have any personal documents yet. Create the first one to get started."
+    : "This group doesn't have any documents yet. Create the first one to get started."
+
+  // Conditional rendering: show empty state when no documents exist for the scope.
+  if (scopedDocuments.length === 0) {
     return (
       <EmptyState
         title="No Documents Yet"
-        description="This group doesn't have any documents yet. Create the first one to get started."
+        description={emptyDescription}
         action={{
           label: isPending ? "Creating..." : "Create Document",
           onClick: handleCreateDocument,
@@ -75,8 +89,9 @@ export function DocumentsTab({ groupId, documents, docsPath }: DocumentsTabProps
   return (
     <div className="p-4">
       <DocumentList
-        documents={groupDocuments}
+        documents={scopedDocuments}
         groupId={groupId}
+        ownerId={ownerId}
         onCreateDocument={handleCreateDocument}
         documentHrefBuilder={(doc) => `${docsPath}?doc=${doc.id}`}
       />

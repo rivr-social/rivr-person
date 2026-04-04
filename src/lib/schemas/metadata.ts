@@ -21,6 +21,69 @@ import type { ResourceType } from "@/db/schema";
 // Resource metadata schemas
 // ---------------------------------------------------------------------------
 
+const EventHostMetadataSchema = z.object({
+  agentId: z.string(),
+  displayName: z.string().optional(),
+  role: z.string().optional(),
+  isLead: z.boolean().optional(),
+  payoutShareBps: z.number().int().min(0).max(10_000).optional(),
+  payoutFixedCents: z.number().int().min(0).optional(),
+  payoutEligible: z.boolean().optional(),
+}).passthrough();
+
+const EventSessionMetadataSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  start: z.string(),
+  end: z.string(),
+  location: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+  venueId: z.string().nullable().optional(),
+  capacity: z.number().int().min(0).optional(),
+  status: z.string().optional(),
+  hostAgentIds: z.array(z.string()).optional(),
+  jobIds: z.array(z.string()).optional(),
+  taskIds: z.array(z.string()).optional(),
+}).passthrough();
+
+const EventPayoutMetadataSchema = z.object({
+  id: z.string(),
+  recipientAgentId: z.string(),
+  label: z.string().optional(),
+  role: z.string().optional(),
+  shareBps: z.number().int().min(0).max(10_000).optional(),
+  fixedCents: z.number().int().min(0).optional(),
+  currency: z.string().optional(),
+  status: z.string().optional(),
+}).passthrough();
+
+const EventExpenseMetadataSchema = z.object({
+  id: z.string(),
+  recipient: z.string(),
+  description: z.string(),
+  amountCents: z.number().int().min(0),
+  status: z.string().optional(),
+}).passthrough();
+
+const EventFinancialSummaryMetadataSchema = z.object({
+  revenueCents: z.number().int().min(0).optional(),
+  expensesCents: z.number().int().min(0).optional(),
+  payoutsCents: z.number().int().min(0).optional(),
+  profitCents: z.number().int().optional(),
+  remainingCents: z.number().int().optional(),
+  currency: z.string().optional(),
+}).passthrough();
+
+const EventWorkItemMetadataSchema = z.object({
+  resourceId: z.string(),
+  kind: z.enum(["project", "job", "task"]),
+  title: z.string().optional(),
+  projectId: z.string().nullable().optional(),
+  eventId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  status: z.string().optional(),
+}).passthrough();
+
 export const EventMetadataSchema = z.object({
   entityType: z.string().optional(),
   resourceKind: z.string().optional(),
@@ -37,6 +100,7 @@ export const EventMetadataSchema = z.object({
   status: z.string().optional(),
   groupId: z.string().nullable().optional(),
   projectId: z.string().nullable().optional(),
+  managingProjectId: z.string().nullable().optional(),
   venueId: z.string().nullable().optional(),
   venueStartTime: z.string().nullable().optional(),
   venueEndTime: z.string().nullable().optional(),
@@ -47,6 +111,15 @@ export const EventMetadataSchema = z.object({
   transcriptionEnabled: z.boolean().optional(),
   meetingKind: z.string().optional(),
   adminIds: z.array(z.string()).optional(),
+  hostIds: z.array(z.string()).optional(),
+  hosts: z.array(EventHostMetadataSchema).optional(),
+  sessions: z.array(EventSessionMetadataSchema).optional(),
+  expenses: z.array(EventExpenseMetadataSchema).optional(),
+  payouts: z.array(EventPayoutMetadataSchema).optional(),
+  workItems: z.array(EventWorkItemMetadataSchema).optional(),
+  financialSummary: EventFinancialSummaryMetadataSchema.optional(),
+  linkedJobIds: z.array(z.string()).optional(),
+  linkedTaskIds: z.array(z.string()).optional(),
   chapterTags: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
   images: z.array(z.string()).optional(),
@@ -55,6 +128,8 @@ export const EventMetadataSchema = z.object({
 export const JobMetadataSchema = z.object({
   resourceKind: z.string().optional(),
   projectId: z.string().nullable().optional(),
+  eventId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
   groupId: z.string().nullable().optional(),
   category: z.string().nullable().optional(),
   priority: z.string().nullable().optional(),
@@ -139,6 +214,9 @@ export const ProjectMetadataSchema = z.object({
   resourceKind: z.string().optional(),
   category: z.string().optional(),
   groupId: z.string().nullable().optional(),
+  parentProjectId: z.string().nullable().optional(),
+  managingEventId: z.string().nullable().optional(),
+  eventIds: z.array(z.string()).optional(),
   status: z.string().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
@@ -188,6 +266,8 @@ export const TaskMetadataSchema = z.object({
   resourceKind: z.string().optional(),
   projectId: z.string().nullable().optional(),
   jobId: z.string().nullable().optional(),
+  eventId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
   groupId: z.string().nullable().optional(),
   estimatedTime: z.union([z.number(), z.string()]).nullable().optional(),
   points: z.number().nullable().optional(),

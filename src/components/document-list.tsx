@@ -22,7 +22,10 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 interface DocumentListProps {
   documents: Document[]
-  groupId: string
+  /** Group identifier for group-scoped documents. */
+  groupId?: string
+  /** User agent identifier for personal documents. */
+  ownerId?: string
   onSelectDocument?: (doc: Document) => void
   documentHrefBuilder?: (doc: Document) => string
   onCreateDocument?: () => void
@@ -40,6 +43,7 @@ interface DocumentListProps {
 export function DocumentList({
   documents,
   groupId: _groupId,
+  ownerId: _ownerId,
   onSelectDocument,
   documentHrefBuilder,
   onCreateDocument,

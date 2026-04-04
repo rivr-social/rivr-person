@@ -1,7 +1,7 @@
 /**
- * POST /api/autobot/gpu/start
- * POST /api/autobot/gpu/stop
- * GET  /api/autobot/gpu/status
+ * POST /api/autobot/gpu — action-based dispatch
+ *   actions: start | stop | heartbeat | refresh | decommission
+ * GET  /api/autobot/gpu — returns status, gpu details, pricing
  *
  * Proxies GPU lifecycle management to the OpenClaw token server.
  * Controls the Vast.ai Chatterbox TTS instance.
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   }
 
   const { action } = body;
-  const validActions = ["start", "stop", "heartbeat", "refresh"];
+  const validActions = ["start", "stop", "heartbeat", "refresh", "decommission"];
   if (!action || !validActions.includes(action)) {
     return NextResponse.json(
       { error: `action must be one of: ${validActions.join(", ")}` },

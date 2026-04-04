@@ -843,6 +843,133 @@ export async function createDocumentResourceAction(input: {
   return docActionResult;
 }
 
+/**
+ * Creates a personal document owned by the authenticated user (not group-scoped).
+ *
+ * The document resource is stored with `ownerId` = user agent, and
+ * `metadata.personalOwnerId` marks it as a personal document so it can be
+ * distinguished from group documents that share the same owner.
+ */
+export async function createPersonalDocumentAction(input: {
+  title: string;
+  content?: string;
+  description?: string;
+  tags?: string[];
+  category?: string;
+}): Promise<ActionResult> {
+  if (!input.title?.trim()) {
+    return {
+      success: false,
+      message: "title is required",
+      error: { code: "INVALID_INPUT" },
+    };
+  }
+
+  const userId = await resolveAuthenticatedUserId();
+  if (!userId) {
+    return {
+      success: false,
+      message: "You must be logged in to create documents",
+      error: { code: "UNAUTHENTICATED" },
+    };
+  }
+
+  const check = await rateLimit(`resources:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
+  if (!check.success) {
+    return {
+      success: false,
+      message: "Rate limit exceeded. Please try again later.",
+      error: { code: "RATE_LIMITED" },
+    };
+  }
+
+  const docFacadeResult = await updateFacade.execute(
+    {
+      type: "createPersonalDocumentAction",
+      actorId: userId,
+      targetAgentId: userId,
+      payload: input,
+    },
+    async () => {
+      try {
+        const result = await db.transaction(async (tx) => {
+          const [created] = await tx
+            .insert(resources)
+            .values({
+              name: input.title.trim(),
+              type: "document",
+              description: input.description?.trim() ?? null,
+              content: input.content?.trim() ?? null,
+              ownerId: userId,
+              visibility: "private",
+              tags: input.tags ?? [],
+              metadata: {
+                entityType: "document",
+                resourceKind: "document",
+                personalOwnerId: userId,
+                category: input.category ?? null,
+                createdBy: userId,
+              },
+            } as NewResource)
+            .returning({ id: resources.id });
+
+          await tx.insert(ledger).values({
+            verb: "create",
+            subjectId: userId,
+            objectId: created.id,
+            objectType: "resource",
+            resourceId: created.id,
+            metadata: {
+              resourceType: "document",
+              personalOwnerId: userId,
+              source: "profile-documents-tab",
+            },
+          } as NewLedgerEntry);
+
+          return created;
+        });
+
+        await revalidateOwnerPaths(userId);
+
+        return {
+          success: true,
+          message: "Personal document created successfully",
+          resourceId: result.id,
+        } as ActionResult;
+      } catch (error) {
+        console.error("[createPersonalDocumentAction] failed:", error);
+        return {
+          success: false,
+          message: "Failed to create personal document",
+          error: { code: "SERVER_ERROR" },
+        } as ActionResult;
+      }
+    },
+  );
+
+  if (!docFacadeResult.success) {
+    return {
+      success: false,
+      message: docFacadeResult.error ?? "Failed to create personal document",
+      error: { code: docFacadeResult.errorCode ?? "SERVER_ERROR" },
+    };
+  }
+
+  const docActionResult = docFacadeResult.data as ActionResult;
+
+  if (docActionResult?.success && docActionResult.resourceId) {
+    emitDomainEvent({
+      eventType: EVENT_TYPES.RESOURCE_CREATED,
+      entityType: "resource",
+      entityId: docActionResult.resourceId,
+      actorId: userId,
+      payload: { resourceType: "document", personalOwnerId: userId },
+    }).catch(() => {});
+  }
+
+  return docActionResult;
+}
+
 export async function createProjectResource(input: {
   title: string;
   description: string;
