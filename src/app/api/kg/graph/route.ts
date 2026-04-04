@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import * as kg from "@/lib/kg/autobot-kg-client";
+import { isPersonaOf } from "@/lib/persona";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +17,20 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { scope_type, scope_id, entity, predicate, max_results } = body;
+  const { scope_type, scope_id, entity, predicate, max_results, personaId } = body;
 
-  const scopeType = scope_type || "person";
-  const scopeId = scope_id || session.user.id;
+  let scopeType = scope_type || "person";
+  let scopeId = scope_id || session.user.id;
+
+  // When personaId is provided, verify ownership and scope to the persona
+  if (personaId) {
+    const owned = await isPersonaOf(personaId, session.user.id);
+    if (!owned) {
+      return NextResponse.json({ error: "Persona not found or not owned by you" }, { status: 403 });
+    }
+    scopeType = "persona";
+    scopeId = personaId;
+  }
 
   try {
     const result = await kg.queryScope(scopeType, scopeId, {
@@ -43,8 +54,20 @@ export async function GET(req: NextRequest) {
   }
 
   const url = new URL(req.url);
-  const scopeType = url.searchParams.get("scope_type") || "person";
-  const scopeId = url.searchParams.get("scope_id") || session.user.id;
+  const personaId = url.searchParams.get("personaId");
+
+  let scopeType = url.searchParams.get("scope_type") || "person";
+  let scopeId = url.searchParams.get("scope_id") || session.user.id;
+
+  // When personaId is provided, verify ownership and scope to the persona
+  if (personaId) {
+    const owned = await isPersonaOf(personaId, session.user.id);
+    if (!owned) {
+      return NextResponse.json({ error: "Persona not found or not owned by you" }, { status: 403 });
+    }
+    scopeType = "persona";
+    scopeId = personaId;
+  }
 
   try {
     const entities = await kg.listEntities(scopeType, scopeId);

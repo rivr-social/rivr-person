@@ -428,19 +428,20 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.kg.list_docs",
-    description: "List knowledge graph documents for a scope. Defaults to the actor's personal scope.",
+    description: "List knowledge graph documents for a scope. Defaults to the actor's scope (persona scope when acting as a persona).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        scope_type: { type: "string", description: "Scope type (person, group, event, project). Default: person" },
+        scope_type: { type: "string", description: "Scope type (person, persona, group, event, project). Default: inferred from actor type" },
         scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
         status: { type: "string", description: "Filter by doc status (pending, ingesting, complete, failed)" },
       },
     },
     enabledFor: ["session", "token"],
     handler: async (args, context) => {
-      const scopeType = getString(args.scope_type) ?? "person";
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
       const scopeId = getString(args.scope_id) ?? context.actorId;
       const status = getString(args.status) ?? undefined;
       const docs = await kg.listDocs(scopeType, scopeId, status);
@@ -456,7 +457,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       required: ["resourceId"],
       properties: {
         resourceId: { type: "string", description: "ID of the Rivr resource to push" },
-        scope_type: { type: "string", description: "Scope type. Default: person" },
+        scope_type: { type: "string", description: "Scope type. Default: inferred from actor type" },
         scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
         title: { type: "string", description: "Override title for the doc" },
         doc_type: { type: "string", description: "Doc type classification" },
@@ -471,9 +472,12 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         where: eq(resources.id, resourceId),
       });
       if (!resource) throw new Error("Resource not found.");
-      if (resource.ownerId !== context.actorId) throw new Error("Not your resource.");
+      // For persona actors, check ownership against the controller (parent account)
+      const ownerId = context.controllerId ?? context.actorId;
+      if (resource.ownerId !== ownerId) throw new Error("Not your resource.");
 
-      const scopeType = getString(args.scope_type) ?? "person";
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
       const scopeId = getString(args.scope_id) ?? context.actorId;
 
       const doc = await kg.createDoc({
@@ -500,7 +504,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        scope_type: { type: "string", description: "Scope type. Default: person" },
+        scope_type: { type: "string", description: "Scope type. Default: inferred from actor type" },
         scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
         entity: { type: "string", description: "Filter triples by entity name" },
         predicate: { type: "string", description: "Filter triples by predicate type" },
@@ -509,7 +513,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     },
     enabledFor: ["session", "token"],
     handler: async (args, context) => {
-      const scopeType = getString(args.scope_type) ?? "person";
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
       const scopeId = getString(args.scope_id) ?? context.actorId;
       const result = await kg.queryScope(scopeType, scopeId, {
         entity: getString(args.entity) ?? undefined,
@@ -528,7 +533,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       required: ["message"],
       properties: {
         message: { type: "string", description: "The user's message/question" },
-        scope_type: { type: "string", description: "Scope type. Default: person" },
+        scope_type: { type: "string", description: "Scope type. Default: inferred from actor type" },
         scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
         max_context_chars: { type: "number", description: "Max chars of KG context to inject. Default: 3000" },
       },
@@ -538,7 +543,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       const message = getString(args.message);
       if (!message) throw new Error("message is required.");
 
-      const scopeType = getString(args.scope_type) ?? "person";
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
       const scopeId = getString(args.scope_id) ?? context.actorId;
       const maxChars = typeof args.max_context_chars === "number" ? args.max_context_chars : 3000;
 

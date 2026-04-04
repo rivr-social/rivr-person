@@ -9,6 +9,7 @@ import { db } from "@/db";
 import { resources } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import * as kg from "@/lib/kg/autobot-kg-client";
+import { isPersonaOf } from "@/lib/persona";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +20,21 @@ export async function GET(req: NextRequest) {
   }
 
   const url = new URL(req.url);
-  const scopeType = url.searchParams.get("scope_type") || "person";
-  const scopeId = url.searchParams.get("scope_id") || session.user.id;
+  const personaId = url.searchParams.get("personaId");
+
+  let scopeType = url.searchParams.get("scope_type") || "person";
+  let scopeId = url.searchParams.get("scope_id") || session.user.id;
+
+  // When personaId is provided, verify ownership and scope to the persona
+  if (personaId) {
+    const owned = await isPersonaOf(personaId, session.user.id);
+    if (!owned) {
+      return NextResponse.json({ error: "Persona not found or not owned by you" }, { status: 403 });
+    }
+    scopeType = "persona";
+    scopeId = personaId;
+  }
+
   const status = url.searchParams.get("status") || undefined;
 
   try {
@@ -41,7 +55,20 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { resourceId, scope_type, scope_id, title, doc_type } = body;
+  const { resourceId, scope_type, scope_id, title, doc_type, personaId } = body;
+
+  // Resolve scope — persona takes precedence when provided
+  let resolvedScopeType = scope_type || "person";
+  let resolvedScopeId = scope_id || session.user.id;
+
+  if (personaId) {
+    const owned = await isPersonaOf(personaId, session.user.id);
+    if (!owned) {
+      return NextResponse.json({ error: "Persona not found or not owned by you" }, { status: 403 });
+    }
+    resolvedScopeType = "persona";
+    resolvedScopeId = personaId;
+  }
 
   // If creating from a Rivr resource, fetch it
   if (resourceId) {
@@ -60,8 +87,8 @@ export async function POST(req: NextRequest) {
       const doc = await kg.createDoc({
         title: title || resource.name || "Untitled",
         doc_type: doc_type || resource.type || "resource",
-        scope_type: scope_type || "person",
-        scope_id: scope_id || session.user.id,
+        scope_type: resolvedScopeType,
+        scope_id: resolvedScopeId,
         source_uri: `rivr://person/resources/${resource.id}`,
       });
       return NextResponse.json(doc);
@@ -82,8 +109,8 @@ export async function POST(req: NextRequest) {
     const doc = await kg.createDoc({
       title,
       doc_type: doc_type || "document",
-      scope_type: scope_type || "person",
-      scope_id: scope_id || session.user.id,
+      scope_type: resolvedScopeType,
+      scope_id: resolvedScopeId,
     });
     return NextResponse.json(doc);
   } catch (error) {

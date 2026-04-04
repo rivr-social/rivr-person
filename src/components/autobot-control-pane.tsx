@@ -36,7 +36,10 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import {
   Activity,
+  BrainCircuit,
+  FileText,
   Mic,
+  Plus,
   Send,
   Wifi,
   WifiOff,
@@ -140,8 +143,89 @@ export function AutobotControlPane({
   const [instructionSending, setInstructionSending] = useState(false);
   const instructionEndRef = useRef<HTMLDivElement>(null);
 
+  // Knowledge Graph stats
+  const [kgStats, setKgStats] = useState<{
+    docCount: number;
+    entityCount: number;
+    tripleCount: number;
+  } | null>(null);
+  const [kgStatsLoading, setKgStatsLoading] = useState(false);
+
+  // Push to KG state
+  const [pushTitle, setPushTitle] = useState("");
+  const [pushContent, setPushContent] = useState("");
+  const [pushing, setPushing] = useState(false);
+  const [showPushForm, setShowPushForm] = useState(false);
+
   // Saving state
   const [saving, setSaving] = useState(false);
+
+  // ---------------------------------------------------------------------------
+  // Knowledge Graph stats
+  // ---------------------------------------------------------------------------
+
+  const fetchKgStats = useCallback(async () => {
+    setKgStatsLoading(true);
+    try {
+      const response = await fetch(`/api/personas/${persona.id}/kg/stats`);
+      if (response.ok) {
+        const data = await response.json();
+        setKgStats({
+          docCount: data.docCount ?? 0,
+          entityCount: data.entityCount ?? 0,
+          tripleCount: data.tripleCount ?? 0,
+        });
+      }
+    } catch {
+      // Non-critical — stats are informational
+    } finally {
+      setKgStatsLoading(false);
+    }
+  }, [persona.id]);
+
+  // ---------------------------------------------------------------------------
+  // Push to KG
+  // ---------------------------------------------------------------------------
+
+  const handlePushToKg = async () => {
+    const title = pushTitle.trim();
+    if (!title || pushing) return;
+
+    setPushing(true);
+    try {
+      const body: Record<string, string> = { title };
+      const content = pushContent.trim();
+      if (content) {
+        body.content = content;
+      }
+
+      const response = await fetch(`/api/personas/${persona.id}/kg/docs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (response.ok) {
+        toast({ title: "Document pushed to persona KG" });
+        setPushTitle("");
+        setPushContent("");
+        setShowPushForm(false);
+        fetchKgStats();
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        toast({
+          title: errorData.error || "Failed to push to KG",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Network error";
+      toast({ title: `Push failed: ${errorMessage}`, variant: "destructive" });
+    } finally {
+      setPushing(false);
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // Health check
@@ -229,7 +313,8 @@ export function AutobotControlPane({
     checkConnection();
     fetchVoiceInfo();
     fetchProvenance();
-  }, [checkConnection, fetchVoiceInfo, fetchProvenance]);
+    fetchKgStats();
+  }, [checkConnection, fetchVoiceInfo, fetchProvenance, fetchKgStats]);
 
   // ---------------------------------------------------------------------------
   // Scroll instruction history to bottom
@@ -326,6 +411,8 @@ export function AutobotControlPane({
         body: JSON.stringify({
           message: `[Persona: ${persona.name} (${persona.id})] ${message}`,
           history: instructionHistory.slice(-20),
+          personaId: persona.id,
+          personaName: persona.name,
         }),
       });
 
@@ -479,7 +566,112 @@ export function AutobotControlPane({
         </div>
       )}
 
-      {/* ── Row 4: Recent actions log ── */}
+      {/* ── Row 4: Knowledge Graph ── */}
+      {autobotEnabled && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <BrainCircuit className="h-3.5 w-3.5" />
+              Knowledge Graph
+            </Label>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={fetchKgStats}
+                disabled={kgStatsLoading}
+                className="h-6 px-2 text-xs"
+              >
+                {kgStatsLoading ? "Loading..." : "Refresh"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowPushForm((prev) => !prev)}
+                className="h-6 px-2 text-xs"
+                aria-label="Push document to knowledge graph"
+              >
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Push
+              </Button>
+            </div>
+          </div>
+
+          {/* Stats row */}
+          {kgStats ? (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-md border px-3 py-2 text-center">
+                <div className="text-lg font-semibold">{kgStats.docCount}</div>
+                <div className="text-[10px] text-muted-foreground flex items-center justify-center gap-1">
+                  <FileText className="h-3 w-3" />
+                  Docs
+                </div>
+              </div>
+              <div className="rounded-md border px-3 py-2 text-center">
+                <div className="text-lg font-semibold">{kgStats.entityCount}</div>
+                <div className="text-[10px] text-muted-foreground">Entities</div>
+              </div>
+              <div className="rounded-md border px-3 py-2 text-center">
+                <div className="text-lg font-semibold">{kgStats.tripleCount}</div>
+                <div className="text-[10px] text-muted-foreground">Triples</div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground py-2">
+              {kgStatsLoading
+                ? "Loading KG stats..."
+                : "No knowledge graph data yet."}
+            </p>
+          )}
+
+          {/* Push to KG form */}
+          {showPushForm && (
+            <div className="space-y-2 rounded-md border p-3">
+              <Label className="text-xs font-medium">Push Document to Persona KG</Label>
+              <Input
+                placeholder="Document title"
+                value={pushTitle}
+                onChange={(e) => setPushTitle(e.target.value)}
+                disabled={pushing}
+                className="h-8 text-sm"
+              />
+              <textarea
+                placeholder="Content (optional — will be auto-ingested if provided)"
+                value={pushContent}
+                onChange={(e) => setPushContent(e.target.value)}
+                disabled={pushing}
+                rows={3}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setShowPushForm(false);
+                    setPushTitle("");
+                    setPushContent("");
+                  }}
+                  disabled={pushing}
+                  className="h-8 text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handlePushToKg}
+                  disabled={pushing || !pushTitle.trim()}
+                  className="h-8 text-xs"
+                >
+                  {pushing ? "Pushing..." : "Push to KG"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Row 5: Recent actions log ── */}
       {autobotEnabled && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
@@ -515,7 +707,7 @@ export function AutobotControlPane({
         </div>
       )}
 
-      {/* ── Row 5: Instruction channel ── */}
+      {/* ── Row 6: Instruction channel ── */}
       {autobotEnabled && (
         <div className="space-y-1.5">
           <Label className="text-xs text-muted-foreground flex items-center gap-1.5">

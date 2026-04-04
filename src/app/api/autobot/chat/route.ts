@@ -8,7 +8,8 @@
 
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { buildAutobotSystemPrompt } from "@/lib/bespoke/autobot-system-prompt";
+import { buildAutobotSystemPrompt, buildAutobotSystemPromptWithPersonaKg } from "@/lib/bespoke/autobot-system-prompt";
+import { isPersonaOf } from "@/lib/persona";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -50,6 +51,8 @@ interface ChatRequestBody {
   history?: HistoryMessage[];
   model?: string;
   threadId?: string;
+  personaId?: string;
+  personaName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +165,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { message, history, model, threadId } = body;
+  const { message, history, model, threadId, personaId, personaName } = body;
 
   if (!message || typeof message !== "string") {
     return NextResponse.json(
@@ -204,10 +207,28 @@ export async function POST(request: Request) {
     sanitizeSessionSegment(threadId || username),
   ].join(":");
 
-  const systemPrompt = await buildAutobotSystemPrompt(session.user.id).catch((error) => {
-    console.error("Failed to build autobot system prompt:", error);
-    return null;
-  });
+  // Build system prompt — inject persona KG context when a personaId is provided
+  let systemPrompt: string | null = null;
+  if (personaId && typeof personaId === "string") {
+    // Verify persona ownership before injecting its KG context
+    const owned = await isPersonaOf(personaId, session.user.id).catch(() => false);
+    if (owned) {
+      systemPrompt = await buildAutobotSystemPromptWithPersonaKg(
+        session.user.id,
+        personaId,
+        personaName || "persona",
+      ).catch((error) => {
+        console.error("Failed to build persona-scoped system prompt:", error);
+        return null;
+      });
+    }
+  }
+  if (!systemPrompt) {
+    systemPrompt = await buildAutobotSystemPrompt(session.user.id).catch((error) => {
+      console.error("Failed to build autobot system prompt:", error);
+      return null;
+    });
+  }
 
   // -------------------------------------------------------------------------
   // Route to Ollama for local models, OpenClaw for cloud models

@@ -165,3 +165,30 @@ export async function listEntities(
   if (!res.ok) throw new Error(`KG listEntities failed: ${res.status}`);
   return res.json();
 }
+
+export type KgScopeStats = {
+  docCount: number;
+  entityCount: number;
+  tripleCount: number;
+};
+
+/**
+ * Returns aggregate stats (doc count, entity count, triple count) for a scope.
+ * This combines multiple queries into one convenience call.
+ */
+export async function getScopeStats(
+  scopeType: string,
+  scopeId: string,
+): Promise<KgScopeStats> {
+  const [docs, entities, queryResult] = await Promise.all([
+    listDocs(scopeType, scopeId).catch(() => [] as KgDoc[]),
+    listEntities(scopeType, scopeId).catch(() => [] as KgEntity[]),
+    queryScope(scopeType, scopeId, { max_results: 0 }).catch(() => ({ triples: [], count: 0 })),
+  ]);
+
+  return {
+    docCount: docs.length,
+    entityCount: entities.length,
+    tripleCount: queryResult.count,
+  };
+}

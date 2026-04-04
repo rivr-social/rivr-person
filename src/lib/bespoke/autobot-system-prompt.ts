@@ -19,6 +19,7 @@ import {
 import { getMyWalletAction } from "@/app/actions/wallet";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { MCP_TOOL_DEFINITIONS } from "@/lib/federation/mcp-tools";
+import * as kgClient from "@/lib/kg/autobot-kg-client";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 
 // ---------------------------------------------------------------------------
@@ -263,4 +264,55 @@ If the user asks for modifications ("change the price to $420", "make it 24 hour
 - When suggesting, explain your reasoning briefly ("I see you're in the Boulder Bikers group, which would be a great place to list this").
 - If you're unsure about something, ask rather than guess.
 `;
+}
+
+// ---------------------------------------------------------------------------
+// Constants for persona KG context
+// ---------------------------------------------------------------------------
+
+const PERSONA_KG_MAX_CONTEXT_CHARS = 4000;
+
+// ---------------------------------------------------------------------------
+// Persona KG Context Builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a KG context block for a specific persona scope.
+ * Returns an empty string if no KG data exists or the fetch fails.
+ */
+export async function buildPersonaKgContext(personaId: string): Promise<string> {
+  try {
+    const { context } = await kgClient.buildContext("persona", personaId, PERSONA_KG_MAX_CONTEXT_CHARS);
+    if (!context || context.length === 0) return "";
+
+    return `\n## Persona Knowledge Graph\nThe following facts are from this persona's scoped knowledge graph. Use them to inform your responses:\n\n${context}\n`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Builds a full autobot system prompt that includes persona-specific KG context.
+ * Use this when the chat is happening in the context of a specific persona.
+ *
+ * @param userId - The parent account user ID
+ * @param personaId - The persona ID whose KG context should be injected
+ * @param personaName - The persona's display name
+ */
+export async function buildAutobotSystemPromptWithPersonaKg(
+  userId: string,
+  personaId: string,
+  personaName: string,
+): Promise<string> {
+  const [basePrompt, personaKgContext] = await Promise.all([
+    buildAutobotSystemPrompt(userId),
+    buildPersonaKgContext(personaId),
+  ]);
+
+  if (!personaKgContext) return basePrompt;
+
+  // Inject persona context after the instance context section
+  const personaHeader = `\n## Active Persona\nYou are currently operating as persona "${personaName}" (id: ${personaId}). All KG operations should default to this persona's scope.\n`;
+
+  return basePrompt + personaHeader + personaKgContext;
 }
