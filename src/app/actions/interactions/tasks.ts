@@ -6,7 +6,8 @@ import { db } from "@/db";
 import { ledger, resources } from "@/db/schema";
 import type { NewLedgerEntry } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
-import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { federatedWrite } from "@/lib/federation/remote-write";
 import {
   getCurrentUserId,
   toggleLedgerInteraction,
@@ -41,7 +42,7 @@ export async function claimTasksAction(taskIds: string[]): Promise<ActionResult>
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ taskIds: string[] }, ActionResult>(
     {
       type: 'claimTasksAction',
       actorId: userId,
@@ -61,8 +62,8 @@ export async function claimTasksAction(taskIds: string[]): Promise<ActionResult>
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to claim tasks." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to claim tasks." };
   }
 
   emitDomainEvent({
@@ -73,7 +74,7 @@ export async function claimTasksAction(taskIds: string[]): Promise<ActionResult>
     payload: { action: 'claim_tasks', taskIds: validIds },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: "Tasks claimed successfully." };
+  return writeResult.data ?? { success: true, message: "Tasks claimed successfully." };
 }
 
 /** Valid task status transitions. */
@@ -181,7 +182,7 @@ export async function updateTaskStatus(
     statusPatch.completed = false;
   }
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ taskId: string; newStatus: TaskStatus }, ActionResult>(
     {
       type: 'updateTaskStatus',
       actorId: userId,
@@ -222,8 +223,8 @@ export async function updateTaskStatus(
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to update task status." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to update task status." };
   }
 
   emitDomainEvent({
@@ -234,5 +235,5 @@ export async function updateTaskStatus(
     payload: { taskId, newStatus },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: `Task status updated to ${newStatus}.` };
+  return writeResult.data ?? { success: true, message: `Task status updated to ${newStatus}.` };
 }

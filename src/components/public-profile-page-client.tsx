@@ -154,6 +154,11 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const profileResources = (profile?.resources as SerializedResource[]) ?? [];
   const profileActivity = profile?.recentActivity ?? [];
   const federation = (bundle?.federation as ProfileFederationInfo | undefined) ?? null;
+  const autobotPersona = (bundle as Record<string, unknown> | null)?.autobotPersona as {
+    id: string;
+    name: string;
+    image: string | null;
+  } | null ?? null;
 
   const metadata = (agent?.metadata ?? {}) as Record<string, unknown>;
   const socialLinks = asRecord(metadata.socialLinks ?? metadata.social_links);
@@ -879,12 +884,12 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
         ) : null}
       </div>
 
-      {/* Persona chat widget — shown when the viewed profile has autobotEnabled */}
-      {metadata.autobotEnabled ? (
+      {/* Persona chat widget — shown when the user has an autobot-enabled persona */}
+      {autobotPersona ? (
         <PersonaChatWidget
           username={profileUser.username}
-          personaName={profileUser.name}
-          personaImage={profileUser.avatar !== "/placeholder-user.jpg" ? profileUser.avatar : null}
+          personaName={autobotPersona.name || profileUser.name}
+          personaImage={autobotPersona.image || (profileUser.avatar !== "/placeholder-user.jpg" ? profileUser.avatar : null)}
         />
       ) : null}
     </div>

@@ -5,7 +5,8 @@ import { db } from "@/db";
 import { agents, ledger } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { inviteToGroupRoom, removeFromGroupRoom } from "@/lib/matrix-groups";
-import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { federatedWrite } from "@/lib/federation/remote-write";
 import {
   getCurrentUserId,
   toggleLedgerInteraction,
@@ -27,7 +28,7 @@ export async function toggleFollowAgent(agentId: string): Promise<ActionResult> 
   const userId = await getCurrentUserId();
   if (!userId) return { success: false, message: "You must be logged in to connect with people." };
 
-  const facadeResult = await updateFacade.execute(
+  const result = await federatedWrite<{ agentId: string }, ActionResult>(
     {
       type: "toggleFollowAgent",
       actorId: userId,
@@ -42,11 +43,11 @@ export async function toggleFollowAgent(agentId: string): Promise<ActionResult> 
     }
   );
 
-  if (facadeResult.success && facadeResult.data) {
-    return facadeResult.data as ActionResult;
+  if (result.success && result.data) {
+    return result.data;
   }
 
-  return { success: false, message: facadeResult.error ?? "Failed to toggle follow." };
+  return { success: false, message: result.error ?? "Failed to toggle follow." };
 }
 
 /**
@@ -65,7 +66,7 @@ export async function toggleJoinGroup(groupId: string, type: "group" | "ring" = 
   const userId = await getCurrentUserId();
   if (!userId) return { success: false, message: "You must be logged in to join." };
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<Record<string, never>, ActionResult>(
     {
       type: "toggleJoinGroup",
       actorId: userId,
@@ -119,8 +120,8 @@ export async function toggleJoinGroup(groupId: string, type: "group" | "ring" = 
     }
   );
 
-  if (facadeResult.success && facadeResult.data) {
-    const data = facadeResult.data as ActionResult;
+  if (writeResult.success && writeResult.data) {
+    const data = writeResult.data;
     if (data.success) {
       await emitDomainEvent({
         eventType: data.active ? EVENT_TYPES.GROUP_MEMBER_JOINED : EVENT_TYPES.GROUP_MEMBER_LEFT,
@@ -133,7 +134,7 @@ export async function toggleJoinGroup(groupId: string, type: "group" | "ring" = 
     return data;
   }
 
-  return { success: false, message: facadeResult.error ?? "Failed to toggle group membership." };
+  return { success: false, message: writeResult.error ?? "Failed to toggle group membership." };
 }
 
 /**

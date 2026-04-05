@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { fetchProfileData, fetchUserEvents, fetchUserGroups, fetchUserPosts } from "@/app/actions/graph";
+import { findAutobotEnabledPersona } from "@/app/actions/personas";
 import { PUBLIC_PROFILE_MODULE_ID, resolvePublicProfileAgent } from "@/lib/bespoke/modules/public-profile";
 import type { CanonicalProfileRef, HomeAuthorityRef } from "@/lib/federation/cross-instance-types";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
@@ -25,12 +26,13 @@ export async function GET(
   }
 
   try {
-    const [profile, posts, events, groups, homeInstance] = await Promise.all([
+    const [profile, posts, events, groups, homeInstance, autobotPersona] = await Promise.all([
       fetchProfileData(agent.id).catch(() => null),
       fetchUserPosts(agent.id, 30).catch(() => ({ posts: [], owner: null })),
       fetchUserEvents(agent.id, 30).catch(() => []),
       fetchUserGroups(agent.id, 30).catch(() => []),
       resolveHomeInstance(agent.id).catch(() => null),
+      findAutobotEnabledPersona(agent.id).catch(() => null),
     ]);
 
     const config = getInstanceConfig();
@@ -72,6 +74,13 @@ export async function GET(
         posts,
         events,
         groups,
+        autobotPersona: autobotPersona
+          ? {
+              id: autobotPersona.id,
+              name: autobotPersona.name,
+              image: autobotPersona.image,
+            }
+          : null,
         module: {
           moduleId: PUBLIC_PROFILE_MODULE_ID,
           manifestEndpoint: `/api/profile/${encodeURIComponent(username)}/manifest`,

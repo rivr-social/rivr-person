@@ -33,6 +33,7 @@ import { ImageUpload } from "@/components/image-upload";
 import type { FederationIdentityStatus } from "@/lib/federation-identities";
 import type { AppReleaseStatus } from "@/lib/app-release";
 import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
+import { DomainSettings } from "@/components/domain-settings";
 
 export type SettingsInitialData = {
   name: string;
@@ -1726,6 +1727,8 @@ export function SettingsForm({
         </TabsContent>
 
         <TabsContent value="federation" className="space-y-4">
+          <DomainSettings />
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

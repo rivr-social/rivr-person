@@ -1455,3 +1455,73 @@ export type NewGroupMatrixRoom = typeof groupMatrixRooms.$inferInsert;
 
 export type ContractRule = typeof contractRules.$inferSelect;
 export type NewContractRule = typeof contractRules.$inferInsert;
+
+/**
+ * Site versions — version history for the bespoke site builder.
+ * Each row captures a complete snapshot of all site files at a point in time,
+ * enabling lossless rollback to any previous version.
+ * Created by migration 0033_site_versions.
+ */
+export const siteVersions = pgTable(
+  'site_versions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull(),
+    versionNumber: integer('version_number').notNull(),
+    commitMessage: text('commit_message'),
+    /** Full snapshot of all site files as { filename: content } */
+    filesSnapshot: jsonb('files_snapshot').$type<Record<string, string>>().notNull(),
+    /** What triggered this version: 'deploy', 'save', 'manual' */
+    trigger: text('trigger').notNull().default('manual'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('site_versions_agent_id_idx').on(table.agentId),
+    index('site_versions_agent_version_idx').on(table.agentId, table.versionNumber),
+    index('site_versions_created_at_idx').on(table.createdAt),
+  ]
+);
+
+export type SiteVersionRecord = typeof siteVersions.$inferSelect;
+export type NewSiteVersionRecord = typeof siteVersions.$inferInsert;
+
+/**
+ * Domain verification status enum for custom domain configuration.
+ * Tracks the lifecycle of a custom domain from initial setup to active use.
+ */
+export const domainVerificationStatusEnum = pgEnum('domain_verification_status', [
+  'pending',   // DNS records not yet verified
+  'verified',  // DNS ownership confirmed via TXT record
+  'active',    // DNS pointing correctly and domain is serving traffic
+]);
+
+/**
+ * Domain configurations table - stores custom domain settings for sovereign instances.
+ * Each agent (instance owner) may have at most one custom domain configured.
+ *
+ * Integration note: This table manages the application-level domain lifecycle.
+ * Actual Traefik router/certificate configuration must be applied separately
+ * on the host (e.g., via deploy agent, SSH, or Traefik dynamic config file).
+ */
+export const domainConfigs = pgTable(
+  'domain_configs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+    customDomain: text('custom_domain').notNull(),
+    verificationToken: text('verification_token').notNull(),
+    verificationStatus: domainVerificationStatusEnum('verification_status').default('pending').notNull(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('domain_configs_agent_id_idx').on(table.agentId),
+    uniqueIndex('domain_configs_custom_domain_idx').on(table.customDomain),
+    index('domain_configs_verification_status_idx').on(table.verificationStatus),
+  ]
+);
+
+export type DomainConfigRecord = typeof domainConfigs.$inferSelect;
+export type NewDomainConfigRecord = typeof domainConfigs.$inferInsert;
+export type DomainVerificationStatus = typeof domainVerificationStatusEnum.enumValues[number];

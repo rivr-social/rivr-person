@@ -6,16 +6,20 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  AlertCircle,
   CheckCircle,
   ChevronDown,
   ChevronRight,
+  Clock,
   Code2,
   Copy,
   Database,
+  Download,
   Eye,
   FileCode2,
   FolderOpen,
   Globe,
+  History,
   Loader2,
   MessageSquare,
   PanelLeftClose,
@@ -23,10 +27,24 @@ import {
   Play,
   RefreshCw,
   Rocket,
+  RotateCcw,
+  Save,
   Send,
   Sparkles,
+  User,
   XCircle,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useMyProfileModule } from "@/lib/hooks/use-myprofile-module";
 import type { SiteFiles } from "@/lib/bespoke/site-files";
 import {
@@ -80,7 +98,62 @@ interface ChatMessage {
 // Panels
 // ---------------------------------------------------------------------------
 
-type RightPanelView = "preview" | "files" | "data";
+type RightPanelView = "preview" | "files" | "data" | "history";
+
+// ---------------------------------------------------------------------------
+// Version history types
+// ---------------------------------------------------------------------------
+
+interface SiteVersion {
+  id: string;
+  versionNumber: number;
+  commitMessage: string | null;
+  trigger: string;
+  fileCount: number;
+  createdAt: string;
+}
+
+type VersionSaveStatus = "idle" | "saving" | "success" | "error";
+
+const VERSION_SAVE_STATUS_IDLE: VersionSaveStatus = "idle";
+const VERSION_SAVE_STATUS_SAVING: VersionSaveStatus = "saving";
+const VERSION_SAVE_STATUS_SUCCESS: VersionSaveStatus = "success";
+const VERSION_SAVE_STATUS_ERROR: VersionSaveStatus = "error";
+
+const VERSION_STATUS_RESET_DELAY_MS = 3000;
+
+// ---------------------------------------------------------------------------
+// Solid Pod import types
+// ---------------------------------------------------------------------------
+
+interface SolidBuilderResource {
+  type: string;
+  label: string;
+  value: string;
+  source: "solid-pod";
+  sourceUri: string;
+}
+
+interface SolidProfileData {
+  webId: string;
+  name: string | null;
+  photo: string | null;
+  organization: string | null;
+  description: string | null;
+  url: string | null;
+  emails: string[];
+  phones: string[];
+  knows: string[];
+  publicTypeIndex: string | null;
+  storage: string | null;
+}
+
+interface SolidImportPreview {
+  profile: SolidProfileData;
+  builderResources: SolidBuilderResource[];
+}
+
+const SOLID_EXAMPLE_URI = "https://pod.example.com/profile/card#me";
 
 // ---------------------------------------------------------------------------
 // Markdown-lite renderer for chat messages
@@ -168,6 +241,21 @@ export default function BuilderPage() {
   const [rightPanelView, setRightPanelView] = useState<RightPanelView>("preview");
   const [showFileExplorer, setShowFileExplorer] = useState(false);
   const [dataExpanded, setDataExpanded] = useState(false);
+
+  // Solid Pod import state
+  const [solidDialogOpen, setSolidDialogOpen] = useState(false);
+  const [solidPodUri, setSolidPodUri] = useState("");
+  const [solidImporting, setSolidImporting] = useState(false);
+  const [solidImportError, setSolidImportError] = useState<string | null>(null);
+  const [solidImportPreview, setSolidImportPreview] = useState<SolidImportPreview | null>(null);
+
+  // Version history state
+  const [versions, setVersions] = useState<SiteVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionSaveStatus, setVersionSaveStatus] = useState<VersionSaveStatus>(VERSION_SAVE_STATUS_IDLE);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const [previewingVersionId, setPreviewingVersionId] = useState<string | null>(null);
+  const [previewingVersionFiles, setPreviewingVersionFiles] = useState<SiteFiles | null>(null);
 
   // Refs
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -397,6 +485,140 @@ export default function BuilderPage() {
   );
 
   // -------------------------------------------------------------------------
+  // Version history handlers
+  // -------------------------------------------------------------------------
+
+  const fetchVersions = useCallback(async () => {
+    setVersionsLoading(true);
+    try {
+      const response = await fetch("/api/builder/versions", {
+        credentials: "same-origin",
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { versions: SiteVersion[] };
+        setVersions(data.versions ?? []);
+      }
+    } catch {
+      // Silent failure for version list fetch
+    } finally {
+      setVersionsLoading(false);
+    }
+  }, []);
+
+  const handleSaveVersion = useCallback(async (commitMessage?: string) => {
+    if (Object.keys(siteFiles).length === 0) return;
+
+    setVersionSaveStatus(VERSION_SAVE_STATUS_SAVING);
+    try {
+      const response = await fetch("/api/builder/versions", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: siteFiles,
+          trigger: "save",
+          commitMessage: commitMessage || null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save version");
+      }
+
+      setVersionSaveStatus(VERSION_SAVE_STATUS_SUCCESS);
+      void fetchVersions();
+
+      setTimeout(() => {
+        setVersionSaveStatus(VERSION_SAVE_STATUS_IDLE);
+      }, VERSION_STATUS_RESET_DELAY_MS);
+    } catch {
+      setVersionSaveStatus(VERSION_SAVE_STATUS_ERROR);
+      setTimeout(() => {
+        setVersionSaveStatus(VERSION_SAVE_STATUS_IDLE);
+      }, VERSION_STATUS_RESET_DELAY_MS);
+    }
+  }, [siteFiles, fetchVersions]);
+
+  const handleRestoreVersion = useCallback(async (versionId: string) => {
+    setRestoringVersionId(versionId);
+    try {
+      const response = await fetch(`/api/builder/versions/${versionId}/restore`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to restore version");
+      }
+
+      const data = (await response.json()) as {
+        files: SiteFiles;
+        versionNumber: number;
+        commitMessage: string | null;
+      };
+
+      setSiteFiles(data.files);
+      setActivePreviewFile(
+        data.files["index.html"] ? "index.html" : Object.keys(data.files)[0] ?? "index.html",
+      );
+      setRightPanelView("preview");
+      setPreviewingVersionId(null);
+      setPreviewingVersionFiles(null);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `restore-${Date.now()}`,
+          role: "assistant",
+          content: `Restored to version ${data.versionNumber}${data.commitMessage ? ` ("${data.commitMessage}")` : ""}. ${Object.keys(data.files).length} files loaded.`,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch {
+      // Restore error handled silently
+    } finally {
+      setRestoringVersionId(null);
+    }
+  }, []);
+
+  const handlePreviewVersion = useCallback(async (versionId: string) => {
+    if (previewingVersionId === versionId) {
+      // Toggle off preview
+      setPreviewingVersionId(null);
+      setPreviewingVersionFiles(null);
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/builder/versions/${versionId}/restore`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to load version for preview");
+      }
+
+      const data = (await response.json()) as {
+        id: string;
+        files: SiteFiles;
+      };
+
+      setPreviewingVersionId(versionId);
+      setPreviewingVersionFiles(data.files);
+    } catch {
+      // Preview error handled silently
+    }
+  }, [previewingVersionId]);
+
+  // Fetch versions when switching to history tab
+  useEffect(() => {
+    if (rightPanelView === "history") {
+      void fetchVersions();
+    }
+  }, [rightPanelView, fetchVersions]);
+
+  // -------------------------------------------------------------------------
   // Deploy handler
   // -------------------------------------------------------------------------
 
@@ -441,6 +663,26 @@ export default function BuilderPage() {
         },
       ]);
 
+      // Auto-snapshot version on deploy
+      try {
+        await fetch("/api/builder/versions", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            files: siteFiles,
+            trigger: "deploy",
+            commitMessage: `Deploy: ${data.deployedFiles?.length ?? 0} files to ${data.deployPath ?? "target"}`,
+          }),
+        });
+        // Refresh version list if history panel is visible
+        if (rightPanelView === "history") {
+          void fetchVersions();
+        }
+      } catch {
+        // Version snapshot failure should not block deploy success
+      }
+
       setTimeout(() => {
         setDeployStatus(DEPLOY_STATUS_IDLE);
         setDeployMessage("");
@@ -453,7 +695,7 @@ export default function BuilderPage() {
         setDeployMessage("");
       }, DEPLOY_STATUS_RESET_DELAY_MS);
     }
-  }, [siteFiles]);
+  }, [siteFiles, rightPanelView, fetchVersions]);
 
   // -------------------------------------------------------------------------
   // File explorer actions
@@ -492,6 +734,109 @@ export default function BuilderPage() {
     },
     [siteFiles],
   );
+
+  // -------------------------------------------------------------------------
+  // Solid Pod import handlers
+  // -------------------------------------------------------------------------
+
+  const handleSolidImportFetch = useCallback(async () => {
+    const trimmedUri = solidPodUri.trim();
+    if (!trimmedUri) return;
+
+    setSolidImporting(true);
+    setSolidImportError(null);
+    setSolidImportPreview(null);
+
+    try {
+      const response = await fetch("/api/builder/import-solid", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ podUri: trimmedUri }),
+      });
+
+      const data = (await response.json()) as {
+        success: boolean;
+        profile?: SolidProfileData;
+        builderResources?: SolidBuilderResource[];
+        error?: string;
+      };
+
+      if (!data.success || !data.profile) {
+        throw new Error(data.error || "Import failed");
+      }
+
+      setSolidImportPreview({
+        profile: data.profile,
+        builderResources: data.builderResources ?? [],
+      });
+    } catch (err) {
+      setSolidImportError(
+        err instanceof Error ? err.message : "Failed to fetch Solid Pod data",
+      );
+    } finally {
+      setSolidImporting(false);
+    }
+  }, [solidPodUri]);
+
+  const handleSolidImportApply = useCallback(() => {
+    if (!solidImportPreview) return;
+
+    const { profile } = solidImportPreview;
+
+    // Build a chat message that feeds the imported data to the AI builder
+    const dataParts: string[] = [];
+    if (profile.name) dataParts.push(`**Name:** ${profile.name}`);
+    if (profile.organization) dataParts.push(`**Organization:** ${profile.organization}`);
+    if (profile.description) dataParts.push(`**Description:** ${profile.description}`);
+    if (profile.url) dataParts.push(`**Website:** ${profile.url}`);
+    if (profile.photo) dataParts.push(`**Photo:** ${profile.photo}`);
+    if (profile.emails.length > 0) dataParts.push(`**Email:** ${profile.emails.join(", ")}`);
+    if (profile.phones.length > 0) dataParts.push(`**Phone:** ${profile.phones.join(", ")}`);
+    if (profile.knows.length > 0) dataParts.push(`**Connections:** ${profile.knows.length} linked profiles`);
+
+    const importSummary =
+      `I imported data from my Solid Pod (${profile.webId}):\n\n` +
+      dataParts.join("\n") +
+      "\n\nPlease incorporate this Solid Pod data into my site. " +
+      "Use the name, description, photo, and other details to enhance the existing content.";
+
+    // Add as a user message and trigger it via the chat
+    const importMsg: ChatMessage = {
+      id: `solid-import-${Date.now()}`,
+      role: "user",
+      content: importSummary,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, importMsg]);
+
+    // Also add a system confirmation message
+    const confirmMsg: ChatMessage = {
+      id: `solid-confirm-${Date.now()}`,
+      role: "assistant",
+      content:
+        `Successfully imported ${solidImportPreview.builderResources.length} data fields from your Solid Pod at \`${profile.webId}\`. ` +
+        "The data has been added to the conversation context. " +
+        "You can now ask me to rebuild or update your site using this data.",
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, confirmMsg]);
+
+    // Close dialog and reset
+    setSolidDialogOpen(false);
+    setSolidPodUri("");
+    setSolidImportPreview(null);
+    setSolidImportError(null);
+  }, [solidImportPreview]);
+
+  const handleSolidDialogClose = useCallback(() => {
+    setSolidDialogOpen(false);
+    setSolidPodUri("");
+    setSolidImportPreview(null);
+    setSolidImportError(null);
+  }, []);
 
   // -------------------------------------------------------------------------
   // Preview HTML assembly
@@ -691,6 +1036,183 @@ export default function BuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Solid Pod import */}
+          <Dialog open={solidDialogOpen} onOpenChange={(open) => {
+            if (!open) handleSolidDialogClose();
+            else setSolidDialogOpen(true);
+          }}>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                <Download className="h-3.5 w-3.5" />
+                Import from Solid Pod
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Import from Solid Pod</DialogTitle>
+                <DialogDescription>
+                  Enter a Solid Pod WebID or profile URI to import data into your builder workspace.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4 py-2">
+                {/* URI Input */}
+                <div className="space-y-2">
+                  <Label htmlFor="solid-pod-uri">Pod URI</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="solid-pod-uri"
+                      value={solidPodUri}
+                      onChange={(e) => {
+                        setSolidPodUri(e.target.value);
+                        setSolidImportError(null);
+                      }}
+                      placeholder={SOLID_EXAMPLE_URI}
+                      className="flex-1 font-mono text-xs"
+                      disabled={solidImporting}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleSolidImportFetch();
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleSolidImportFetch}
+                      disabled={solidImporting || !solidPodUri.trim()}
+                      className="shrink-0"
+                    >
+                      {solidImporting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        "Fetch"
+                      )}
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Example: <code className="bg-muted px-1 py-0.5 rounded text-[10px]">{SOLID_EXAMPLE_URI}</code>
+                  </p>
+                </div>
+
+                {/* Error display */}
+                {solidImportError && (
+                  <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{solidImportError}</span>
+                  </div>
+                )}
+
+                {/* Preview of imported data */}
+                {solidImportPreview && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-sm font-medium text-green-600">
+                      <CheckCircle className="h-4 w-4" />
+                      Data fetched successfully
+                    </div>
+
+                    <Card>
+                      <CardContent className="py-3 space-y-2.5">
+                        {/* Profile header */}
+                        <div className="flex items-center gap-3">
+                          {solidImportPreview.profile.photo ? (
+                            <img
+                              src={solidImportPreview.profile.photo}
+                              alt="Profile"
+                              className="h-10 w-10 rounded-full object-cover border"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center">
+                              <User className="h-5 w-5 text-muted-foreground" />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">
+                              {solidImportPreview.profile.name || "Unknown"}
+                            </p>
+                            {solidImportPreview.profile.organization && (
+                              <p className="text-xs text-muted-foreground truncate">
+                                {solidImportPreview.profile.organization}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Description */}
+                        {solidImportPreview.profile.description && (
+                          <p className="text-xs text-muted-foreground line-clamp-3">
+                            {solidImportPreview.profile.description}
+                          </p>
+                        )}
+
+                        {/* Resource badges */}
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] font-medium text-muted-foreground">
+                            Importable fields ({solidImportPreview.builderResources.length})
+                          </p>
+                          <div className="flex flex-wrap gap-1">
+                            {solidImportPreview.builderResources.map((resource, idx) => (
+                              <Badge
+                                key={`${resource.type}-${idx}`}
+                                variant="secondary"
+                                className="text-[10px] gap-1"
+                              >
+                                {resource.label}
+                                {resource.type !== "connection" && resource.type !== "type-index" && resource.type !== "storage" && (
+                                  <span className="opacity-60 max-w-[120px] truncate">
+                                    {resource.value}
+                                  </span>
+                                )}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Connections count */}
+                        {solidImportPreview.profile.knows.length > 0 && (
+                          <p className="text-[11px] text-muted-foreground">
+                            {solidImportPreview.profile.knows.length} linked connections found
+                          </p>
+                        )}
+
+                        {/* WebID */}
+                        <div className="pt-1 border-t">
+                          <p className="text-[10px] text-muted-foreground font-mono truncate">
+                            {solidImportPreview.profile.webId}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleSolidDialogClose}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleSolidImportApply}
+                  disabled={!solidImportPreview}
+                  className="gap-1.5"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Import to Builder
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {/* File count */}
           {fileNames.length > 0 && (
             <Badge variant="outline" className="text-xs gap-1">
@@ -712,6 +1234,30 @@ export default function BuilderPage() {
               Failed
             </Badge>
           )}
+
+          {/* Save version button */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => handleSaveVersion()}
+            disabled={
+              versionSaveStatus === VERSION_SAVE_STATUS_SAVING || Object.keys(siteFiles).length === 0
+            }
+          >
+            {versionSaveStatus === VERSION_SAVE_STATUS_SAVING ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : versionSaveStatus === VERSION_SAVE_STATUS_SUCCESS ? (
+              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            {versionSaveStatus === VERSION_SAVE_STATUS_SAVING
+              ? "Saving..."
+              : versionSaveStatus === VERSION_SAVE_STATUS_SUCCESS
+                ? "Saved"
+                : "Save"}
+          </Button>
 
           {/* Deploy button */}
           <Button
@@ -922,6 +1468,17 @@ export default function BuilderPage() {
             >
               <Database className="h-3.5 w-3.5" />
               Data
+            </button>
+            <button
+              onClick={() => setRightPanelView("history")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                rightPanelView === "history"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              <History className="h-3.5 w-3.5" />
+              History
             </button>
 
             <div className="flex-1" />
@@ -1178,6 +1735,174 @@ export default function BuilderPage() {
                     </div>
                   ) : (
                     <Skeleton className="h-32" />
+                  )}
+                </div>
+              )}
+
+              {/* ----- HISTORY PANEL ----- */}
+              {rightPanelView === "history" && (
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium">Version History</h3>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => void fetchVersions()}
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Refresh
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => handleSaveVersion()}
+                        disabled={
+                          versionSaveStatus === VERSION_SAVE_STATUS_SAVING ||
+                          Object.keys(siteFiles).length === 0
+                        }
+                      >
+                        {versionSaveStatus === VERSION_SAVE_STATUS_SAVING ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Save className="h-3 w-3" />
+                        )}
+                        Save Snapshot
+                      </Button>
+                    </div>
+                  </div>
+
+                  {versionsLoading ? (
+                    <div className="space-y-3">
+                      <Skeleton className="h-20" />
+                      <Skeleton className="h-20" />
+                      <Skeleton className="h-20" />
+                    </div>
+                  ) : versions.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-3">
+                      <History className="h-12 w-12 opacity-20" />
+                      <div className="text-center">
+                        <p className="text-sm font-medium">No versions yet</p>
+                        <p className="text-xs mt-1">
+                          Versions are created automatically when you deploy, or manually with
+                          the Save Snapshot button.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {versions.map((version) => (
+                        <Card
+                          key={version.id}
+                          className={`transition-colors ${
+                            previewingVersionId === version.id
+                              ? "border-primary/50 bg-primary/5"
+                              : ""
+                          }`}
+                        >
+                          <CardContent className="py-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Badge variant="outline" className="text-[10px] font-mono">
+                                  v{version.versionNumber}
+                                </Badge>
+                                <Badge
+                                  variant="secondary"
+                                  className={`text-[10px] ${
+                                    version.trigger === "deploy"
+                                      ? "bg-green-500/10 text-green-600"
+                                      : version.trigger === "save"
+                                        ? "bg-blue-500/10 text-blue-600"
+                                        : "bg-muted text-muted-foreground"
+                                  }`}
+                                >
+                                  {version.trigger}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                <Clock className="h-3 w-3" />
+                                {new Date(version.createdAt).toLocaleString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </div>
+                            </div>
+
+                            {version.commitMessage && (
+                              <p className="text-xs text-muted-foreground line-clamp-2">
+                                {version.commitMessage}
+                              </p>
+                            )}
+
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] text-muted-foreground">
+                                {version.fileCount} file{version.fileCount !== 1 ? "s" : ""}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 text-[10px] gap-1"
+                                  onClick={() => void handlePreviewVersion(version.id)}
+                                >
+                                  <Eye className="h-3 w-3" />
+                                  {previewingVersionId === version.id ? "Hide" : "Preview"}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-6 text-[10px] gap-1"
+                                  onClick={() => void handleRestoreVersion(version.id)}
+                                  disabled={restoringVersionId === version.id}
+                                >
+                                  {restoringVersionId === version.id ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <RotateCcw className="h-3 w-3" />
+                                  )}
+                                  Restore
+                                </Button>
+                              </div>
+                            </div>
+
+                            {/* Inline preview of version files */}
+                            {previewingVersionId === version.id && previewingVersionFiles && (
+                              <div className="mt-2 pt-2 border-t border-border/30">
+                                <div className="text-[10px] font-medium text-muted-foreground mb-1.5">
+                                  Files in this version:
+                                </div>
+                                <div className="flex flex-wrap gap-1">
+                                  {Object.keys(previewingVersionFiles).map((filename) => (
+                                    <Badge
+                                      key={filename}
+                                      variant="outline"
+                                      className="text-[10px] gap-1 font-mono"
+                                    >
+                                      <Code2 className="h-2.5 w-2.5" />
+                                      {filename}
+                                    </Badge>
+                                  ))}
+                                </div>
+                                {previewingVersionFiles["index.html"] && (
+                                  <div className="mt-2 rounded border overflow-hidden h-48">
+                                    <iframe
+                                      srcDoc={previewingVersionFiles["index.html"]}
+                                      title={`Version ${version.versionNumber} Preview`}
+                                      className="w-full h-full border-0"
+                                      sandbox="allow-same-origin"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
                   )}
                 </div>
               )}

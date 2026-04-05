@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { resolvePublicProfileAgent } from "@/lib/bespoke/modules/public-profile";
+import { findAutobotEnabledPersona } from "@/app/actions/personas";
 import { fetchProfileData, fetchUserGroups } from "@/app/actions/graph";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 
@@ -134,14 +135,18 @@ export async function POST(
     );
   }
 
-  // Check if the agent has autobot enabled
-  const metadata = (agent.metadata ?? {}) as Record<string, unknown>;
-  if (!metadata.autobotEnabled) {
+  // Find an autobot-enabled persona for this user.
+  // The autobotEnabled flag lives on persona agents (children), not the main user.
+  const persona = await findAutobotEnabledPersona(agent.id);
+  if (!persona) {
     return NextResponse.json(
       { error: "This user has not enabled their AI persona for public chat." },
       { status: 403 },
     );
   }
+
+  const metadata = (agent.metadata ?? {}) as Record<string, unknown>;
+  const personaMetadata = (persona.metadata ?? {}) as Record<string, unknown>;
 
   // Parse and validate the request body
   let body: PersonaChatRequestBody;
@@ -186,11 +191,15 @@ export async function POST(
     fetchUserGroups(agent.id, 10).catch(() => []),
   ]);
 
-  const ownerName = agent.name || username;
+  // Use persona name/bio if available, fall back to main agent profile
+  const ownerName = persona.name || agent.name || username;
   const ownerUsername =
     typeof metadata.username === "string" ? metadata.username : username;
+  const personaBio =
+    persona.description ||
+    (typeof personaMetadata.bio === "string" ? personaMetadata.bio : "");
   const bio =
-    agent.description || (typeof metadata.bio === "string" ? metadata.bio : "");
+    personaBio || agent.description || (typeof metadata.bio === "string" ? metadata.bio : "");
   const skills = Array.isArray(metadata.skills)
     ? metadata.skills.filter((s): s is string => typeof s === "string")
     : [];
@@ -210,11 +219,11 @@ export async function POST(
     config.baseUrl,
   );
 
-  // Build a session key scoped to visitor + target persona
+  // Build a session key scoped to visitor + target persona agent
   const visitorName = session.user.name || session.user.email || "visitor";
   const sessionKey = [
     "persona-chat",
-    sanitizeSessionSegment(agent.id),
+    sanitizeSessionSegment(persona.id),
     sanitizeSessionSegment(session.user.id),
   ].join(":");
 
@@ -224,7 +233,7 @@ export async function POST(
       headers: {
         "Content-Type": "application/json",
         "x-openclaw-model": PERSONA_CHAT_MODEL,
-        "x-rivr-user-id": agent.id,
+        "x-rivr-user-id": persona.id,
       },
       body: JSON.stringify({
         username: visitorName,
@@ -254,7 +263,7 @@ export async function POST(
       model: data.model || PERSONA_CHAT_MODEL,
       personaName: ownerName,
       personaUsername: ownerUsername,
-      personaImage: agent.image || null,
+      personaImage: persona.image || agent.image || null,
     });
   } catch (error) {
     const errorMessage =

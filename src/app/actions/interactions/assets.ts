@@ -6,7 +6,8 @@ import { db } from "@/db";
 import { resources, ledger } from "@/db/schema";
 import type { NewLedgerEntry, NewResource } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
-import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { federatedWrite } from "@/lib/federation/remote-write";
 import { getCurrentUserId } from "./helpers";
 import type { ActionResult } from "./types";
 import { isUuid } from "./types";
@@ -61,7 +62,7 @@ export async function createMutualAssetAction(params: {
     ? params.category
     : DEFAULT_CATEGORY;
 
-  const facadeResult = await updateFacade.execute(
+  const facadeResult = await federatedWrite<typeof params, ActionResult>(
     {
       type: 'createMutualAssetAction',
       actorId: userId,
@@ -182,7 +183,7 @@ export async function bookAssetAction(params: {
       return { success: false, message: `Asset is currently ${status} and cannot be booked.` };
     }
 
-    const facadeResult = await updateFacade.execute(
+    const facadeResult = await federatedWrite<typeof params, ActionResult>(
       {
         type: 'bookAssetAction',
         actorId: userId,
