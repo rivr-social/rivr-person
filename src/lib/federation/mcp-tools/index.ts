@@ -33,6 +33,8 @@ import { getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
 import { getProvenanceLog } from "@/lib/federation/mcp-provenance";
 import { serializeAgent } from "@/lib/graph-serializers";
 import { and, eq, isNull } from "drizzle-orm";
+import { getDeployCapability, type InstanceDeployCapability } from "@/lib/deploy/capability";
+import { getAutobotSandbox, getSandboxSummary, isOperationAllowed } from "@/lib/autobot/isolation";
 
 export type McpToolCallContext = {
   actorId: string;
@@ -602,6 +604,203 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         limit: typeof args.limit === "number" ? args.limit : undefined,
       });
       return { success: true, entries, count: entries.length };
+    },
+  },
+
+  // =========================================================================
+  // Deploy / Isolation boundary tools
+  // =========================================================================
+
+  {
+    name: "rivr.deploy.get_capability",
+    description: "Return the deploy capability and isolation tier for this instance. Shows what operations are allowed (self-deploy, Docker, host access, etc.).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    enabledFor: ["session", "token"],
+    handler: async () => {
+      const cap = getDeployCapability();
+      const sandbox = getSandboxSummary();
+      return { success: true, capability: cap, sandbox };
+    },
+  },
+  {
+    name: "rivr.deploy.self_deploy",
+    description: "Trigger a self-deploy (git pull + rebuild) on sovereign instances. Denied on shared instances.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        branch: { type: "string", description: "Git branch to deploy. Default: current branch." },
+      },
+    },
+    enabledFor: ["session"],
+    handler: async (args) => {
+      const cap = getDeployCapability();
+      if (!cap.canSelfDeploy) {
+        return {
+          success: false,
+          error: `Self-deploy is not available on ${cap.isolationTier} instances. This operation requires a sovereign instance.`,
+          isolationTier: cap.isolationTier,
+        };
+      }
+
+      if (!isOperationAllowed("self_deploy")) {
+        return {
+          success: false,
+          error: "self_deploy operation is denied by the current sandbox configuration.",
+        };
+      }
+
+      const branch = getString(args.branch) ?? "main";
+      // On sovereign instances, trigger the deploy script
+      const { execSync } = await import("child_process");
+      try {
+        const output = execSync(
+          `cd ${process.cwd()} && git fetch origin && git checkout ${branch} && git pull origin ${branch}`,
+          { timeout: 30000, encoding: "utf-8" },
+        );
+        return { success: true, branch, output: output.slice(0, 2000) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Deploy script failed";
+        return { success: false, error: message };
+      }
+    },
+  },
+  {
+    name: "rivr.deploy.restart_autobot",
+    description: "Restart the autobot/OpenClaw sidecar on sovereign instances. Denied on shared instances.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    enabledFor: ["session"],
+    handler: async () => {
+      const cap = getDeployCapability();
+      if (!cap.canDeployAutobot) {
+        return {
+          success: false,
+          error: `Autobot restart is not available on ${cap.isolationTier} instances. Autobots on shared servers are containerized and cannot be restarted by agents.`,
+          isolationTier: cap.isolationTier,
+        };
+      }
+
+      if (!isOperationAllowed("autobot_deploy")) {
+        return {
+          success: false,
+          error: "autobot_deploy operation is denied by the current sandbox configuration.",
+        };
+      }
+
+      const { execSync } = await import("child_process");
+      try {
+        const output = execSync(
+          "docker compose restart openclaw 2>&1 || systemctl restart openclaw 2>&1",
+          { timeout: 30000, encoding: "utf-8" },
+        );
+        return { success: true, output: output.slice(0, 2000) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Autobot restart failed";
+        return { success: false, error: message };
+      }
+    },
+  },
+  {
+    name: "rivr.deploy.docker_rebuild",
+    description: "Trigger a Docker rebuild on sovereign instances. Denied on shared instances.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        service: { type: "string", description: "Docker compose service name to rebuild. Default: app." },
+      },
+    },
+    enabledFor: ["session"],
+    handler: async (args) => {
+      const cap = getDeployCapability();
+      if (!cap.canBuildDocker) {
+        return {
+          success: false,
+          error: `Docker operations are not available on ${cap.isolationTier} instances. Agents on shared infrastructure cannot alter Docker containers.`,
+          isolationTier: cap.isolationTier,
+        };
+      }
+
+      if (!isOperationAllowed("docker_build")) {
+        return {
+          success: false,
+          error: "docker_build operation is denied by the current sandbox configuration.",
+        };
+      }
+
+      const service = getString(args.service) ?? "app";
+      // Sanitize service name to prevent injection
+      const sanitized = service.replace(/[^a-zA-Z0-9_-]/g, "");
+      if (sanitized !== service) {
+        return { success: false, error: "Invalid service name." };
+      }
+
+      const { execSync } = await import("child_process");
+      try {
+        const output = execSync(
+          `cd ${process.cwd()} && docker compose build ${sanitized} && docker compose up -d ${sanitized}`,
+          { timeout: 300000, encoding: "utf-8" },
+        );
+        return { success: true, service: sanitized, output: output.slice(0, 2000) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Docker rebuild failed";
+        return { success: false, error: message };
+      }
+    },
+  },
+  {
+    name: "rivr.sandbox.status",
+    description: "Return the current autobot sandbox configuration — what operations are allowed, resource limits, and network restrictions.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    enabledFor: ["session", "token"],
+    handler: async () => {
+      const sandbox = getAutobotSandbox();
+      const summary = getSandboxSummary();
+      return { success: true, sandbox: summary, deniedOperations: [...sandbox.deniedOperations] };
+    },
+  },
+  {
+    name: "rivr.sandbox.check_operation",
+    description: "Check whether a specific operation is allowed in the current sandbox.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["operation"],
+      properties: {
+        operation: {
+          type: "string",
+          description: "Operation name to check (e.g., ssh, docker, fs_write_host, self_deploy, autobot_deploy).",
+        },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const operation = getString(args.operation);
+      if (!operation) throw new Error("operation is required.");
+
+      const allowed = isOperationAllowed(operation);
+      const cap = getDeployCapability();
+      return {
+        success: true,
+        operation,
+        allowed,
+        isolationTier: cap.isolationTier,
+        reason: allowed
+          ? `Operation "${operation}" is permitted on ${cap.isolationTier} instances.`
+          : `Operation "${operation}" is denied on ${cap.isolationTier} instances.`,
+      };
     },
   },
 ];

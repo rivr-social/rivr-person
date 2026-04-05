@@ -50,9 +50,17 @@ const ACTION_RISK_MAP: Record<string, RiskLevel> = {
   'rivr.events.append_transcript': 'medium',
   'rivr.kg.push_doc': 'medium',
 
-  // High — financial, join/leave, destructive
+  // High — financial, join/leave, destructive, deploy/host operations
   'rivr.groups.join': 'high',
   'rivr.thanks.send': 'high',
+  'rivr.deploy.self_deploy': 'high',
+  'rivr.deploy.restart_autobot': 'high',
+  'rivr.deploy.docker_rebuild': 'high',
+
+  // Low — read-only deploy/sandbox status
+  'rivr.deploy.get_capability': 'low',
+  'rivr.sandbox.status': 'low',
+  'rivr.sandbox.check_operation': 'low',
 };
 
 /** Default risk level for unrecognized action types. */
