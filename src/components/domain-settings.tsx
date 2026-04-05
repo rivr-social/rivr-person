@@ -27,6 +27,8 @@ import {
   RefreshCw,
   Copy,
   Check,
+  Rocket,
+  FileCode,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,6 +51,7 @@ interface DomainConfigResponse {
   verifiedAt: string | null;
   dnsRecords: DnsRecord[];
   verification?: VerificationResult;
+  traefikConfig?: string | null;
 }
 
 interface DnsRecord {
@@ -135,6 +138,8 @@ export function DomainSettings() {
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [showTraefikConfig, setShowTraefikConfig] = useState(false);
 
   const [domainInput, setDomainInput] = useState("");
   const [config, setConfig] = useState<DomainConfigResponse | null>(null);
@@ -294,6 +299,43 @@ export function DomainSettings() {
       });
     } finally {
       setRemoving(false);
+    }
+  }
+
+  /** Generate/regenerate Traefik config for the active domain. */
+  async function handleDeploy() {
+    setDeploying(true);
+    try {
+      const res = await fetch("/api/settings/domain/deploy", {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast({
+          title: "Deploy failed",
+          description: data.error || "An error occurred.",
+          variant: "destructive",
+        });
+        return;
+      }
+      // Update the config with the new traefik config
+      setConfig((prev) =>
+        prev ? { ...prev, traefikConfig: data.traefikConfig } : prev
+      );
+      setShowTraefikConfig(true);
+      toast({
+        title: "Traefik config generated",
+        description:
+          "Configuration has been stored. The deploy agent will pick it up on next poll.",
+      });
+    } catch {
+      toast({
+        title: "Deploy failed",
+        description: "Network error. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeploying(false);
     }
   }
 
@@ -484,17 +526,90 @@ export function DomainSettings() {
               </Button>
             </div>
 
-            {/* Traefik integration note */}
+            {/* Traefik configuration section */}
             {currentStatus === "active" && (
-              <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950 p-3 text-sm">
-                <p className="font-medium text-green-800 dark:text-green-200">
-                  Domain is active
-                </p>
-                <p className="mt-1 text-green-700 dark:text-green-300">
-                  DNS is verified and pointing correctly. If Traefik has not yet been
-                  configured for this domain, contact your deploy agent or update the
-                  Traefik dynamic configuration on the host to enable HTTPS routing.
-                </p>
+              <div className="space-y-3">
+                <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950 p-3 text-sm">
+                  <p className="font-medium text-green-800 dark:text-green-200">
+                    Domain is active
+                  </p>
+                  <p className="mt-1 text-green-700 dark:text-green-300">
+                    DNS is verified and pointing correctly. Generate or view the Traefik
+                    configuration below to enable HTTPS routing on the host.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    variant="outline"
+                    onClick={handleDeploy}
+                    disabled={deploying || saving || removing || verifying}
+                  >
+                    {deploying ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Rocket className="mr-2 h-4 w-4" />
+                        {config?.traefikConfig
+                          ? "Regenerate Traefik Config"
+                          : "Generate Traefik Config"}
+                      </>
+                    )}
+                  </Button>
+                  {config?.traefikConfig && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => setShowTraefikConfig((prev) => !prev)}
+                    >
+                      <FileCode className="mr-2 h-4 w-4" />
+                      {showTraefikConfig ? "Hide Config" : "Show Config"}
+                    </Button>
+                  )}
+                </div>
+
+                {config?.traefikConfig && showTraefikConfig && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">
+                        Traefik Dynamic Configuration
+                      </p>
+                      <CopyButton text={config.traefikConfig} />
+                    </div>
+                    <pre className="rounded-lg border bg-muted p-3 text-xs font-mono overflow-x-auto whitespace-pre">
+                      {config.traefikConfig}
+                    </pre>
+                    <div className="rounded-lg border p-3 text-xs text-muted-foreground space-y-1">
+                      <p className="font-medium text-foreground">
+                        Host setup instructions:
+                      </p>
+                      <ol className="list-decimal list-inside space-y-1">
+                        <li>
+                          The deploy agent on the host polls{" "}
+                          <code className="bg-muted px-1 rounded">
+                            GET /api/settings/domain/traefik-config
+                          </code>{" "}
+                          with the admin key.
+                        </li>
+                        <li>
+                          Write the YAML to Traefik&apos;s dynamic config directory
+                          (e.g.,{" "}
+                          <code className="bg-muted px-1 rounded">
+                            /etc/traefik/dynamic/custom-domains.yml
+                          </code>
+                          ).
+                        </li>
+                        <li>
+                          Traefik&apos;s file provider detects the change and
+                          provisions the route + Let&apos;s Encrypt certificate
+                          automatically.
+                        </li>
+                      </ol>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </>

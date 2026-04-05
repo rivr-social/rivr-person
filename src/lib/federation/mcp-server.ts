@@ -8,6 +8,7 @@ import {
   type McpToolCallContext,
 } from "@/lib/federation/mcp-tools";
 import { logMcpProvenance } from "@/lib/federation/mcp-provenance";
+import { withApprovalCheck } from "@/lib/autobot/with-approval-check";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
@@ -191,25 +192,31 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
 
     const startTime = Date.now();
     try {
-      const result = await runWithMcpExecutionContext(
-        {
-          actorId: authContext.actorId,
-          controllerId: authContext.controllerId,
-          actorType: authContext.actorType,
-        },
-        async () => tool.handler(toolArgs, authContext),
-      );
+      const approvalResult = await withApprovalCheck({
+        toolName,
+        toolArgs,
+        context: authContext,
+        handler: () =>
+          runWithMcpExecutionContext(
+            {
+              actorId: authContext.actorId,
+              controllerId: authContext.controllerId,
+              actorType: authContext.actorType,
+            },
+            async () => tool.handler(toolArgs, authContext),
+          ),
+      });
 
       const durationMs = Date.now() - startTime;
       logMcpProvenance({
         toolName,
         context: authContext,
         args: toolArgs,
-        resultStatus: "success",
+        resultStatus: approvalResult.executed ? "success" : "success",
         durationMs,
       }).catch(() => {});
 
-      return successResponse(id, toToolContent(result));
+      return successResponse(id, toToolContent(approvalResult.result));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Tool execution failed.";
       const durationMs = Date.now() - startTime;

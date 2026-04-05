@@ -35,6 +35,7 @@ import {
   verifyDomain,
   getRequiredDnsRecords,
 } from "@/lib/domain-verification";
+import { generateTraefikConfig } from "@/lib/traefik-config";
 
 export const dynamic = "force-dynamic";
 
@@ -83,6 +84,7 @@ export async function GET() {
       verificationToken: config.verificationToken,
       verifiedAt: config.verifiedAt,
       dnsRecords,
+      traefikConfig: config.verificationStatus === "active" ? config.traefikConfig : undefined,
     }, { status: STATUS_OK });
   } catch (error) {
     console.error("[domain-config] GET failed:", error);
@@ -146,6 +148,8 @@ export async function POST(request: Request) {
         (existing.verificationStatus === "pending" && newStatus !== "pending") ||
         (existing.verificationStatus === "verified" && newStatus === "active");
 
+      let storedTraefikConfig = existing.traefikConfig ?? null;
+
       if (statusAdvanced) {
         const updateFields: Record<string, unknown> = {
           verificationStatus: newStatus,
@@ -153,6 +157,14 @@ export async function POST(request: Request) {
         };
         if (newStatus === "verified" || newStatus === "active") {
           updateFields.verifiedAt = new Date();
+        }
+
+        // Auto-generate Traefik config when domain becomes active
+        if (newStatus === "active") {
+          const traefikYaml = generateTraefikConfig(existing.customDomain);
+          updateFields.traefikConfig = traefikYaml;
+          updateFields.traefikConfigGeneratedAt = new Date();
+          storedTraefikConfig = traefikYaml;
         }
 
         await db
@@ -166,14 +178,17 @@ export async function POST(request: Request) {
         existing.verificationToken
       );
 
+      const effectiveStatus = statusAdvanced ? newStatus : existing.verificationStatus;
+
       return NextResponse.json({
         configured: true,
         domain: existing.customDomain,
-        verificationStatus: statusAdvanced ? newStatus : existing.verificationStatus,
+        verificationStatus: effectiveStatus,
         verificationToken: existing.verificationToken,
         verifiedAt: statusAdvanced ? new Date().toISOString() : existing.verifiedAt,
         dnsRecords,
         verification: verificationResult,
+        traefikConfig: effectiveStatus === "active" ? storedTraefikConfig : undefined,
       }, { status: STATUS_OK });
     }
 

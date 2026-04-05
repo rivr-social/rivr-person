@@ -1512,6 +1512,8 @@ export const domainConfigs = pgTable(
     verificationToken: text('verification_token').notNull(),
     verificationStatus: domainVerificationStatusEnum('verification_status').default('pending').notNull(),
     verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    traefikConfig: text('traefik_config'),
+    traefikConfigGeneratedAt: timestamp('traefik_config_generated_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -1525,3 +1527,121 @@ export const domainConfigs = pgTable(
 export type DomainConfigRecord = typeof domainConfigs.$inferSelect;
 export type NewDomainConfigRecord = typeof domainConfigs.$inferInsert;
 export type DomainVerificationStatus = typeof domainVerificationStatusEnum.enumValues[number];
+
+// ---------------------------------------------------------------------------
+// Persona approval / audit enums and tables
+// ---------------------------------------------------------------------------
+
+export const approvalStatusEnum = pgEnum('approval_status', [
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+]);
+
+export const auditDecisionEnum = pgEnum('audit_decision', [
+  'auto_allowed',
+  'approved',
+  'rejected',
+  'expired',
+]);
+
+export const actionRiskLevelEnum = pgEnum('action_risk_level', [
+  'low',
+  'medium',
+  'high',
+]);
+
+/**
+ * Persona action approvals — queue of pending/resolved action approvals.
+ * Created by migration 0035_persona_approvals.
+ */
+export const personaActionApprovals = pgTable(
+  'persona_action_approvals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personaId: uuid('persona_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+    actionType: text('action_type').notNull(),
+    actionPayload: jsonb('action_payload').$type<Record<string, unknown>>().default({}).notNull(),
+    riskLevel: actionRiskLevelEnum('risk_level').notNull().default('medium'),
+    status: approvalStatusEnum('status').notNull().default('pending'),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolvedBy: uuid('resolved_by').references(() => agents.id, { onDelete: 'set null' }),
+    resolutionNote: text('resolution_note'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('paa_persona_id_idx').on(table.personaId),
+    index('paa_status_idx').on(table.status),
+    index('paa_risk_level_idx').on(table.riskLevel),
+    index('paa_requested_at_idx').on(table.requestedAt),
+    index('paa_expires_at_idx').on(table.expiresAt),
+    index('paa_persona_status_idx').on(table.personaId, table.status),
+  ]
+);
+
+export const personaActionApprovalsRelations = relations(personaActionApprovals, ({ one }) => ({
+  persona: one(agents, {
+    fields: [personaActionApprovals.personaId],
+    references: [agents.id],
+    relationName: 'persona_approvals',
+  }),
+  resolver: one(agents, {
+    fields: [personaActionApprovals.resolvedBy],
+    references: [agents.id],
+    relationName: 'approval_resolver',
+  }),
+}));
+
+/**
+ * Persona audit log — append-only log of all persona action decisions.
+ * Created by migration 0035_persona_approvals.
+ */
+export const personaAuditLog = pgTable(
+  'persona_audit_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personaId: uuid('persona_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+    actionType: text('action_type').notNull(),
+    riskLevel: actionRiskLevelEnum('risk_level').notNull().default('medium'),
+    decision: auditDecisionEnum('decision').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+    actorId: uuid('actor_id').references(() => agents.id, { onDelete: 'set null' }),
+    approvalId: uuid('approval_id').references(() => personaActionApprovals.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('pal_persona_id_idx').on(table.personaId),
+    index('pal_action_type_idx').on(table.actionType),
+    index('pal_decision_idx').on(table.decision),
+    index('pal_created_at_idx').on(table.createdAt),
+    index('pal_persona_created_idx').on(table.personaId, table.createdAt),
+  ]
+);
+
+export const personaAuditLogRelations = relations(personaAuditLog, ({ one }) => ({
+  persona: one(agents, {
+    fields: [personaAuditLog.personaId],
+    references: [agents.id],
+    relationName: 'persona_audit_entries',
+  }),
+  actor: one(agents, {
+    fields: [personaAuditLog.actorId],
+    references: [agents.id],
+    relationName: 'audit_actor',
+  }),
+  approval: one(personaActionApprovals, {
+    fields: [personaAuditLog.approvalId],
+    references: [personaActionApprovals.id],
+  }),
+}));
+
+export type PersonaActionApprovalRecord = typeof personaActionApprovals.$inferSelect;
+export type NewPersonaActionApprovalRecord = typeof personaActionApprovals.$inferInsert;
+export type ApprovalStatus = typeof approvalStatusEnum.enumValues[number];
+export type ActionRiskLevel = typeof actionRiskLevelEnum.enumValues[number];
+
+export type PersonaAuditLogRecord = typeof personaAuditLog.$inferSelect;
+export type NewPersonaAuditLogRecord = typeof personaAuditLog.$inferInsert;
+export type AuditDecision = typeof auditDecisionEnum.enumValues[number];
