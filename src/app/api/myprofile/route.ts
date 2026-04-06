@@ -11,6 +11,7 @@ import {
   fetchUserGroups,
   fetchUserPosts,
 } from "@/app/actions/graph";
+import { getDocumentsForUser } from "@/lib/queries/resources";
 import { getAllSubscriptionStatusesAction } from "@/app/actions/billing";
 import {
   getMyTicketPurchasesAction,
@@ -43,7 +44,7 @@ export async function GET() {
   }
 
   try {
-    const [profile, savedListingIds, wallet, wallets, transactions, ticketPurchases, subscriptions, receipts, posts, events, groups, marketplaceListings, reactionCounts, connections, homeInstance] = await Promise.all([
+    const [profile, savedListingIds, wallet, wallets, transactions, ticketPurchases, subscriptions, receipts, posts, events, groups, marketplaceListings, reactionCounts, connections, documents, homeInstance] = await Promise.all([
       fetchProfileData(actorId).catch(() => null),
       fetchMySavedListingIds().catch(() => [] as string[]),
       getMyWalletAction().catch(() => ({ success: false as const })),
@@ -58,6 +59,7 @@ export async function GET() {
       fetchMarketplaceListings(50).catch(() => []),
       fetchReactionCountsForUser(actorId).catch(() => ({})),
       fetchUserConnections(actorId).catch(() => []),
+      getDocumentsForUser(actorId).catch(() => []),
       resolveHomeInstance(actorId).catch(() => null),
     ]);
 
@@ -81,6 +83,7 @@ export async function GET() {
         marketplaceListings,
         reactionCounts,
         connections,
+        documents,
         module: {
           moduleId: MYPROFILE_MODULE_ID,
           manifestEndpoint: "/api/myprofile/manifest",

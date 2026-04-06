@@ -32,7 +32,7 @@ import {
 } from '@/db/schema';
 import { eq, and, or, sql, isNull, count } from 'drizzle-orm';
 import { getStripe, getOrCreateStripeCustomer } from '@/lib/billing';
-import { toDollars } from '@/lib/integrations/stripe';
+import { toDollars, isStripeConfigured } from '@/lib/integrations/stripe';
 import {
   MIN_DEPOSIT_CENTS,
   MAX_DEPOSIT_CENTS,
@@ -391,8 +391,9 @@ export async function getOrCreateWallet(
   }
 
   let stripeCustomerId: string | null = null;
-  if (type === 'personal') {
+  if (type === 'personal' && isStripeConfigured()) {
     // Personal wallets need a Stripe customer for card-based deposits.
+    // Skip when Stripe is not configured (e.g. sovereign instances without billing).
     stripeCustomerId = await getOrCreateStripeCustomer(agentId);
   }
 

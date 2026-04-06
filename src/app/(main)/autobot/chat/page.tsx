@@ -264,6 +264,12 @@ const MODEL_OPTIONS = [
 
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
 
+const VALID_MODEL_VALUES: Set<string> = new Set(MODEL_OPTIONS.map((m) => m.value));
+
+function isValidModel(value: unknown): value is string {
+  return typeof value === "string" && VALID_MODEL_VALUES.has(value);
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -292,7 +298,7 @@ interface Thread {
 }
 
 type ProcessingState = "idle" | "sending" | "responding";
-type GpuStatus = "stopped" | "running" | "provisioning" | "gpu_starting" | "no_gpu" | "unknown";
+type GpuStatus = "stopped" | "stopping" | "running" | "provisioning" | "gpu_starting" | "no_gpu" | "unknown";
 type VoiceMode = "browser" | "clone";
 type GpuProvider = "vast" | "local" | "custom";
 
@@ -428,7 +434,8 @@ function saveActiveThreadId(id: string) {
 
 function loadStoredModel(): string {
   try {
-    return localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL;
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
+    return isValidModel(stored) ? stored : DEFAULT_MODEL;
   } catch {
     return DEFAULT_MODEL;
   }
@@ -861,32 +868,93 @@ function ThreadItem({
 }
 
 // ---------------------------------------------------------------------------
-// GPU Status Indicator
+// GPU Status Indicator (inline, used in settings panel)
 // ---------------------------------------------------------------------------
 
-function GpuStatusBadge({ status }: { status: GpuStatus }) {
+function InlineGpuStatus({
+  status,
+  onStart,
+  onStop,
+  actionInProgress,
+}: {
+  status: GpuStatus;
+  onStart: () => void;
+  onStop: () => void;
+  actionInProgress: string | null;
+}) {
   const colorMap: Record<GpuStatus, string> = {
     running: "bg-emerald-500",
     provisioning: "bg-yellow-500 animate-pulse",
     gpu_starting: "bg-yellow-500 animate-pulse",
     stopped: "bg-zinc-500",
-    no_gpu: "bg-zinc-500",
-    unknown: "bg-zinc-500",
+    stopping: "bg-zinc-500",
+    no_gpu: "bg-slate-500",
+    unknown: "bg-slate-500",
   };
 
   const labelMap: Record<GpuStatus, string> = {
-    running: "Voice GPU active",
-    provisioning: "GPU provisioning...",
-    gpu_starting: "GPU waking up...",
-    stopped: "Voice GPU off",
-    no_gpu: "No GPU configured",
-    unknown: "GPU status unknown",
+    running: "GPU Active",
+    provisioning: "GPU Starting...",
+    gpu_starting: "GPU Waking Up...",
+    stopped: "GPU Stopped",
+    stopping: "GPU Stopping...",
+    no_gpu: "No GPU",
+    unknown: "No GPU",
   };
 
+  const isStarting = status === "provisioning" || status === "gpu_starting";
+  const canStart = status === "no_gpu" || status === "unknown" || status === "stopped";
+  const canStop = status === "running";
+
   return (
-    <div className="flex items-center gap-1.5">
-      <span className={cn("h-2 w-2 rounded-full", colorMap[status])} />
-      <span className="text-[10px] text-muted-foreground">{labelMap[status]}</span>
+    <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/30 px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className={cn("h-2.5 w-2.5 rounded-full shrink-0", colorMap[status])} />
+        <span className="text-xs font-medium">{labelMap[status]}</span>
+        {isStarting && (
+          <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
+        )}
+      </div>
+      <div className="flex items-center gap-1.5">
+        {canStart && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px] gap-1 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300"
+            disabled={actionInProgress !== null}
+            onClick={onStart}
+          >
+            {actionInProgress === "start" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+            Start Voice
+          </Button>
+        )}
+        {canStop && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px] gap-1 border-red-500/40 text-red-400 hover:bg-red-500/20 hover:text-red-300"
+            disabled={actionInProgress !== null}
+            onClick={onStop}
+          >
+            {actionInProgress === "stop" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Square className="h-3 w-3" />
+            )}
+            Stop
+          </Button>
+        )}
+        {canStop && (
+          <Badge variant="outline" className="text-[9px] h-5 border-emerald-500/40 text-emerald-400">
+            <Cpu className="h-2.5 w-2.5 mr-1" />
+            Chatterbox TTS
+          </Badge>
+        )}
+      </div>
     </div>
   );
 }
@@ -908,6 +976,7 @@ export default function AutobotChatPage() {
 
   // Settings state
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [lastRespondedModel, setLastRespondedModel] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [voiceCloneConfigured, setVoiceCloneConfigured] = useState(false);
@@ -929,6 +998,7 @@ export default function AutobotChatPage() {
 
   // GPU/Voice state
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>("unknown");
+  const [gpuActionInProgress, setGpuActionInProgress] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [micPermissionDenied, setMicPermissionDenied] = useState(false);
@@ -1020,7 +1090,7 @@ export default function AutobotChatPage() {
         const settings = data?.settings;
         if (cancelled || !settings) return;
 
-        if (typeof settings.selectedModel === "string" && settings.selectedModel) {
+        if (isValidModel(settings.selectedModel)) {
           setSelectedModel(settings.selectedModel);
           saveStoredModel(settings.selectedModel);
         }
@@ -1128,6 +1198,7 @@ export default function AutobotChatPage() {
   }, []);
 
   const startGpu = useCallback(async () => {
+    setGpuActionInProgress("start");
     try {
       const res = await fetch(GPU_API_ENDPOINT, {
         method: "POST",
@@ -1136,10 +1207,31 @@ export default function AutobotChatPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setGpuStatus(data.status || "unknown");
+        setGpuStatus(data.status || "provisioning");
       }
     } catch {
       setGpuStatus("unknown");
+    } finally {
+      setGpuActionInProgress(null);
+    }
+  }, []);
+
+  const stopGpu = useCallback(async () => {
+    setGpuActionInProgress("stop");
+    try {
+      const res = await fetch(GPU_API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGpuStatus(data.status || "stopped");
+      }
+    } catch {
+      // Next poll will correct
+    } finally {
+      setGpuActionInProgress(null);
     }
   }, []);
 
@@ -1171,6 +1263,12 @@ export default function AutobotChatPage() {
     }
     return () => stopGpuHeartbeat();
   }, [ttsEnabled, startGpu, startGpuHeartbeat]);
+
+  // Poll GPU status every 15s so the inline indicator stays current
+  useEffect(() => {
+    const interval = setInterval(fetchGpuStatus, 15_000);
+    return () => clearInterval(interval);
+  }, [fetchGpuStatus]);
 
   // ---------------------------------------------------------------------------
   // TTS (Chatterbox with browser fallback)
@@ -1501,13 +1599,16 @@ export default function AutobotChatPage() {
 
         const data = (await response.json()) as ChatResponse;
         const reply = data.reply || "...";
+        const respondedModel = data.model || selectedModel;
+
+        setLastRespondedModel(respondedModel);
 
         const assistantMessage: ChatMessage = {
           id: `msg_${generateId()}`,
           role: "assistant",
           content: reply,
           timestamp: new Date().toISOString(),
-          model: data.model || selectedModel,
+          model: respondedModel,
         };
 
         setThreads((prev) =>
@@ -1581,6 +1682,7 @@ export default function AutobotChatPage() {
 
   const handleModelChange = useCallback((value: string) => {
     setSelectedModel(value);
+    setLastRespondedModel(null);
     saveStoredModel(value);
     fetch(SETTINGS_API_ENDPOINT, {
       method: "POST",
@@ -1808,7 +1910,7 @@ export default function AutobotChatPage() {
               <p className="text-[10px] text-muted-foreground mt-0.5">
                 {processingState !== "idle"
                   ? "Processing..."
-                  : `OpenClaw - ${MODEL_OPTIONS.find((m) => m.value === selectedModel)?.label || selectedModel}`}
+                  : `OpenClaw - ${MODEL_OPTIONS.find((m) => m.value === (lastRespondedModel || selectedModel))?.label || lastRespondedModel || selectedModel}`}
               </p>
             </div>
           </div>
@@ -1988,7 +2090,13 @@ export default function AutobotChatPage() {
             </p>
           )}
 
-          {voiceMode === "clone" && <GpuStatusBadge status={gpuStatus} />}
+          {/* GPU status — always visible so user sees current state */}
+          <InlineGpuStatus
+            status={gpuStatus}
+            onStart={startGpu}
+            onStop={stopGpu}
+            actionInProgress={gpuActionInProgress}
+          />
 
           <Separator />
 

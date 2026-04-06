@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { fetchProfileData, fetchUserEvents, fetchUserGroups, fetchUserPosts } from "@/app/actions/graph";
+import { getDocumentsForUser } from "@/lib/queries/resources";
 import { findAutobotEnabledPersona } from "@/app/actions/personas";
 import { PUBLIC_PROFILE_MODULE_ID, resolvePublicProfileAgent } from "@/lib/bespoke/modules/public-profile";
 import type { CanonicalProfileRef, HomeAuthorityRef } from "@/lib/federation/cross-instance-types";
@@ -26,11 +27,12 @@ export async function GET(
   }
 
   try {
-    const [profile, posts, events, groups, homeInstance, autobotPersona] = await Promise.all([
+    const [profile, posts, events, groups, docsResult, homeInstance, autobotPersona] = await Promise.all([
       fetchProfileData(agent.id).catch(() => null),
       fetchUserPosts(agent.id, 30).catch(() => ({ posts: [], owner: null })),
       fetchUserEvents(agent.id, 30).catch(() => []),
       fetchUserGroups(agent.id, 30).catch(() => []),
+      getDocumentsForUser(agent.id).catch(() => []),
       resolveHomeInstance(agent.id).catch(() => null),
       findAutobotEnabledPersona(agent.id).catch(() => null),
     ]);
@@ -74,6 +76,7 @@ export async function GET(
         posts,
         events,
         groups,
+        documents: docsResult ?? [],
         autobotPersona: autobotPersona
           ? {
               id: autobotPersona.id,

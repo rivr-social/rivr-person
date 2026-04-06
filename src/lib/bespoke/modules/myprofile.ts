@@ -138,6 +138,8 @@ export function getMyProfileModuleManifest(): BespokeModuleManifest {
       { id: "persona-insights", label: "Persona Insights", dataPath: "profile.agent.metadata", defaultComponentId: "profile-header-card", hideable: true, themeable: true, description: "Spiritual / personality metadata such as Gene Keys and Myers-Briggs." },
       { id: "photos", label: "Photos", dataPath: "posts.posts", defaultComponentId: "post-feed", hideable: true, themeable: true },
       { id: "posts", label: "Posts", dataPath: "posts.posts", defaultComponentId: "post-feed", hideable: true, themeable: true },
+      { id: "docs", label: "Documents", dataPath: "documents", defaultComponentId: "profile-header-card", hideable: true, themeable: true },
+      { id: "media", label: "Media", dataPath: "profile.resources", defaultComponentId: "profile-header-card", hideable: true, themeable: true },
       { id: "events", label: "Events", dataPath: "events", defaultComponentId: "event-feed", hideable: true, themeable: true },
       { id: "groups", label: "Groups", dataPath: "groups", defaultComponentId: "profile-group-feed", hideable: true, themeable: true },
       { id: "offerings", label: "Offerings", dataPath: "marketplaceListings", defaultComponentId: "offerings-tab", hideable: true, themeable: true },

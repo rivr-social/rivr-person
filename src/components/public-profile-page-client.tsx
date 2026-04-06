@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Award, Calendar as CalendarIcon, Clock, Drama, Gift, Heart, MapPin, MessageSquare, Users } from "lucide-react";
 import { PersonaChatWidget } from "@/components/persona-chat-widget";
+import { DocumentList } from "@/components/document-list";
+import { DocumentViewer } from "@/components/document-viewer";
 import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/social-platform-icon";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 import { agentToEvent, agentToGroup, resourceToPost } from "@/lib/graph-adapters";
@@ -23,13 +25,18 @@ import { AgentGraph } from "@/components/agent-graph";
 import { toggleFollowAgent } from "@/app/actions/interactions/social";
 import { useToast } from "@/components/ui/use-toast";
 import type { Group, User, Post } from "@/lib/types";
+import type { Document } from "@/types/domain";
+import { createPersonalDocumentAction } from "@/app/actions/create-resources";
+import { ProfileMediaTab } from "@/components/profile-media-tab";
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
-const PUBLIC_PROFILE_TABS = ["about", "posts", "events", "groups", "photos", "offerings", "activity"] as const;
+const PUBLIC_PROFILE_TABS = ["about", "posts", "docs", "media", "events", "groups", "photos", "offerings", "activity"] as const;
 type PublicProfileTab = (typeof PUBLIC_PROFILE_TABS)[number];
 const PUBLIC_PROFILE_TAB_SECTIONS: Record<PublicProfileTab, string> = {
   about: "about",
   posts: "posts",
+  docs: "docs",
+  media: "media",
   events: "events",
   groups: "groups",
   photos: "photos",
@@ -41,6 +48,8 @@ const DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS = [
   "about",
   "persona-insights",
   "posts",
+  "docs",
+  "media",
   "events",
   "groups",
   "photos",
@@ -115,15 +124,19 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const [connectActive, setConnectActive] = useState(false);
 
   const visibleSectionIds = useMemo(
-    () => new Set(manifest?.sections.map((section) => section.id) ?? DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS),
-    [manifest]
+    () => isOwnProfile
+      ? new Set(DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS)
+      : new Set(manifest?.sections.map((section) => section.id) ?? DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS),
+    [manifest, isOwnProfile]
   );
   const visibleTabs = useMemo(
-    () => PUBLIC_PROFILE_TABS.filter((tab) => visibleSectionIds.has(PUBLIC_PROFILE_TAB_SECTIONS[tab])),
-    [visibleSectionIds]
+    () => isOwnProfile
+      ? [...PUBLIC_PROFILE_TABS]
+      : PUBLIC_PROFILE_TABS.filter((tab) => visibleSectionIds.has(PUBLIC_PROFILE_TAB_SECTIONS[tab])),
+    [visibleSectionIds, isOwnProfile]
   );
-  const showPersonaInsights = visibleSectionIds.has("persona-insights");
-  const showConnections = visibleSectionIds.has("connections");
+  const showPersonaInsights = isOwnProfile || visibleSectionIds.has("persona-insights");
+  const showConnections = isOwnProfile || visibleSectionIds.has("connections");
 
   useEffect(() => {
     if (visibleTabs.length === 0) return;
@@ -133,6 +146,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   }, [activeTab, visibleTabs]);
 
   const agent = (bundle?.agent as SerializedAgent | null) ?? null;
+  const isOwnProfile = Boolean(session?.user?.id && agent?.id && session.user.id === agent.id);
   const profile = (bundle?.profile as {
     resources?: SerializedResource[];
     recentActivity?: Array<{ id: string; verb: string; timestamp: string }>;
@@ -140,6 +154,14 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const postsResult = (bundle?.posts as { posts?: SerializedResource[]; owner?: SerializedAgent | null }) ?? {};
   const eventAgents = (bundle?.events as SerializedAgent[]) ?? [];
   const groupAgents = (bundle?.groups as SerializedAgent[]) ?? [];
+  const bundleDocuments = ((bundle as Record<string, unknown> | null)?.documents as Document[]) ?? [];
+  const [userDocuments, setUserDocuments] = useState<Document[]>([]);
+  const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
+  const [docCreatePending, setDocCreatePending] = useState(false);
+
+  useEffect(() => {
+    setUserDocuments(bundleDocuments);
+  }, [bundleDocuments]);
 
   const userPosts = useMemo(
     () =>
@@ -667,9 +689,11 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
           if (!visibleSectionIds.has(PUBLIC_PROFILE_TAB_SECTIONS[value as PublicProfileTab])) return;
           setActiveTab(value as PublicProfileTab);
         }}>
-          <TabsList className="grid grid-cols-4 md:grid-cols-7 w-full">
+          <TabsList className="grid grid-cols-5 md:grid-cols-9 w-full">
             {visibleTabs.includes("about") ? <TabsTrigger value="about">About</TabsTrigger> : null}
             {visibleTabs.includes("posts") ? <TabsTrigger value="posts">Posts</TabsTrigger> : null}
+            {visibleTabs.includes("docs") ? <TabsTrigger value="docs">Docs</TabsTrigger> : null}
+            {visibleTabs.includes("media") ? <TabsTrigger value="media">Media</TabsTrigger> : null}
             {visibleTabs.includes("events") ? <TabsTrigger value="events">Events</TabsTrigger> : null}
             {visibleTabs.includes("groups") ? <TabsTrigger value="groups">Groups</TabsTrigger> : null}
             {visibleTabs.includes("photos") ? <TabsTrigger value="photos">Photos</TabsTrigger> : null}
@@ -788,6 +812,68 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
                 getUser={getUser}
                 getGroup={getGroup}
                 includeAllTypes={false}
+              />
+            </TabsContent>
+          ) : null}
+
+          {visibleTabs.includes("docs") ? (
+            <TabsContent value="docs" className="mt-4">
+              {selectedDocument ? (
+                <DocumentViewer
+                  document={selectedDocument}
+                  onBack={() => setSelectedDocument(null)}
+                  onDocumentUpdated={(updated) => {
+                    setSelectedDocument(updated);
+                    setUserDocuments((prev) =>
+                      prev.map((d) => (d.id === updated.id ? updated : d))
+                    );
+                  }}
+                />
+              ) : (
+                <DocumentList
+                  documents={userDocuments}
+                  ownerId={agent?.id}
+                  onSelectDocument={setSelectedDocument}
+                  onCreateDocument={session?.user?.id === agent?.id ? async () => {
+                    setDocCreatePending(true);
+                    try {
+                      const result = await createPersonalDocumentAction({
+                        title: "Untitled Document",
+                        content: "",
+                        description: "",
+                      });
+                      if (result.success && result.resourceId) {
+                        const newDoc: Document = {
+                          id: result.resourceId,
+                          title: "Untitled Document",
+                          description: "",
+                          content: "",
+                          createdAt: new Date().toISOString(),
+                          updatedAt: new Date().toISOString(),
+                          createdBy: (session?.user?.id as string | undefined) ?? "",
+                          groupId: "",
+                          tags: [],
+                        };
+                        setUserDocuments((prev) => [newDoc, ...prev]);
+                        setSelectedDocument(newDoc);
+                      } else {
+                        toast({ title: "Failed to create document", description: result.message, variant: "destructive" });
+                      }
+                    } finally {
+                      setDocCreatePending(false);
+                    }
+                  } : undefined}
+                />
+              )}
+            </TabsContent>
+          ) : null}
+
+          {visibleTabs.includes("media") ? (
+            <TabsContent value="media" className="mt-4">
+              <ProfileMediaTab
+                profileResources={profileResources}
+                isOwner={Boolean(session?.user?.id && session.user.id === agent?.id)}
+                ownerId={userId}
               />
             </TabsContent>
           ) : null}

@@ -3,21 +3,31 @@
 /**
  * GpuStatusBadge — persistent floating indicator for GPU (Chatterbox TTS) status.
  *
+ * ALWAYS visible in the bottom-left corner so the user can see GPU state at a glance.
  * Polls GET /api/autobot/gpu every 15 s while the tab is visible.
- * Only renders when TTS is enabled (localStorage `rivr_autobot_tts_enabled`).
  *
- * States:
- * - Provisioning / gpu_starting: amber pill, GPU name if known, burn rate
- * - Running: emerald pill, GPU name, burn rate, stop button
- * - Stopped with instanceId: zinc pill, storage cost, decommission button
- * - Stopped without instance / no_gpu: hidden
+ * States shown:
+ * - GPU Active (emerald): running, with stop button
+ * - GPU Starting (amber, pulsing): provisioning / gpu_starting
+ * - GPU Idle (zinc): stopped with instanceId, with decommission button
+ * - No GPU (slate): no instance, with "Start Voice" button
+ * - Unknown (slate): initial/fetch-error state, with "Start Voice" button
  *
  * Transitions:
  * - provisioning -> running: plays notification beep + shows "Personal voice ready" modal
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Cpu, Loader2, Power, Square, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Cpu,
+  Loader2,
+  Play,
+  Power,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -41,7 +51,6 @@ import { cn } from "@/lib/utils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const TTS_ENABLED_KEY = "rivr_autobot_tts_enabled";
 const GPU_STATUS_ENDPOINT = "/api/autobot/gpu";
 const POLL_INTERVAL_MS = 15_000;
 
@@ -100,6 +109,13 @@ const RENTED_IDLE_STATUSES: ReadonlySet<GpuStatus> = new Set([
   "stopping",
 ]);
 
+/** Statuses where the user can start the GPU */
+const STARTABLE_STATUSES: ReadonlySet<GpuStatus> = new Set([
+  "no_gpu",
+  "unknown",
+  "stopped",
+]);
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function formatPrice(dph: number | null | undefined): string | null {
@@ -122,33 +138,14 @@ function playNotificationSound(): void {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function GpuStatusBadge() {
-  const [ttsEnabled, setTtsEnabled] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<GpuStatusResponse | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const [fetchError, setFetchError] = useState(false);
   const [showReadyModal, setShowReadyModal] = useState(false);
   const [showDecommissionConfirm, setShowDecommissionConfirm] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevStatusRef = useRef<GpuStatus | null>(null);
-
-  // ── Check localStorage for TTS enabled flag ──────────────────────────────
-  useEffect(() => {
-    const check = () => {
-      try {
-        setTtsEnabled(localStorage.getItem(TTS_ENABLED_KEY) === "true");
-      } catch {
-        setTtsEnabled(false);
-      }
-    };
-    check();
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === TTS_ENABLED_KEY) check();
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
   // ── Fetch GPU status ─────────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -171,15 +168,7 @@ export function GpuStatusBadge() {
       ) {
         playNotificationSound();
         setShowReadyModal(true);
-        setDismissed(false);
-      }
-
-      // Auto-clear dismissed when badge should no longer be visible
-      const wouldBeVisible =
-        ACTIVE_STATUSES.has(data.status) ||
-        (RENTED_IDLE_STATUSES.has(data.status) && !!data.instanceId);
-      if (!wouldBeVisible) {
-        setDismissed(false);
+        setMinimized(false);
       }
 
       prevStatusRef.current = data.status;
@@ -188,10 +177,8 @@ export function GpuStatusBadge() {
     }
   }, []);
 
-  // ── Poll while visible and TTS enabled ───────────────────────────────────
+  // ── Poll while tab is visible ───────────────────────────────────────────
   useEffect(() => {
-    if (!ttsEnabled) return;
-
     fetchStatus();
 
     const startPolling = () => {
@@ -221,7 +208,7 @@ export function GpuStatusBadge() {
       stopPolling();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [ttsEnabled, fetchStatus]);
+  }, [fetchStatus]);
 
   // ── GPU actions ──────────────────────────────────────────────────────────
   const performAction = async (action: string) => {
@@ -242,6 +229,7 @@ export function GpuStatusBadge() {
     }
   };
 
+  const handleStart = () => performAction("start");
   const handleStop = () => performAction("stop");
 
   const handleDecommission = async () => {
@@ -249,27 +237,46 @@ export function GpuStatusBadge() {
     await performAction("decommission");
   };
 
-  // ── Determine visibility ─────────────────────────────────────────────────
-  if (!ttsEnabled) return null;
-  if (fetchError && !gpuStatus) return null;
-  if (!gpuStatus) return null;
+  // ── Determine current state ─────────────────────────────────────────────
 
+  const status = gpuStatus?.status ?? "unknown";
   const isProvisioning =
-    gpuStatus.status === "provisioning" || gpuStatus.status === "gpu_starting";
-  const isRunning = gpuStatus.status === "running";
+    status === "provisioning" || status === "gpu_starting";
+  const isRunning = status === "running";
   const isRentedIdle =
-    RENTED_IDLE_STATUSES.has(gpuStatus.status) && !!gpuStatus.instanceId;
+    RENTED_IDLE_STATUSES.has(status) && !!gpuStatus?.instanceId;
+  const isOff = status === "no_gpu" || status === "unknown" || (status === "stopped" && !gpuStatus?.instanceId);
+  const canStart = STARTABLE_STATUSES.has(status) && actionInProgress === null;
 
-  const shouldShowBadge =
-    (isProvisioning || isRunning || isRentedIdle) && !dismissed;
+  const priceLabel = formatPrice(gpuStatus?.dphTotal);
+  const storageLabel = formatPrice(gpuStatus?.storageCostDph);
+  const gpuLabel = gpuStatus?.gpuName || null;
 
-  const priceLabel = formatPrice(gpuStatus.dphTotal);
-  const storageLabel = formatPrice(gpuStatus.storageCostDph);
-  const gpuLabel = gpuStatus.gpuName || null;
+  // Status label and color
+  let badgeLabel = "No GPU";
+  let badgeColor = "border-slate-500/40 bg-slate-900/80 text-slate-400";
+  let dotColor = "bg-slate-500";
 
-  // If nothing to render at all (no badge, no modals), bail
-  if (!shouldShowBadge && !showReadyModal && !showDecommissionConfirm) {
-    return null;
+  if (fetchError && !gpuStatus) {
+    badgeLabel = "GPU Offline";
+    badgeColor = "border-slate-500/40 bg-slate-900/80 text-slate-400";
+    dotColor = "bg-slate-500";
+  } else if (isProvisioning) {
+    badgeLabel = gpuLabel ? `${gpuLabel} starting...` : "GPU Starting";
+    badgeColor = "border-amber-500/40 bg-amber-950/80 text-amber-300";
+    dotColor = "bg-amber-500 animate-pulse";
+  } else if (isRunning) {
+    badgeLabel = gpuLabel ? `${gpuLabel} active` : "GPU Active";
+    badgeColor = "border-emerald-500/40 bg-emerald-950/80 text-emerald-300";
+    dotColor = "bg-emerald-500";
+  } else if (isRentedIdle) {
+    badgeLabel = gpuLabel ? `${gpuLabel} idle` : "GPU Idle";
+    badgeColor = "border-zinc-500/40 bg-zinc-900/80 text-zinc-400";
+    dotColor = "bg-zinc-500";
+  } else if (isOff) {
+    badgeLabel = "No GPU";
+    badgeColor = "border-slate-500/40 bg-slate-900/80 text-slate-400";
+    dotColor = "bg-slate-500";
   }
 
   return (
@@ -333,45 +340,48 @@ export function GpuStatusBadge() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── Floating status badge ────────────────────────────────── */}
-      {shouldShowBadge && (
-        <div
-          className={cn(
-            "fixed bottom-[5.5rem] left-3 z-50",
-            "animate-in fade-in slide-in-from-bottom-2 duration-300",
-          )}
-        >
+      {/* ── Floating status badge — ALWAYS visible ──────────────── */}
+      <div
+        className={cn(
+          "fixed bottom-[5.5rem] left-3 z-50",
+          "animate-in fade-in slide-in-from-bottom-2 duration-300",
+        )}
+      >
+        {minimized ? (
+          /* Minimized: just a colored dot that expands on click */
+          <button
+            onClick={() => setMinimized(false)}
+            className={cn(
+              "flex items-center justify-center h-7 w-7 rounded-full shadow-lg border backdrop-blur-md transition-all hover:scale-110",
+              badgeColor,
+            )}
+            aria-label={`GPU status: ${badgeLabel}. Click to expand.`}
+          >
+            <span className={cn("h-2.5 w-2.5 rounded-full", dotColor)} />
+          </button>
+        ) : (
+          /* Expanded badge */
           <div
             className={cn(
               "flex items-center gap-2 rounded-full px-3 py-1.5 shadow-lg border backdrop-blur-md",
-              isProvisioning &&
-                "border-amber-500/40 bg-amber-950/80 text-amber-300",
-              isRunning &&
-                "border-emerald-500/40 bg-emerald-950/80 text-emerald-300",
-              isRentedIdle &&
-                "border-zinc-500/40 bg-zinc-900/80 text-zinc-400",
+              badgeColor,
             )}
           >
-            {/* Status icon */}
+            {/* Status dot / icon */}
             {isProvisioning ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+            ) : isRunning ? (
+              <Cpu className="h-3.5 w-3.5 shrink-0" />
             ) : isRentedIdle ? (
               <Power className="h-3.5 w-3.5 shrink-0" />
             ) : (
-              <Cpu className="h-3.5 w-3.5 shrink-0" />
+              <span className={cn("h-2.5 w-2.5 rounded-full shrink-0", dotColor)} />
             )}
 
             {/* Label + price sub-line */}
             <div className="flex flex-col leading-tight">
               <span className="text-xs font-medium whitespace-nowrap">
-                {isProvisioning &&
-                  (gpuLabel
-                    ? `${gpuLabel} provisioning...`
-                    : "GPU provisioning...")}
-                {isRunning &&
-                  (gpuLabel ? `${gpuLabel} active` : "GPU active")}
-                {isRentedIdle &&
-                  (gpuLabel ? `${gpuLabel} idle` : "GPU idle (rented)")}
+                {badgeLabel}
               </span>
               {(isRunning || isProvisioning) && priceLabel && (
                 <span className="text-[10px] opacity-70">{priceLabel}</span>
@@ -382,6 +392,28 @@ export function GpuStatusBadge() {
                 </span>
               )}
             </div>
+
+            {/* Start Voice button (no GPU / off / stopped without instance) */}
+            {(isOff || (status === "stopped" && !gpuStatus?.instanceId)) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={actionInProgress !== null}
+                onClick={handleStart}
+                className={cn(
+                  "h-6 px-2 rounded-full text-[10px] font-medium gap-1",
+                  "text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/20",
+                )}
+                aria-label="Start personal voice GPU"
+              >
+                {actionInProgress === "start" ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Play className="h-3 w-3" />
+                )}
+                Start Voice
+              </Button>
+            )}
 
             {/* Stop button (running only) */}
             {isRunning && (
@@ -406,39 +438,58 @@ export function GpuStatusBadge() {
 
             {/* Decommission button (rented idle only) */}
             {isRentedIdle && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={actionInProgress !== null}
-                onClick={() => setShowDecommissionConfirm(true)}
-                className={cn(
-                  "h-5 w-5 p-0 rounded-full",
-                  "text-zinc-400 hover:text-red-400 hover:bg-red-500/20",
-                )}
-                aria-label="Release GPU"
-              >
-                {actionInProgress === "decommission" ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3 w-3" />
-                )}
-              </Button>
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={actionInProgress !== null}
+                  onClick={handleStart}
+                  className={cn(
+                    "h-5 px-1.5 rounded-full text-[10px] font-medium gap-1",
+                    "text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/20",
+                  )}
+                  aria-label="Restart GPU"
+                >
+                  {actionInProgress === "start" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Play className="h-3 w-3" />
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={actionInProgress !== null}
+                  onClick={() => setShowDecommissionConfirm(true)}
+                  className={cn(
+                    "h-5 w-5 p-0 rounded-full",
+                    "text-zinc-400 hover:text-red-400 hover:bg-red-500/20",
+                  )}
+                  aria-label="Release GPU"
+                >
+                  {actionInProgress === "decommission" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3 w-3" />
+                  )}
+                </Button>
+              </>
             )}
 
-            {/* Dismiss button */}
+            {/* Minimize button */}
             <button
-              onClick={() => setDismissed(true)}
+              onClick={() => setMinimized(true)}
               className={cn(
                 "h-4 w-4 rounded-full inline-flex items-center justify-center shrink-0",
                 "opacity-60 hover:opacity-100 transition-opacity",
               )}
-              aria-label="Dismiss GPU status"
+              aria-label="Minimize GPU status"
             >
               <X className="h-2.5 w-2.5" />
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }

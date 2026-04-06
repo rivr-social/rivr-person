@@ -75,6 +75,9 @@ export async function POST(request: Request) {
   }
 }
 
+/** Fallback response when GPU/Chatterbox endpoint is unavailable */
+const NO_GPU_RESPONSE = { status: "no_gpu" } as const;
+
 export async function GET() {
   const session = await auth();
   if (!session?.user?.id) {
@@ -86,6 +89,12 @@ export async function GET() {
       method: "GET",
       headers: { "Content-Type": "application/json" },
     });
+
+    // 404 means the GPU/Chatterbox endpoint doesn't exist on the target server.
+    // This is expected when no Vast.ai GPU is configured — return no_gpu silently.
+    if (response.status === 404) {
+      return NextResponse.json(NO_GPU_RESPONSE);
+    }
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
@@ -99,12 +108,8 @@ export async function GET() {
     const data = await response.json();
     return NextResponse.json(data);
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Failed to get GPU status";
-    console.error("GPU status proxy error:", errorMessage);
-    return NextResponse.json(
-      { error: `GPU proxy error: ${errorMessage}` },
-      { status: 502 },
-    );
+    // Network errors (ECONNREFUSED, DNS failure, etc.) mean the OpenClaw server
+    // is unreachable. Treat as no GPU available rather than spamming error logs.
+    return NextResponse.json(NO_GPU_RESPONSE);
   }
 }

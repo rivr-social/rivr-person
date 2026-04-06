@@ -78,7 +78,7 @@ export type AutobotUserSettings = {
 const SETTINGS_KEY = "autobotSettings";
 
 const DEFAULT_SETTINGS: AutobotUserSettings = {
-  selectedModel: "openai/gpt-4o-mini",
+  selectedModel: "anthropic/claude-sonnet-4-6",
   ttsEnabled: false,
   voiceMode: "browser",
   gpuProvider: "vast",

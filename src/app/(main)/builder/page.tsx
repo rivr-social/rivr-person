@@ -276,12 +276,101 @@ export default function BuilderPage() {
     }
   }, []);
 
-  // Generate initial site from template when profile loads
+  // Helper to apply loaded files to editor state
+  const applyLoadedFiles = useCallback((loadedFiles: SiteFiles) => {
+    setSiteFiles(loadedFiles);
+    const firstFile = loadedFiles["index.html"] ? "index.html" : Object.keys(loadedFiles)[0] ?? "index.html";
+    setActivePreviewFile(firstFile);
+    setSelectedSourceFile("index.html" in loadedFiles ? "index.html" : Object.keys(loadedFiles)[0] ?? null);
+    setSourceEditorValue(("index.html" in loadedFiles ? loadedFiles["index.html"] : loadedFiles[Object.keys(loadedFiles)[0]]) ?? "");
+  }, []);
+
+  // Load site files: first try live deployed files, then version history, then generate from template
   useEffect(() => {
     if (moduleState !== "loaded" || !bundle || !manifest) return;
     if (Object.keys(siteFiles).length > 0) return; // Already have files
 
-    async function generateInitial() {
+    async function loadInitialFiles() {
+      // 1. Try loading live deployed files from the server
+      try {
+        const liveResponse = await fetch("/api/builder/live-files", {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+
+        if (liveResponse.ok) {
+          const liveData = (await liveResponse.json()) as {
+            files?: SiteFiles;
+            fileCount?: number;
+          };
+
+          if (liveData.files && liveData.fileCount && liveData.fileCount > 0) {
+            applyLoadedFiles(liveData.files);
+            // Notify the user that live files were loaded
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `live-load-${Date.now()}`,
+                role: "assistant",
+                content: `Loaded ${liveData.fileCount} live site files from the server. You can preview and edit them, or ask me to make changes.`,
+                timestamp: new Date(),
+              },
+            ]);
+            return;
+          }
+        }
+      } catch {
+        // Live file loading not available (shared instance or no files) -- continue
+      }
+
+      // 2. Try loading from latest version snapshot
+      try {
+        const versionsResponse = await fetch("/api/builder/versions", {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+
+        if (versionsResponse.ok) {
+          const versionsData = (await versionsResponse.json()) as {
+            versions?: Array<{ id: string; versionNumber: number; fileCount: number }>;
+          };
+
+          if (versionsData.versions && versionsData.versions.length > 0 && versionsData.versions[0].fileCount > 0) {
+            const latestVersion = versionsData.versions[0];
+            const restoreResponse = await fetch(`/api/builder/versions/${latestVersion.id}/restore`, {
+              method: "POST",
+              credentials: "same-origin",
+            });
+
+            if (restoreResponse.ok) {
+              const restoreData = (await restoreResponse.json()) as {
+                files?: SiteFiles;
+                versionNumber?: number;
+              };
+
+              if (restoreData.files && Object.keys(restoreData.files).length > 0) {
+                applyLoadedFiles(restoreData.files);
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: `version-load-${Date.now()}`,
+                    role: "assistant",
+                    content: `Restored ${Object.keys(restoreData.files!).length} files from version ${restoreData.versionNumber ?? "latest"}. You can preview and edit them, or ask me to make changes.`,
+                    timestamp: new Date(),
+                  },
+                ]);
+                return;
+              }
+            }
+          }
+        }
+      } catch {
+        // Version loading failed -- continue to template generation
+      }
+
+      // 3. Fall back to generating from template
       try {
         const response = await fetch("/api/bespoke/generate", {
           method: "POST",
@@ -314,10 +403,7 @@ export default function BuilderPage() {
         };
 
         if (data.success && data.files && Object.keys(data.files).length > 0) {
-          setSiteFiles(data.files);
-          setActivePreviewFile(data.files["index.html"] ? "index.html" : Object.keys(data.files)[0] ?? "index.html");
-          setSelectedSourceFile("index.html" in data.files ? "index.html" : Object.keys(data.files)[0] ?? null);
-          setSourceEditorValue(("index.html" in data.files ? data.files["index.html"] : data.files[Object.keys(data.files)[0]]) ?? "");
+          applyLoadedFiles(data.files);
         } else if (data.success && data.html) {
           setSiteFiles({ "index.html": data.html });
         }
@@ -326,8 +412,8 @@ export default function BuilderPage() {
       }
     }
 
-    void generateInitial();
-  }, [moduleState, bundle, manifest, siteFiles]);
+    void loadInitialFiles();
+  }, [moduleState, bundle, manifest, siteFiles, applyLoadedFiles]);
 
   // -------------------------------------------------------------------------
   // Chat send handler — streams from AI endpoint
@@ -629,28 +715,45 @@ export default function BuilderPage() {
     setDeployMessage("Deploying site files...");
 
     try {
-      const response = await fetch("/api/bespoke/deploy-files", {
+      const response = await fetch("/api/builder/deploy", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: siteFiles }),
+        body: JSON.stringify({
+          files: siteFiles,
+          commitMessage: `Site update from Builder — ${new Date().toISOString()}`,
+        }),
       });
 
       const data = (await response.json()) as {
-        success: boolean;
-        deployedFiles?: string[];
-        deployPath?: string;
-        mode?: string;
+        success?: boolean;
         error?: string;
+        method?: string;
+        filesDeployed?: number;
+        filesUpdated?: number;
+        deployPath?: string;
+        commitSha?: string;
+        commitUrl?: string;
+        repo?: string;
+        branch?: string;
+        needsGitHubConnection?: boolean;
       };
 
       if (!response.ok || !data.success) {
+        if (data.needsGitHubConnection) {
+          throw new Error("No GitHub repository connected. Connect a repository in Settings to deploy your site.");
+        }
         throw new Error(data.error || "Deploy failed");
       }
 
+      const fileCount = data.filesDeployed ?? data.filesUpdated ?? Object.keys(siteFiles).length;
+      const targetLabel = data.method === "github"
+        ? `${data.repo ?? "GitHub"} (${data.branch ?? "main"})`
+        : data.deployPath ?? "/site/";
+
       setDeployStatus(DEPLOY_STATUS_SUCCESS);
       setDeployMessage(
-        `Deployed ${data.deployedFiles?.length ?? 0} files to ${data.deployPath ?? "target"}`,
+        `Deployed ${fileCount} files to ${targetLabel}`,
       );
 
       setMessages((prev) => [
@@ -658,7 +761,7 @@ export default function BuilderPage() {
         {
           id: `deploy-${Date.now()}`,
           role: "assistant",
-          content: `Site deployed successfully! ${data.deployedFiles?.length ?? 0} files written to ${data.deployPath ?? "the deploy directory"}.`,
+          content: `Site deployed successfully! ${fileCount} files written to ${targetLabel}.${data.commitUrl ? ` [View commit](${data.commitUrl})` : ""}`,
           timestamp: new Date(),
         },
       ]);
@@ -672,7 +775,7 @@ export default function BuilderPage() {
           body: JSON.stringify({
             files: siteFiles,
             trigger: "deploy",
-            commitMessage: `Deploy: ${data.deployedFiles?.length ?? 0} files to ${data.deployPath ?? "target"}`,
+            commitMessage: `Deploy: ${fileCount} files to ${targetLabel}`,
           }),
         });
         // Refresh version list if history panel is visible

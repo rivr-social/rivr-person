@@ -36,8 +36,8 @@ const BUCKET_ENV_MAP: Record<BucketName, string> = {
 /** Default target bucket when a caller does not specify one explicitly. */
 const DEFAULT_BUCKET: BucketName = 'uploads';
 
-/** Maximum accepted upload size in bytes (10MB). */
-export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+/** Maximum accepted upload size in bytes (50MB to accommodate 3D models). */
+export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 /** Image MIME types permitted by upload validation. */
 export const ALLOWED_IMAGE_TYPES = [
   'image/jpeg',
@@ -52,6 +52,11 @@ export const ALLOWED_MIME_TYPES = [
   'text/csv',
   'application/json',
   'model/gltf-binary',
+  'model/gltf+json',
+  'model/obj',
+  'model/fbx',
+  'model/vrm',
+  'application/octet-stream',
 ];
 export const DIGITAL_TWIN_MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1GB
 export const DIGITAL_TWIN_ALLOWED_MIME_TYPES = [

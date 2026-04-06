@@ -588,12 +588,7 @@ export async function getDocumentsForGroup(groupId: string, limit = 200): Promis
  */
 export async function getDocumentsForUser(userId: string, limit = 200): Promise<Document[]> {
   const userResources = await getResourcesByOwnerAndType(userId, "document", limit);
-  return userResources
-    .filter((r) => {
-      const m = (r.metadata ?? {}) as Record<string, unknown>;
-      return m.personalOwnerId === userId;
-    })
-    .map((r) => resourceToDocument(r));
+  return userResources.map((r) => resourceToDocument(r));
 }
 
 /**
