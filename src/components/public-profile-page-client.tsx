@@ -122,6 +122,8 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const [remoteViewerError, setRemoteViewerError] = useState<string | null>(null);
   const [connectPending, setConnectPending] = useState(false);
   const [connectActive, setConnectActive] = useState(false);
+  const agent = (bundle?.agent as SerializedAgent | null) ?? null;
+  const isOwnProfile = Boolean(session?.user?.id && agent?.id && session.user.id === agent.id);
 
   const visibleSectionIds = useMemo(
     () => isOwnProfile
@@ -144,9 +146,6 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
       setActiveTab(visibleTabs[0]);
     }
   }, [activeTab, visibleTabs]);
-
-  const agent = (bundle?.agent as SerializedAgent | null) ?? null;
-  const isOwnProfile = Boolean(session?.user?.id && agent?.id && session.user.id === agent.id);
   const profile = (bundle?.profile as {
     resources?: SerializedResource[];
     recentActivity?: Array<{ id: string; verb: string; timestamp: string }>;
@@ -818,18 +817,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
 
           {visibleTabs.includes("docs") ? (
             <TabsContent value="docs" className="mt-4">
-              {selectedDocument ? (
-                <DocumentViewer
-                  document={selectedDocument}
-                  onBack={() => setSelectedDocument(null)}
-                  onDocumentUpdated={(updated) => {
-                    setSelectedDocument(updated);
-                    setUserDocuments((prev) =>
-                      prev.map((d) => (d.id === updated.id ? updated : d))
-                    );
-                  }}
-                />
-              ) : (
+              <div className="grid gap-6 md:grid-cols-[320px_1fr]">
                 <DocumentList
                   documents={userDocuments}
                   ownerId={agent?.id}
@@ -864,7 +852,27 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
                     }
                   } : undefined}
                 />
-              )}
+
+                {selectedDocument ? (
+                  <DocumentViewer
+                    document={selectedDocument}
+                    onBack={() => setSelectedDocument(null)}
+                    onDocumentUpdated={(updated) => {
+                      setSelectedDocument(updated);
+                      setUserDocuments((prev) =>
+                        prev.map((d) => (d.id === updated.id ? updated : d))
+                      );
+                    }}
+                    kgScopeType="person"
+                    kgScopeId={agent?.id}
+                    canPushToKg={Boolean(session?.user?.id && session.user.id === agent?.id)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center rounded-lg border text-muted-foreground">
+                    Select a document to preview
+                  </div>
+                )}
+              </div>
             </TabsContent>
           ) : null}
 

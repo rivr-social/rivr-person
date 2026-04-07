@@ -8,8 +8,10 @@
 
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { buildAutobotSystemPrompt, buildAutobotSystemPromptWithPersonaKg } from "@/lib/bespoke/autobot-system-prompt";
+import { buildAutobotSystemPrompt } from "@/lib/bespoke/autobot-system-prompt";
 import { isPersonaOf } from "@/lib/persona";
+import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
+import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -24,6 +26,7 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2";
 const MAX_HISTORY_LENGTH = 40;
 const MAX_MESSAGE_LENGTH = 8000;
 const OLLAMA_TIMEOUT_MS = 90_000;
+const OPENCLAW_FALLBACK_MODEL = "openai/gpt-4o-mini";
 
 const ALLOWED_MODELS = [
   "openai/gpt-4o-mini",
@@ -53,6 +56,14 @@ interface ChatRequestBody {
   threadId?: string;
   personaId?: string;
   personaName?: string;
+}
+
+interface OpenClawChatResult {
+  ok: boolean;
+  status: number;
+  errorText: string;
+  data: Record<string, unknown> | null;
+  model: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +159,66 @@ function sanitizeSessionSegment(value: string): string {
     .slice(0, 64);
 }
 
+function shouldRetryCloudChatWithFallback(
+  selectedModel: string,
+  status: number,
+  errorText: string,
+): boolean {
+  if (!selectedModel.startsWith("anthropic/")) return false;
+  const normalized = errorText.toLowerCase();
+  return (
+    status === 429 ||
+    normalized.includes("rate_limit") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("429")
+  );
+}
+
+async function chatViaOpenClaw(params: {
+  sessionUserId: string;
+  username: string;
+  message: string;
+  history: HistoryMessage[];
+  selectedModel: string;
+  sessionKey: string;
+  systemPrompt: string | null;
+}): Promise<OpenClawChatResult> {
+  const response = await fetch(`${OPENCLAW_URL}/api/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-openclaw-model": params.selectedModel,
+      "x-rivr-user-id": params.sessionUserId,
+    },
+    body: JSON.stringify({
+      username: params.username,
+      message: params.message,
+      history: params.history,
+      model: params.selectedModel,
+      sessionKey: params.sessionKey,
+      systemPrompt: params.systemPrompt,
+    }),
+  });
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      errorText: await response.text().catch(() => ""),
+      data: null,
+      model: params.selectedModel,
+    };
+  }
+
+  return {
+    ok: true,
+    status: response.status,
+    errorText: "",
+    data: (await response.json()) as Record<string, unknown>,
+    model: params.selectedModel,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // POST handler
 // ---------------------------------------------------------------------------
@@ -200,34 +271,46 @@ export async function POST(request: Request) {
       ? model
       : DEFAULT_MODEL;
 
-  const username = session.user.name || session.user.email || "rivr-user";
+  const ownerId = session.user.id;
+  const subject = await resolveAutobotConnectionScope(ownerId);
+  let promptActorId = subject.actorId;
+  let resolvedPersonaId: string | null = subject.scopeType === "persona" ? subject.actorId : null;
+  let resolvedPersonaName: string | null =
+    subject.scopeType === "persona" ? subject.scopeLabel : null;
+
+  if (personaId && typeof personaId === "string") {
+    const owned = await isPersonaOf(personaId, ownerId).catch(() => false);
+    if (owned) {
+      promptActorId = personaId;
+      resolvedPersonaId = personaId;
+      resolvedPersonaName = personaName || resolvedPersonaName || "persona";
+    }
+  }
+
+  const actorSettings = await getAutobotUserSettings(promptActorId).catch(() => null);
+  const includedPersonaKgIds = actorSettings?.includedPersonaKgIds ?? [];
+  const username = resolvedPersonaName || session.user.name || session.user.email || "rivr-user";
   const sessionKey = [
-    "agent:main:rivr",
-    sanitizeSessionSegment(session.user.id),
+    resolvedPersonaId ? "agent:persona:rivr" : "agent:main:rivr",
+    sanitizeSessionSegment(promptActorId),
     sanitizeSessionSegment(threadId || username),
   ].join(":");
 
   // Build system prompt — inject persona KG context when a personaId is provided
   let systemPrompt: string | null = null;
-  if (personaId && typeof personaId === "string") {
-    // Verify persona ownership before injecting its KG context
-    const owned = await isPersonaOf(personaId, session.user.id).catch(() => false);
-    if (owned) {
-      systemPrompt = await buildAutobotSystemPromptWithPersonaKg(
-        session.user.id,
-        personaId,
-        personaName || "persona",
-      ).catch((error) => {
-        console.error("Failed to build persona-scoped system prompt:", error);
-        return null;
-      });
-    }
-  }
+  systemPrompt = await buildAutobotSystemPrompt(ownerId, {
+    promptActorId,
+    activePersonaId: resolvedPersonaId ?? undefined,
+    activePersonaName: resolvedPersonaName ?? undefined,
+    includedPersonaKgIds,
+  }).catch((error) => {
+    console.error("Failed to build autobot system prompt:", error);
+    return null;
+  });
+  // Ensure we never send a null system prompt — minimal fallback preserves identity
   if (!systemPrompt) {
-    systemPrompt = await buildAutobotSystemPrompt(session.user.id).catch((error) => {
-      console.error("Failed to build autobot system prompt:", error);
-      return null;
-    });
+    const userName = session.user.name || session.user.email || "User";
+    systemPrompt = `You are the personal AI agent for ${userName} on their Rivr sovereign instance. You have tools, persistent memory, and infrastructure access. Never respond as a blank-slate assistant. If you have a knowledge graph, query it first. Be direct and helpful.`;
   }
 
   // -------------------------------------------------------------------------
@@ -275,39 +358,49 @@ export async function POST(request: Request) {
   // -------------------------------------------------------------------------
 
   try {
-    const openClawResponse = await fetch(`${OPENCLAW_URL}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-openclaw-model": selectedModel,
-        "x-rivr-user-id": session.user.id,
-      },
-      body: JSON.stringify({
+    let result = await chatViaOpenClaw({
+      sessionUserId: promptActorId,
+      username,
+      message,
+      history: sanitizedHistory,
+      selectedModel,
+      sessionKey,
+      systemPrompt,
+    });
+
+    if (
+      !result.ok &&
+      shouldRetryCloudChatWithFallback(selectedModel, result.status, result.errorText)
+    ) {
+      console.warn(
+        `[api/autobot/chat] ${selectedModel} rate-limited, retrying with ${OPENCLAW_FALLBACK_MODEL}`,
+      );
+      result = await chatViaOpenClaw({
+        sessionUserId: promptActorId,
         username,
         message,
         history: sanitizedHistory,
-        model: selectedModel,
+        selectedModel: OPENCLAW_FALLBACK_MODEL,
         sessionKey,
         systemPrompt,
-      }),
-    });
+      });
+    }
 
-    if (!openClawResponse.ok) {
-      const errorText = await openClawResponse.text().catch(() => "");
-      console.error(
-        `OpenClaw chat error: ${openClawResponse.status}`,
-        errorText,
-      );
+    if (!result.ok) {
+      console.error(`OpenClaw chat error: ${result.status}`, result.errorText);
       return NextResponse.json(
-        { error: `OpenClaw returned ${openClawResponse.status}` },
+        { error: `OpenClaw returned ${result.status}` },
         { status: 502 },
       );
     }
 
-    const data = await openClawResponse.json();
+    const data = result.data ?? {};
     return NextResponse.json({
-      reply: data.reply || "...",
-      model: data.model || selectedModel,
+      reply: typeof data.reply === "string" ? data.reply : "...",
+      model:
+        typeof data.model === "string"
+          ? data.model
+          : result.model,
       sessionKey,
     });
   } catch (error) {

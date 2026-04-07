@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertCircle,
+  Bot,
   CheckCircle,
   ChevronDown,
   ChevronRight,
@@ -29,6 +30,7 @@ import {
   Rocket,
   RotateCcw,
   Save,
+  Plus,
   Send,
   Sparkles,
   User,
@@ -53,6 +55,34 @@ import {
   listFileNames,
   getFileLanguage,
 } from "@/lib/bespoke/site-files";
+import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
+import { BuilderPreviewChat } from "@/components/builder-preview-chat";
+import { Switch } from "@/components/ui/switch";
+import {
+  DATA_SOURCE_REGISTRY,
+  fetchDataSourceContent,
+} from "@/lib/bespoke/data-source-registry";
+import type {
+  DataSourceKind,
+  DataSourceConfig,
+  BuilderDataSource,
+} from "@/lib/bespoke/types";
+
+// ---------------------------------------------------------------------------
+// Workspace target types
+// ---------------------------------------------------------------------------
+
+interface BuilderWorkspace {
+  id: string;
+  name: string;
+  label: string;
+  scope: string;
+  cwd: string;
+  liveSubdomain?: string | null;
+}
+
+/** Sentinel value for the default in-memory / sovereign site target. */
+const WORKSPACE_TARGET_DEFAULT = "__default__";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -98,7 +128,7 @@ interface ChatMessage {
 // Panels
 // ---------------------------------------------------------------------------
 
-type RightPanelView = "preview" | "files" | "data" | "history";
+type RightPanelView = "preview" | "files" | "data" | "history" | "agents";
 
 // ---------------------------------------------------------------------------
 // Version history types
@@ -257,6 +287,29 @@ export default function BuilderPage() {
   const [previewingVersionId, setPreviewingVersionId] = useState<string | null>(null);
   const [previewingVersionFiles, setPreviewingVersionFiles] = useState<SiteFiles | null>(null);
 
+  // Workspace target state
+  const [workspaces, setWorkspaces] = useState<BuilderWorkspace[]>([]);
+  const [workspacesLoading, setWorkspacesLoading] = useState(false);
+  const [targetWorkspaceId, setTargetWorkspaceId] = useState<string>(WORKSPACE_TARGET_DEFAULT);
+  const [workspaceBasePath, setWorkspaceBasePath] = useState<string>("");
+
+  // Mobile preview modal state
+  const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false);
+
+  // New workspace creation state
+  const [newAppDialogOpen, setNewAppDialogOpen] = useState(false);
+  const [newAppName, setNewAppName] = useState("");
+  const [newAppSubdomain, setNewAppSubdomain] = useState("");
+  const [newAppCreating, setNewAppCreating] = useState(false);
+  const [newAppError, setNewAppError] = useState<string | null>(null);
+
+  // Data source binding state
+  const [dataSources, setDataSources] = useState<BuilderDataSource[]>([]);
+  const [dataSourcesLoading, setDataSourcesLoading] = useState(false);
+  const [dataSourceConfigs, setDataSourceConfigs] = useState<Record<string, DataSourceConfig>>({});
+  const [dataSourceFetching, setDataSourceFetching] = useState<Record<string, boolean>>({});
+  const [dataSourcePreviews, setDataSourcePreviews] = useState<Record<string, { data: unknown; error: string | null }>>({});
+
   // Refs
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -276,6 +329,43 @@ export default function BuilderPage() {
     }
   }, []);
 
+  // Fetch available workspaces on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchWorkspaces() {
+      setWorkspacesLoading(true);
+      try {
+        const res = await fetch("/api/agent-hq/workspaces", {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          // Not sovereign or not authenticated — workspaces not available
+          return;
+        }
+        const data = (await res.json()) as {
+          workspaces?: Array<{
+            id: string;
+            name: string;
+            label: string;
+            scope: string;
+            cwd: string;
+            liveSubdomain?: string | null;
+          }>;
+        };
+        if (!cancelled && data.workspaces) {
+          setWorkspaces(data.workspaces);
+        }
+      } catch {
+        // Workspace discovery not available
+      } finally {
+        if (!cancelled) setWorkspacesLoading(false);
+      }
+    }
+    void fetchWorkspaces();
+    return () => { cancelled = true; };
+  }, []);
+
   // Helper to apply loaded files to editor state
   const applyLoadedFiles = useCallback((loadedFiles: SiteFiles) => {
     setSiteFiles(loadedFiles);
@@ -285,7 +375,177 @@ export default function BuilderPage() {
     setSourceEditorValue(("index.html" in loadedFiles ? loadedFiles["index.html"] : loadedFiles[Object.keys(loadedFiles)[0]]) ?? "");
   }, []);
 
+  // Load files from a workspace
+  const loadWorkspaceFiles = useCallback(
+    async (wsId: string, basePath: string) => {
+      try {
+        const params = new URLSearchParams({ workspaceId: wsId });
+        if (basePath) params.set("basePath", basePath);
+        const res = await fetch(`/api/builder/workspace-files?${params}`, {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          files?: SiteFiles;
+          fileCount?: number;
+          workspace?: { label: string };
+        };
+        if (data.files && data.fileCount && data.fileCount > 0) {
+          applyLoadedFiles(data.files);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `ws-load-${Date.now()}`,
+              role: "assistant",
+              content: `Loaded ${data.fileCount} files from workspace "${data.workspace?.label ?? wsId}"${basePath ? ` (${basePath})` : ""}. You can preview and edit them, or ask me to make changes.`,
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      } catch {
+        // Workspace file loading failed
+      }
+    },
+    [applyLoadedFiles],
+  );
+
+  // Reload sovereign / default site files (mirrors initial load logic for live-files)
+  const reloadDefaultFiles = useCallback(async () => {
+    try {
+      const liveResponse = await fetch("/api/builder/live-files", {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (liveResponse.ok) {
+        const liveData = (await liveResponse.json()) as {
+          files?: SiteFiles;
+          fileCount?: number;
+        };
+        if (liveData.files && liveData.fileCount && liveData.fileCount > 0) {
+          applyLoadedFiles(liveData.files);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `default-reload-${Date.now()}`,
+              role: "assistant",
+              content: `Switched back to sovereign site. Loaded ${liveData.fileCount} live files.`,
+              timestamp: new Date(),
+            },
+          ]);
+          return;
+        }
+      }
+    } catch {
+      // Live files not available
+    }
+
+    // Fallback: try latest version snapshot
+    try {
+      const versionsResponse = await fetch("/api/builder/versions", {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (versionsResponse.ok) {
+        const versionsData = (await versionsResponse.json()) as {
+          versions?: Array<{ id: string; versionNumber: number; fileCount: number }>;
+        };
+        if (versionsData.versions && versionsData.versions.length > 0 && versionsData.versions[0].fileCount > 0) {
+          const latestVersion = versionsData.versions[0];
+          const restoreResponse = await fetch(`/api/builder/versions/${latestVersion.id}/restore`, {
+            method: "POST",
+            credentials: "same-origin",
+          });
+          if (restoreResponse.ok) {
+            const restoreData = (await restoreResponse.json()) as { files?: SiteFiles };
+            if (restoreData.files && Object.keys(restoreData.files).length > 0) {
+              applyLoadedFiles(restoreData.files);
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `default-version-reload-${Date.now()}`,
+                  role: "assistant",
+                  content: `Switched back to sovereign site. Restored ${Object.keys(restoreData.files!).length} files from latest version.`,
+                  timestamp: new Date(),
+                },
+              ]);
+            }
+          }
+        }
+      }
+    } catch {
+      // Version loading failed
+    }
+  }, [applyLoadedFiles]);
+
+  // Handle workspace target change
+  const handleWorkspaceChange = useCallback(
+    (wsId: string) => {
+      setTargetWorkspaceId(wsId);
+      if (wsId !== WORKSPACE_TARGET_DEFAULT) {
+        void loadWorkspaceFiles(wsId, workspaceBasePath);
+      } else {
+        void reloadDefaultFiles();
+      }
+    },
+    [loadWorkspaceFiles, reloadDefaultFiles, workspaceBasePath],
+  );
+
   // Load site files: first try live deployed files, then version history, then generate from template
+  // Create new app workspace handler
+  const handleCreateWorkspace = useCallback(async () => {
+    const trimmedName = newAppName.trim();
+    if (!trimmedName) return;
+
+    setNewAppCreating(true);
+    setNewAppError(null);
+
+    try {
+      const response = await fetch("/api/agent-hq/workspaces", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: trimmedName,
+          subdomain: newAppSubdomain.trim() || undefined,
+        }),
+      });
+
+      const data = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+        workspace?: BuilderWorkspace;
+      };
+
+      if (!response.ok || !data.success || !data.workspace) {
+        throw new Error(data.error || "Failed to create workspace");
+      }
+
+      // Add to local workspaces list and auto-select
+      const created = data.workspace;
+      setWorkspaces((prev) => [...prev, created]);
+      setTargetWorkspaceId(created.id);
+      setNewAppDialogOpen(false);
+      setNewAppName("");
+      setNewAppSubdomain("");
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `ws-created-${Date.now()}`,
+          role: "assistant",
+          content: `Created new app workspace "${created.label}". You can now describe what you want to build and I'll generate files for it.`,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (err) {
+      setNewAppError(err instanceof Error ? err.message : "Failed to create workspace");
+    } finally {
+      setNewAppCreating(false);
+    }
+  }, [newAppName, newAppSubdomain]);
   useEffect(() => {
     if (moduleState !== "loaded" || !bundle || !manifest) return;
     if (Object.keys(siteFiles).length > 0) return; // Already have files
@@ -454,6 +714,20 @@ export default function BuilderPage() {
     let fullText = "";
 
     try {
+      // Build optional workspace context for the system prompt
+      const activeWs = targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT
+        ? workspaces.find((w) => w.id === targetWorkspaceId)
+        : undefined;
+      const workspaceContext = activeWs
+        ? {
+            name: activeWs.name,
+            label: activeWs.label,
+            scope: activeWs.scope,
+            basePath: workspaceBasePath || undefined,
+            liveSubdomain: activeWs.liveSubdomain,
+          }
+        : undefined;
+
       const response = await fetch("/api/builder/chat", {
         method: "POST",
         credentials: "same-origin",
@@ -462,6 +736,13 @@ export default function BuilderPage() {
           messages: conversationHistory,
           profileBundle: bundle ?? {},
           currentFiles: siteFiles,
+          workspaceContext,
+          extraDataSources: Object.fromEntries(
+            Object.entries(dataSourcePreviews)
+              .filter(([kind]) => isDataSourceEnabled(kind as DataSourceKind))
+              .filter(([, v]) => v.data && !v.error)
+              .map(([kind, v]) => [kind, v.data]),
+          ),
         }),
         signal: controller.signal,
       });
@@ -538,7 +819,7 @@ export default function BuilderPage() {
         setActivePreviewFile("index.html");
       }
     }
-  }, [input, isStreaming, messages, bundle, siteFiles]);
+  }, [input, isStreaming, messages, bundle, siteFiles, targetWorkspaceId, workspaces, workspaceBasePath]);
 
   // Cancel streaming
   const handleCancelStream = useCallback(() => {
@@ -704,6 +985,36 @@ export default function BuilderPage() {
     }
   }, [rightPanelView, fetchVersions]);
 
+  // (Data source handlers defined below after handleRefreshData)
+          });
+        }
+      } catch {
+        // Config save failure — non-critical
+      }
+    },
+    [],
+  );
+
+  const handlePreviewDataSource = useCallback(
+    async (kind: DataSourceKind) => {
+      setDataSourceFetching((prev) => ({ ...prev, [kind]: true }));
+      try {
+        const result = await fetchDataSourceContent(
+          kind,
+          dataSourceConfigs[kind] ?? {},
+        );
+        setDataSourcePreviews((prev) => ({
+          ...prev,
+          [kind]: { data: result.data, error: result.error },
+        }));
+      } finally {
+        setDataSourceFetching((prev) => ({ ...prev, [kind]: false }));
+      }
+    },
+    [dataSourceConfigs],
+  );
+
+
   // -------------------------------------------------------------------------
   // Deploy handler
   // -------------------------------------------------------------------------
@@ -714,54 +1025,93 @@ export default function BuilderPage() {
     setDeployStatus(DEPLOY_STATUS_DEPLOYING);
     setDeployMessage("Deploying site files...");
 
+    let fileCount = Object.keys(siteFiles).length;
+    let targetLabel = "/site/";
+    let commitUrl: string | undefined;
+
     try {
-      const response = await fetch("/api/builder/deploy", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          files: siteFiles,
-          commitMessage: `Site update from Builder — ${new Date().toISOString()}`,
-        }),
-      });
+      // Workspace-targeted deploy: write files to the workspace directory
+      if (targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT) {
+        const ws = workspaces.find((w) => w.id === targetWorkspaceId);
+        const params: Record<string, string> = {
+          workspaceId: targetWorkspaceId,
+          files: "", // placeholder — body carries files
+        };
+        if (workspaceBasePath) params.basePath = workspaceBasePath;
 
-      const data = (await response.json()) as {
-        success?: boolean;
-        error?: string;
-        method?: string;
-        filesDeployed?: number;
-        filesUpdated?: number;
-        deployPath?: string;
-        commitSha?: string;
-        commitUrl?: string;
-        repo?: string;
-        branch?: string;
-        needsGitHubConnection?: boolean;
-      };
+        const response = await fetch("/api/builder/workspace-files", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspaceId: targetWorkspaceId,
+            files: siteFiles,
+            basePath: workspaceBasePath || undefined,
+          }),
+        });
 
-      if (!response.ok || !data.success) {
-        if (data.needsGitHubConnection) {
-          throw new Error("No GitHub repository connected. Connect a repository in Settings to deploy your site.");
+        const data = (await response.json()) as {
+          success?: boolean;
+          error?: string;
+          filesWritten?: number;
+          workspace?: { label: string };
+        };
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || "Workspace deploy failed");
         }
-        throw new Error(data.error || "Deploy failed");
+
+        fileCount = data.filesWritten ?? fileCount;
+        targetLabel = `${ws?.label ?? data.workspace?.label ?? targetWorkspaceId}${workspaceBasePath ? ` (${workspaceBasePath})` : ""}`;
+      } else {
+        // Default sovereign deploy
+        const response = await fetch("/api/builder/deploy", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            files: siteFiles,
+            commitMessage: `Site update from Builder — ${new Date().toISOString()}`,
+          }),
+        });
+
+        const data = (await response.json()) as {
+          success?: boolean;
+          error?: string;
+          method?: string;
+          filesDeployed?: number;
+          filesUpdated?: number;
+          deployPath?: string;
+          commitSha?: string;
+          commitUrl?: string;
+          repo?: string;
+          branch?: string;
+          needsGitHubConnection?: boolean;
+        };
+
+        if (!response.ok || !data.success) {
+          if (data.needsGitHubConnection) {
+            throw new Error("No GitHub repository connected. Connect a repository in Settings to deploy your site.");
+          }
+          throw new Error(data.error || "Deploy failed");
+        }
+
+        fileCount = data.filesDeployed ?? data.filesUpdated ?? fileCount;
+        targetLabel = data.method === "github"
+          ? `${data.repo ?? "GitHub"} (${data.branch ?? "main"})`
+          : data.deployPath ?? "/site/";
+        commitUrl = data.commitUrl;
       }
 
-      const fileCount = data.filesDeployed ?? data.filesUpdated ?? Object.keys(siteFiles).length;
-      const targetLabel = data.method === "github"
-        ? `${data.repo ?? "GitHub"} (${data.branch ?? "main"})`
-        : data.deployPath ?? "/site/";
-
       setDeployStatus(DEPLOY_STATUS_SUCCESS);
-      setDeployMessage(
-        `Deployed ${fileCount} files to ${targetLabel}`,
-      );
+      setDeployMessage(`Deployed ${fileCount} files to ${targetLabel}`);
 
       setMessages((prev) => [
         ...prev,
         {
           id: `deploy-${Date.now()}`,
           role: "assistant",
-          content: `Site deployed successfully! ${fileCount} files written to ${targetLabel}.${data.commitUrl ? ` [View commit](${data.commitUrl})` : ""}`,
+          content: `Site deployed successfully! ${fileCount} files written to ${targetLabel}.${commitUrl ? ` [View commit](${commitUrl})` : ""}`,
           timestamp: new Date(),
         },
       ]);
@@ -778,7 +1128,6 @@ export default function BuilderPage() {
             commitMessage: `Deploy: ${fileCount} files to ${targetLabel}`,
           }),
         });
-        // Refresh version list if history panel is visible
         if (rightPanelView === "history") {
           void fetchVersions();
         }
@@ -798,7 +1147,7 @@ export default function BuilderPage() {
         setDeployMessage("");
       }, DEPLOY_STATUS_RESET_DELAY_MS);
     }
-  }, [siteFiles, rightPanelView, fetchVersions]);
+  }, [siteFiles, rightPanelView, fetchVersions, targetWorkspaceId, workspaces, workspaceBasePath]);
 
   // -------------------------------------------------------------------------
   // File explorer actions
@@ -826,6 +1175,97 @@ export default function BuilderPage() {
     // Force a re-mount of the hook by reloading
     window.location.reload();
   }, []);
+
+
+  // -------------------------------------------------------------------------
+  // Data source binding handlers
+  // -------------------------------------------------------------------------
+
+  const fetchDataSources = useCallback(async () => {
+    setDataSourcesLoading(true);
+    try {
+      const res = await fetch("/api/builder/data-sources", { credentials: "same-origin" });
+      if (res.ok) {
+        const json = (await res.json()) as { sources: BuilderDataSource[] };
+        setDataSources(json.sources);
+        const configs: Record<string, DataSourceConfig> = {};
+        for (const src of json.sources) {
+          configs[src.kind] = src.config as DataSourceConfig;
+        }
+        setDataSourceConfigs((prev) => ({ ...prev, ...configs }));
+      }
+    } catch (err) {
+      console.error("[builder] Failed to fetch data sources:", err);
+    } finally {
+      setDataSourcesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchDataSources();
+  }, [fetchDataSources]);
+
+  const handleToggleDataSource = useCallback(
+    async (kind: DataSourceKind, enabled: boolean) => {
+      const meta = DATA_SOURCE_REGISTRY.find((m) => m.kind === kind);
+      const config = dataSourceConfigs[kind] ?? {};
+      try {
+        const res = await fetch("/api/builder/data-sources", {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind, label: meta?.label ?? kind, enabled, config }),
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { source: BuilderDataSource };
+          setDataSources((prev) => {
+            const idx = prev.findIndex((s) => s.kind === kind);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = json.source;
+              return next;
+            }
+            return [...prev, json.source];
+          });
+        }
+      } catch (err) {
+        console.error("[builder] Failed to toggle data source:", err);
+      }
+    },
+    [dataSourceConfigs],
+  );
+
+  const handleUpdateDataSourceConfig = useCallback(
+    (kind: string, key: string, value: string) => {
+      setDataSourceConfigs((prev) => ({
+        ...prev,
+        [kind]: { ...(prev[kind] ?? {}), [key]: value },
+      }));
+    },
+    [],
+  );
+
+  const handleFetchDataSourcePreview = useCallback(
+    async (kind: DataSourceKind) => {
+      setDataSourceFetching((prev) => ({ ...prev, [kind]: true }));
+      const config = dataSourceConfigs[kind] ?? {};
+      const result = await fetchDataSourceContent(kind, config);
+      setDataSourcePreviews((prev) => ({
+        ...prev,
+        [kind]: { data: result.data, error: result.error },
+      }));
+      setDataSourceFetching((prev) => ({ ...prev, [kind]: false }));
+    },
+    [dataSourceConfigs],
+  );
+
+  const isDataSourceEnabled = useCallback(
+    (kind: DataSourceKind): boolean => {
+      const binding = dataSources.find((s) => s.kind === kind);
+      return binding?.enabled ?? false;
+    },
+    [dataSources],
+  );
 
   // Copy file content
   const handleCopyFile = useCallback(
@@ -1024,7 +1464,12 @@ export default function BuilderPage() {
       if (!anchor) return;
       var href = anchor.getAttribute('href');
       if (!href) return;
-      if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:') || href.startsWith('#')) {
+      if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:')) {
+        anchor.setAttribute('target', '_blank');
+        anchor.setAttribute('rel', 'noopener noreferrer');
+        return;
+      }
+      if (href.startsWith('#')) {
         return;
       }
       var previewTarget = resolvePreviewTarget(href);
@@ -1139,6 +1584,134 @@ export default function BuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Workspace target selector */}
+          {workspaces.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+              <select
+                value={targetWorkspaceId}
+                onChange={(e) => handleWorkspaceChange(e.target.value)}
+                className="h-8 min-w-[160px] rounded-md border border-input bg-background px-2 text-xs outline-none"
+              >
+                <option value={WORKSPACE_TARGET_DEFAULT}>Default (sovereign site)</option>
+                {workspaces.map((ws) => (
+                  <option key={ws.id} value={ws.id}>
+                    {ws.label} ({ws.scope})
+                  </option>
+                ))}
+              </select>
+              {targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT && (
+                <Input
+                  value={workspaceBasePath}
+                  onChange={(e) => setWorkspaceBasePath(e.target.value)}
+                  placeholder="base path (e.g. src)"
+                  className="h-8 w-32 text-xs font-mono"
+                />
+              )}
+            </div>
+          )}
+
+          {/* New App workspace dialog */}
+          <Dialog open={newAppDialogOpen} onOpenChange={(open) => {
+            if (!open) {
+              setNewAppDialogOpen(false);
+              setNewAppName("");
+              setNewAppSubdomain("");
+              setNewAppError(null);
+            } else {
+              setNewAppDialogOpen(true);
+            }
+          }}>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                <Plus className="h-3.5 w-3.5" />
+                New App
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Create New App Workspace</DialogTitle>
+                <DialogDescription>
+                  Create a new app project directory. The AI builder will target this workspace for file generation.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4 py-2">
+                <div className="space-y-2">
+                  <Label htmlFor="new-app-name">App Name</Label>
+                  <Input
+                    id="new-app-name"
+                    value={newAppName}
+                    onChange={(e) => {
+                      setNewAppName(e.target.value);
+                      setNewAppError(null);
+                    }}
+                    placeholder="My New App"
+                    className="text-sm"
+                    disabled={newAppCreating}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void handleCreateWorkspace();
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="new-app-subdomain">Subdomain (optional)</Label>
+                  <Input
+                    id="new-app-subdomain"
+                    value={newAppSubdomain}
+                    onChange={(e) => setNewAppSubdomain(e.target.value)}
+                    placeholder="my-app.example.com"
+                    className="text-sm font-mono"
+                    disabled={newAppCreating}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Optional live subdomain for deployment routing.
+                  </p>
+                </div>
+
+                {newAppError && (
+                  <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{newAppError}</span>
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setNewAppDialogOpen(false);
+                    setNewAppName("");
+                    setNewAppSubdomain("");
+                    setNewAppError(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => void handleCreateWorkspace()}
+                  disabled={newAppCreating || !newAppName.trim()}
+                  className="gap-1.5"
+                >
+                  {newAppCreating ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="h-3.5 w-3.5" />
+                  )}
+                  {newAppCreating ? "Creating..." : "Create Workspace"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {/* Solid Pod import */}
           <Dialog open={solidDialogOpen} onOpenChange={(open) => {
             if (!open) handleSolidDialogClose();
@@ -1503,7 +2076,11 @@ export default function BuilderPage() {
                   handleTextareaInput();
                 }}
                 onKeyDown={handleKeyDown}
-                placeholder="Describe your site or request changes..."
+                placeholder={
+                  targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT
+                    ? `Describe changes for ${workspaces.find((w) => w.id === targetWorkspaceId)?.label ?? "workspace"}...`
+                    : "Describe your site or request changes..."
+                }
                 className="flex-1 bg-muted/50 rounded-lg px-3 py-2 text-sm outline-none resize-none placeholder:text-muted-foreground border border-border/50 focus:border-primary/50 transition-colors"
                 rows={1}
                 style={{ maxHeight: "120px" }}
@@ -1583,6 +2160,17 @@ export default function BuilderPage() {
               <History className="h-3.5 w-3.5" />
               History
             </button>
+            <button
+              onClick={() => setRightPanelView("agents")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                rightPanelView === "agents"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              <Bot className="h-3.5 w-3.5" />
+              Agents
+            </button>
 
             <div className="flex-1" />
 
@@ -1652,25 +2240,31 @@ export default function BuilderPage() {
                     </div>
                   )}
 
-                  <div className="flex-1 min-h-0">
-                    {previewHtml ? (
-                      <iframe
-                        srcDoc={previewHtml}
-                        title="Site Preview"
-                        className="w-full h-full border-0"
-                        sandbox="allow-same-origin allow-scripts"
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3 p-8">
-                        <Globe className="h-12 w-12 opacity-20" />
-                        <div className="text-center">
-                          <p className="text-sm font-medium">No preview yet</p>
-                          <p className="text-xs mt-1">
-                            Start a conversation to generate your site
-                          </p>
+                  <div className="flex-1 flex min-h-0">
+                    {/* Preview iframe area */}
+                    <div className="flex-1 min-h-0">
+                      {previewHtml ? (
+                        <iframe
+                          srcDoc={previewHtml}
+                          title="Site Preview"
+                          className="w-full h-full border-0"
+                          sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3 p-8">
+                          <Globe className="h-12 w-12 opacity-20" />
+                          <div className="text-center">
+                            <p className="text-sm font-medium">No preview yet</p>
+                            <p className="text-xs mt-1">
+                              Start a conversation to generate your site
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
+
+                    {/* Architect chat sidebar */}
+                    <BuilderPreviewChat />
                   </div>
                 </>
               )}
@@ -1788,6 +2382,108 @@ export default function BuilderPage() {
                                   {skill}
                                 </Badge>
                               ))}
+
+                  {/* ----- DATA SOURCES ----- */}
+                  <div className="border-t pt-4 mt-2 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-medium">Data Sources</h3>
+                      {dataSourcesLoading && (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                      )}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      Enable additional data sources for the builder to use when generating your site.
+                    </p>
+
+                    {DATA_SOURCE_REGISTRY.map((meta) => {
+                      const enabled = isDataSourceEnabled(meta.kind);
+                      const fetching = dataSourceFetching[meta.kind] ?? false;
+                      const preview = dataSourcePreviews[meta.kind];
+                      const localConfig = dataSourceConfigs[meta.kind] ?? {};
+
+                      return (
+                        <Card key={meta.kind}>
+                          <CardContent className="py-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                {meta.iconHint === "User" && <User className="h-3.5 w-3.5 text-muted-foreground" />}
+                                {meta.iconHint === "Globe" && <Globe className="h-3.5 w-3.5 text-muted-foreground" />}
+                                {meta.iconHint === "Database" && <Database className="h-3.5 w-3.5 text-muted-foreground" />}
+                                {meta.iconHint === "FileCode2" && <FileCode2 className="h-3.5 w-3.5 text-muted-foreground" />}
+                                <span className="text-xs font-medium">{meta.label}</span>
+                              </div>
+                              <Switch
+                                checked={enabled}
+                                onCheckedChange={(checked: boolean) =>
+                                  void handleToggleDataSource(meta.kind, checked)
+                                }
+                              />
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                              {meta.description}
+                            </p>
+
+                            {enabled && meta.configurableFields.length > 0 && (
+                              <div className="space-y-1.5 pt-1">
+                                {meta.configurableFields.map((field) => (
+                                  <div key={field.key} className="space-y-0.5">
+                                    <Label className="text-[10px]">{field.label}</Label>
+                                    <Input
+                                      className="h-7 text-xs"
+                                      placeholder={field.placeholder}
+                                      value={(localConfig[field.key] as string) ?? ""}
+                                      onChange={(e) =>
+                                        handleUpdateDataSourceConfig(
+                                          meta.kind,
+                                          field.key,
+                                          e.target.value,
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {enabled && (
+                              <div className="flex items-center gap-2 pt-1">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-6 text-[10px] gap-1"
+                                  disabled={fetching}
+                                  onClick={() => void handleFetchDataSourcePreview(meta.kind)}
+                                >
+                                  {fetching ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <Play className="h-3 w-3" />
+                                  )}
+                                  Fetch
+                                </Button>
+                                {preview?.error && (
+                                  <span className="text-[10px] text-destructive truncate">
+                                    {preview.error}
+                                  </span>
+                                )}
+                                {preview?.data && !preview.error && (
+                                  <span className="text-[10px] text-green-600 dark:text-green-400">
+                                    Data loaded
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {enabled && preview?.data && !preview.error && (
+                              <pre className="text-[10px] bg-muted rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap break-all">
+                                {JSON.stringify(preview.data, null, 2).slice(0, 2000)}
+                              </pre>
+                            )}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
                             </div>
                           )}
                           {profileSummary.location && (
@@ -1835,6 +2531,133 @@ export default function BuilderPage() {
                         use your real name, bio, skills, posts, events, groups, offerings, and
                         connections to populate content.
                       </p>
+                      {/* Data Source Bindings */}
+                      <div className="pt-2 border-t">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-xs font-medium">Data Sources</h4>
+                          {dataSourcesLoading && (
+                            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          {DATA_SOURCE_REGISTRY.map((meta) => {
+                            const binding = dataSources.find(
+                              (s) => s.kind === meta.kind,
+                            );
+                            const enabled = binding?.enabled ?? meta.kind === "myprofile";
+                            const fetching = dataSourceFetching[meta.kind] ?? false;
+                            const preview = dataSourcePreviews[meta.kind];
+                            const config = dataSourceConfigs[meta.kind] ?? meta.defaultConfig;
+
+                            const IconComponent =
+                              meta.iconHint === "User"
+                                ? User
+                                : meta.iconHint === "Globe"
+                                  ? Globe
+                                  : meta.iconHint === "Database"
+                                    ? Database
+                                    : FileCode2;
+
+                            return (
+                              <Card key={meta.kind}>
+                                <CardContent className="py-2 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <IconComponent className="h-3.5 w-3.5 text-muted-foreground" />
+                                      <span className="text-xs font-medium">
+                                        {meta.label}
+                                      </span>
+                                    </div>
+                                    <Switch
+                                      checked={enabled}
+                                      onCheckedChange={(checked) =>
+                                        void handleToggleDataSource(meta.kind, checked)
+                                      }
+                                      className="scale-75"
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground">
+                                    {meta.description}
+                                  </p>
+
+                                  {/* Configurable fields for this source kind */}
+                                  {meta.configurableFields.length > 0 && enabled && (
+                                    <div className="space-y-1.5">
+                                      {meta.configurableFields.map((field) => (
+                                        <div key={field.key}>
+                                          <Label className="text-[10px]">
+                                            {field.label}
+                                          </Label>
+                                          <Input
+                                            className="h-7 text-xs"
+                                            placeholder={field.placeholder}
+                                            value={
+                                              (config[field.key] as string) ?? ""
+                                            }
+                                            onChange={(e) => {
+                                              const next = {
+                                                ...config,
+                                                [field.key]: e.target.value,
+                                              };
+                                              setDataSourceConfigs((prev) => ({
+                                                ...prev,
+                                                [meta.kind]: next,
+                                              }));
+                                            }}
+                                            onBlur={() =>
+                                              void handleSaveDataSourceConfig(
+                                                meta.kind,
+                                                config,
+                                              )
+                                            }
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* Preview / test fetch */}
+                                  {enabled && (
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-6 text-[10px] gap-1 px-2"
+                                        disabled={fetching}
+                                        onClick={() =>
+                                          void handlePreviewDataSource(meta.kind)
+                                        }
+                                      >
+                                        {fetching ? (
+                                          <Loader2 className="h-3 w-3 animate-spin" />
+                                        ) : (
+                                          <Eye className="h-3 w-3" />
+                                        )}
+                                        Test
+                                      </Button>
+                                      {preview?.error && (
+                                        <span className="text-[10px] text-destructive truncate">
+                                          {preview.error}
+                                        </span>
+                                      )}
+                                      {preview?.data && !preview.error && (
+                                        <Badge
+                                          variant="outline"
+                                          className="text-[10px] text-green-600"
+                                        >
+                                          <CheckCircle className="h-3 w-3 mr-1" />
+                                          OK
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  )}
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
+                        </div>
+                      </div>
+
                     </div>
                   ) : (
                     <Skeleton className="h-32" />
@@ -2009,9 +2832,85 @@ export default function BuilderPage() {
                   )}
                 </div>
               )}
+
+              {/* ----- AGENTS PANEL ----- */}
+              {rightPanelView === "agents" && (
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <BuilderAgentsPanel />
+                </div>
+              )}
             </div>
+
           </div>
         </div>
+
+        {/* Mobile preview floating button */}
+        <div className="fixed bottom-20 right-4 z-50 lg:hidden">
+          <Button
+            variant="default"
+            size="sm"
+            className="h-10 gap-1.5 rounded-full shadow-lg"
+            onClick={() => setMobilePreviewOpen(true)}
+          >
+            <Eye className="h-4 w-4" />
+            Preview
+          </Button>
+        </div>
+
+        {/* Mobile preview fullscreen modal */}
+        {mobilePreviewOpen && (
+          <div className="fixed inset-0 z-50 flex flex-col bg-background lg:hidden">
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+              <div className="flex items-center gap-2">
+                <Eye className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Preview</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setMobilePreviewOpen(false)}
+              >
+                <XCircle className="h-4 w-4" />
+              </Button>
+            </div>
+            {/* Page tabs for mobile preview */}
+            {htmlFiles.length > 1 && (
+              <div className="flex items-center gap-1 px-3 py-1.5 border-b overflow-x-auto">
+                {htmlFiles.map((file) => (
+                  <button
+                    key={file}
+                    onClick={() => setActivePreviewFile(file)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                      activePreviewFile === file
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {file.replace(".html", "") || "index"}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex-1 min-h-0">
+              {previewHtml ? (
+                <iframe
+                  srcDoc={previewHtml}
+                  title="Site Preview (Mobile)"
+                  className="w-full h-full border-0"
+                  sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3 p-8">
+                  <Globe className="h-12 w-12 opacity-20" />
+                  <div className="text-center">
+                    <p className="text-sm font-medium">No preview yet</p>
+                    <p className="text-xs mt-1">Start a conversation to generate your site</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

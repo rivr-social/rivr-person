@@ -14,10 +14,11 @@
  *
  * Supply either `groupId` (group documents) or `ownerId` (personal documents), not both.
  */
-import { useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useEffect, useState, useTransition } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import type { Document } from "@/types/domain"
 import { DocumentList } from "./document-list"
+import { DocumentViewer } from "./document-viewer"
 import { EmptyState } from "./empty-state"
 import { FileText } from "lucide-react"
 import { createDocumentResourceAction, createPersonalDocumentAction } from "@/app/actions/create-resources"
@@ -45,7 +46,14 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const isPersonal = !groupId && !!ownerId
+  const [documentItems, setDocumentItems] = useState<Document[]>(documents)
+  const [selectedDocument, setSelectedDocument] = useState<Document | null>(null)
+
+  useEffect(() => {
+    setDocumentItems(documents)
+  }, [documents])
 
   const handleCreateDocument = () => {
     startTransition(async () => {
@@ -64,8 +72,19 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
 
   // Data derivation: filters to only documents that belong to the active scope.
   const scopedDocuments = isPersonal
-    ? documents.filter(doc => doc.ownerId === ownerId)
-    : documents.filter(doc => doc.groupId === groupId)
+    ? documentItems.filter(doc => doc.ownerId === ownerId)
+    : documentItems.filter(doc => doc.groupId === groupId)
+
+  useEffect(() => {
+    const currentDocId = searchParams.get("doc")
+    if (!currentDocId) {
+      setSelectedDocument(null)
+      return
+    }
+
+    const nextDocument = scopedDocuments.find((document) => document.id === currentDocId) ?? null
+    setSelectedDocument(nextDocument)
+  }, [scopedDocuments, searchParams])
 
   const emptyDescription = isPersonal
     ? "You don't have any personal documents yet. Create the first one to get started."
@@ -87,7 +106,7 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
   }
 
   return (
-    <div className="p-4">
+    <div className="grid gap-6 md:grid-cols-[320px_1fr]">
       <DocumentList
         documents={scopedDocuments}
         groupId={groupId}
@@ -95,6 +114,24 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
         onCreateDocument={handleCreateDocument}
         documentHrefBuilder={(doc) => `${docsPath}?doc=${doc.id}`}
       />
+
+      {selectedDocument ? (
+        <DocumentViewer
+          document={selectedDocument}
+          onBack={() => router.push(docsPath)}
+          onDocumentUpdated={(nextDocument) => {
+            setDocumentItems((current) => current.map((document) => document.id === nextDocument.id ? nextDocument : document))
+            setSelectedDocument(nextDocument)
+          }}
+          kgScopeType={isPersonal ? "person" : "group"}
+          kgScopeId={isPersonal ? ownerId : groupId}
+          canPushToKg={isPersonal}
+        />
+      ) : (
+        <div className="flex items-center justify-center rounded-lg border text-muted-foreground">
+          Select a document to preview
+        </div>
+      )}
     </div>
   )
 }

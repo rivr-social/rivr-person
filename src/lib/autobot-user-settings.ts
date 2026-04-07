@@ -1,6 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
+import {
+  sanitizeAutobotConnections,
+  type AutobotConnection,
+} from "@/lib/autobot-connectors";
 
 export type VoiceMode = "browser" | "clone";
 export type GpuProvider = "vast" | "local" | "custom";
@@ -72,6 +76,9 @@ export type AutobotUserSettings = {
   gpuProviderEndpoint: string;
   voiceSample: VoiceSample | null;
   digitalTwin: DigitalTwinProfile;
+  connections: AutobotConnection[];
+  customSoulMd: string;
+  includedPersonaKgIds: string[];
   updatedAt?: string;
 };
 
@@ -85,6 +92,9 @@ const DEFAULT_SETTINGS: AutobotUserSettings = {
   gpuProviderApiKey: "",
   gpuProviderEndpoint: "",
   voiceSample: null,
+  connections: [],
+  customSoulMd: "",
+  includedPersonaKgIds: [],
   digitalTwin: {
     pipeline: "retalk",
     model: "edityourself",
@@ -272,6 +282,14 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
       ? record.gpuProviderEndpoint.trim()
       : "";
   const voiceSample = sanitizeVoiceSample(record.voiceSample);
+  const connections = sanitizeAutobotConnections(record.connections);
+  const customSoulMd =
+    typeof record.customSoulMd === "string" ? record.customSoulMd.trim() : "";
+  const includedPersonaKgIds = Array.isArray(record.includedPersonaKgIds)
+    ? record.includedPersonaKgIds
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim())
+    : [];
   const digitalTwin = sanitizeDigitalTwinProfile(record.digitalTwin);
   const updatedAt =
     typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : undefined;
@@ -284,6 +302,9 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
     gpuProviderApiKey,
     gpuProviderEndpoint,
     voiceSample,
+    connections,
+    customSoulMd,
+    includedPersonaKgIds,
     digitalTwin,
     updatedAt,
   };

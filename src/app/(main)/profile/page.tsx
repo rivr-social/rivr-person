@@ -15,7 +15,6 @@ import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/socia
 import { useToast } from "@/components/ui/use-toast";
 import { MetaMaskConnectButton } from "@/components/metamask-connect-button";
 import type { ReactionCountsMap } from "@/app/actions/graph";
-import { fetchPersonalDocumentsAction } from "@/app/actions/graph";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 import {
   getMyWalletAction,
@@ -43,6 +42,7 @@ import { ProfileCalendar } from "@/components/profile-calendar";
 import { OfferingsTab } from "@/components/offerings-tab";
 import { PersonaManager } from "@/components/persona-manager";
 import { DocumentsTab } from "@/components/documents-tab";
+import { ProfileMediaTab } from "@/components/profile-media-tab";
 import { AgentGraph } from "@/components/agent-graph";
 import { UserConnections } from "@/components/user-connections";
 import { ReceiptCard } from "@/components/receipt-card";
@@ -50,6 +50,7 @@ import WalletDepositDialog from "@/components/wallet-deposit-dialog";
 import WalletHistory from "@/components/wallet-history";
 import SendMoneyDialog from "@/components/send-money-dialog";
 import EthAddressForm from "@/components/eth-address-form";
+import { BankAccountsCard } from "@/components/bank-accounts-card";
 import { setEventRsvp, toggleJoinGroup, toggleLikeOnTarget, toggleSaveListing } from "@/app/actions/interactions";
 import { updateProfileImageAction } from "@/app/actions/settings";
 import {
@@ -305,6 +306,7 @@ function ConnectBalanceSection() {
 const PROFILE_TABS = [
   "about",
   "docs",
+  "media",
   "posts",
   "events",
   "groups",
@@ -330,6 +332,7 @@ const PROFILE_TAB_SECTIONS: Record<ProfileTab, string> = {
   calendar: "calendar",
   wallet: "wallet",
   docs: "docs",
+  media: "media",
   personas: "personas",
   saved: "saved",
   activity: "activity",
@@ -346,6 +349,7 @@ const DEFAULT_VISIBLE_PROFILE_SECTIONS = [
   "calendar",
   "wallet",
   "docs",
+  "media",
   "personas",
   "saved",
   "activity",
@@ -821,6 +825,7 @@ export default function ProfilePage() {
       (myProfileBundle.marketplaceListings as Array<SerializedResource & { ownerName?: string; ownerImage?: string }>) ?? [];
     const reactionCountsResult = (myProfileBundle.reactionCounts as ReactionCountsMap) ?? {};
     const connectionAgents = (myProfileBundle.connections as SerializedAgent[]) ?? [];
+    const personalDocumentsResult = (myProfileBundle.documents as Document[]) ?? [];
     const myWallet = (myProfileBundle.wallet as { success?: boolean; wallet?: Record<string, unknown> }) ?? {};
     const myWallets = (myProfileBundle.wallets as { success?: boolean; wallets?: unknown[] }) ?? {};
     const txHistory = (myProfileBundle.transactions as { success?: boolean; transactions?: Array<Record<string, unknown>> }) ?? {};
@@ -853,6 +858,7 @@ export default function ProfilePage() {
     );
 
     setProfileResources((profile?.resources as SerializedResource[]) ?? []);
+    setPersonalDocuments(personalDocumentsResult);
     setProfileActivity(
       ((profile?.recentActivity as Array<{
         id: string;
@@ -876,13 +882,6 @@ export default function ProfilePage() {
       }))
     );
     setSavedListingIds(myProfileBundle.savedListingIds ?? []);
-
-    // Fetch personal documents for the docs tab.
-    fetchPersonalDocumentsAction().then((result) => {
-      if (result.success) {
-        setPersonalDocuments(result.documents);
-      }
-    }).catch(() => { /* swallow — non-critical */ });
 
     const walletData = (myWallet.success ? myWallet.wallet : null) as Record<string, unknown> | null;
     const personalBal = typeof walletData?.balanceDollars === "number" ? walletData.balanceDollars : 0;
@@ -1499,6 +1498,7 @@ export default function ProfilePage() {
             {visibleTabs.includes("calendar") ? <TabsTrigger value="calendar">Calendar</TabsTrigger> : null}
             {visibleTabs.includes("wallet") ? <TabsTrigger value="wallet">Wallet</TabsTrigger> : null}
             {visibleTabs.includes("docs") ? <TabsTrigger value="docs">Docs</TabsTrigger> : null}
+            {visibleTabs.includes("media") ? <TabsTrigger value="media">Media</TabsTrigger> : null}
             {visibleTabs.includes("personas") ? <TabsTrigger value="personas">Personas</TabsTrigger> : null}
             {visibleTabs.includes("saved") ? <TabsTrigger value="saved">Saved</TabsTrigger> : null}
             {visibleTabs.includes("activity") ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
@@ -1905,6 +1905,7 @@ export default function ProfilePage() {
                 </CardContent>
               </Card>
             </div>
+            <BankAccountsCard />
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium">Crypto Wallet</CardTitle>
@@ -2043,6 +2044,16 @@ export default function ProfilePage() {
               ownerId={session?.user?.id}
               documents={personalDocuments}
               docsPath="/profile"
+            />
+          </TabsContent>
+          ) : null}
+
+          {visibleTabs.includes("media") ? (
+          <TabsContent value="media" className="mt-4">
+            <ProfileMediaTab
+              profileResources={profileResources}
+              isOwner={true}
+              ownerId={userId}
             />
           </TabsContent>
           ) : null}

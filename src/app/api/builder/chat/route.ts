@@ -1,5 +1,5 @@
 import { auth } from "@/auth";
-import { buildSystemPrompt } from "@/lib/bespoke/builder-system-prompt";
+import { buildSystemPrompt, type WorkspaceContext } from "@/lib/bespoke/builder-system-prompt";
 import type { SiteFiles } from "@/lib/bespoke/site-files";
 
 export const dynamic = "force-dynamic";
@@ -32,6 +32,8 @@ interface ChatRequestBody {
   messages: ChatMessage[];
   profileBundle: Record<string, unknown>;
   currentFiles: SiteFiles;
+  workspaceContext?: WorkspaceContext;
+  extraDataSources?: Record<string, unknown>;
 }
 
 type AIProvider = "anthropic" | "openai" | "none";
@@ -222,6 +224,12 @@ async function streamOpenAI(
   });
 }
 
+function isAnthropicRateLimitError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("anthropic api error (429)") || message.includes("rate_limit_error");
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/builder/chat
 //
@@ -295,12 +303,23 @@ export async function POST(request: Request): Promise<Response> {
     const systemPrompt = buildSystemPrompt(
       body.profileBundle ?? {},
       body.currentFiles ?? {},
+      body.workspaceContext,
+      body.extraDataSources,
     );
 
     let stream: ReadableStream<Uint8Array>;
 
     if (provider === "anthropic") {
-      stream = await streamAnthropic(systemPrompt, body.messages);
+      try {
+        stream = await streamAnthropic(systemPrompt, body.messages);
+      } catch (error) {
+        if (process.env.OPENAI_API_KEY && isAnthropicRateLimitError(error)) {
+          console.warn("[api/builder/chat] Anthropic rate-limited, retrying with OpenAI");
+          stream = await streamOpenAI(systemPrompt, body.messages);
+        } else {
+          throw error;
+        }
+      }
     } else {
       stream = await streamOpenAI(systemPrompt, body.messages);
     }

@@ -1645,3 +1645,38 @@ export type ActionRiskLevel = typeof actionRiskLevelEnum.enumValues[number];
 export type PersonaAuditLogRecord = typeof personaAuditLog.$inferSelect;
 export type NewPersonaAuditLogRecord = typeof personaAuditLog.$inferInsert;
 export type AuditDecision = typeof auditDecisionEnum.enumValues[number];
+
+// ---------------------------------------------------------------------------
+// Builder data-source bindings
+// ---------------------------------------------------------------------------
+
+/**
+ * Builder data sources — persisted registry of public data sources the
+ * site builder can bind to when generating a live site / workspace.
+ * Each row represents one enabled (or disabled) data-source binding for
+ * a given agent (user).  The `config` JSONB column carries source-specific
+ * parameters (e.g. Solid Pod WebID, public-profile username).
+ * Created by migration 0036_builder_data_sources.
+ */
+export const builderDataSources = pgTable(
+  'builder_data_sources',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull(),
+    /** myprofile | public-profile | solid-pod | universal-manifest */
+    kind: text('kind').notNull(),
+    label: text('label').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Source-specific config: { username?, webId?, umKind?, umId? } */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('bds_agent_id_idx').on(table.agentId),
+    index('bds_agent_kind_idx').on(table.agentId, table.kind),
+  ]
+);
+
+export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
+export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;

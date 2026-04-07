@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -68,6 +69,58 @@ type BrowserSpeechRecognition = {
 
 type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
 
+type SettingsSubject = {
+  actorId: string;
+  ownerId: string;
+  scopeType: "person" | "persona";
+  scopeLabel: string;
+  personaName?: string;
+};
+
+type ContextInventory = {
+  subject: SettingsSubject;
+  soul: {
+    source: "custom" | "instance" | "fallback";
+    length: number;
+    content: string;
+    preview: string;
+    hasCustom: boolean;
+  };
+  runtime: {
+    selectedModel: string;
+    ttsEnabled: boolean;
+    voiceMode: string;
+    gpuProvider: string;
+  };
+  connections: Array<{
+    provider: string;
+    status: string;
+    syncDirection: string;
+    lastSyncedAt: string | null;
+  }>;
+  kg: {
+    person: {
+      docCount: number;
+      entityCount: number;
+      tripleCount: number;
+    };
+    includedPersonaKgIds: string[];
+    personas: Array<{
+      id: string;
+      name: string;
+      stats: {
+        docCount: number;
+        entityCount: number;
+        tripleCount: number;
+      };
+    }>;
+  };
+  tools: Array<{
+    name: string;
+    description: string;
+  }>;
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -76,6 +129,7 @@ const CHAT_API_ENDPOINT = "/api/autobot/chat";
 const TTS_API_ENDPOINT = "/api/autobot/tts";
 const GPU_API_ENDPOINT = "/api/autobot/gpu";
 const SETTINGS_API_ENDPOINT = "/api/autobot/settings";
+const CONTEXT_API_ENDPOINT = "/api/autobot/context";
 const DIGITAL_TWIN_API_ENDPOINT = "/api/autobot/digital-twin";
 const DIGITAL_TWIN_UPLOAD_ENDPOINT = "/api/autobot/digital-twin/upload";
 const DIGITAL_TWIN_JOBS_ENDPOINT = "/api/autobot/digital-twin/jobs";
@@ -392,6 +446,50 @@ function chunkTextForSpeech(text: string, maxChars = 220): string[] {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+function messageLooksLikeContinuation(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return [
+    "continue",
+    "resume",
+    "pick up",
+    "carry on",
+    "where we left off",
+    "handover",
+    "previous work",
+    "keep working",
+    "last task",
+  ].some((phrase) => normalized.includes(phrase));
+}
+
+function buildContinuationHistory(
+  threads: Thread[],
+  activeThreadId: string,
+  draftMessage: string,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const activeThread = threads.find((thread) => thread.id === activeThreadId);
+  if (!activeThread || activeThread.messages.length > 0) return [];
+  if (!messageLooksLikeContinuation(draftMessage)) return [];
+
+  const previousThread = [...threads]
+    .filter((thread) => thread.id !== activeThreadId && thread.messages.length > 0)
+    .sort((a, b) => {
+      const aTime = new Date(a.updatedAt).getTime();
+      const bTime = new Date(b.updatedAt).getTime();
+      return bTime - aTime;
+    })[0];
+
+  if (!previousThread) return [];
+
+  return previousThread.messages
+    .slice(-MAX_DISPLAY_HISTORY)
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: message.content,
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +1083,13 @@ export default function AutobotChatPage() {
   const [gpuProvider, setGpuProvider] = useState<GpuProvider>("vast");
   const [gpuProviderApiKey, setGpuProviderApiKey] = useState("");
   const [gpuProviderEndpoint, setGpuProviderEndpoint] = useState("");
+  const [settingsSubject, setSettingsSubject] = useState<SettingsSubject | null>(null);
+  const [contextInventory, setContextInventory] = useState<ContextInventory | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [soulDraft, setSoulDraft] = useState("");
+  const [savingSoul, setSavingSoul] = useState(false);
+  const [includedPersonaKgIds, setIncludedPersonaKgIds] = useState<string[]>([]);
+  const [savingIncludedPersonaId, setSavingIncludedPersonaId] = useState<string | null>(null);
   const [digitalTwin, setDigitalTwin] = useState<DigitalTwinProfile>(DEFAULT_DIGITAL_TWIN);
   const [digitalTwinUploadKind, setDigitalTwinUploadKind] = useState<DigitalTwinAssetKind>("host-video");
   const [digitalTwinUploading, setDigitalTwinUploading] = useState(false);
@@ -1089,6 +1194,9 @@ export default function AutobotChatPage() {
         const data = await res.json();
         const settings = data?.settings;
         if (cancelled || !settings) return;
+        if (data?.subject && typeof data.subject === "object") {
+          setSettingsSubject(data.subject as SettingsSubject);
+        }
 
         if (isValidModel(settings.selectedModel)) {
           setSelectedModel(settings.selectedModel);
@@ -1134,6 +1242,16 @@ export default function AutobotChatPage() {
         if (settings.digitalTwin && typeof settings.digitalTwin === "object") {
           setDigitalTwin(settings.digitalTwin as DigitalTwinProfile);
         }
+        if (typeof settings.customSoulMd === "string") {
+          setSoulDraft(settings.customSoulMd);
+        }
+        if (Array.isArray(settings.includedPersonaKgIds)) {
+          setIncludedPersonaKgIds(
+            settings.includedPersonaKgIds.filter(
+              (value: unknown): value is string => typeof value === "string" && value.trim().length > 0,
+            ),
+          );
+        }
       } catch {
         // Leave local defaults in place if server settings are unavailable.
       } finally {
@@ -1152,6 +1270,28 @@ export default function AutobotChatPage() {
       setShowSettings(true);
     }
   }, [searchParams]);
+
+  const refreshContextInventory = useCallback(async () => {
+    setContextLoading(true);
+    try {
+      const response = await fetch(CONTEXT_API_ENDPOINT, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = (await response.json()) as ContextInventory;
+      setContextInventory(data);
+      setSettingsSubject(data.subject);
+      setSoulDraft(data.soul.hasCustom ? data.soul.content : "");
+      setIncludedPersonaKgIds(data.kg.includedPersonaKgIds);
+    } catch {
+      // Non-critical. Main chat remains usable without the inventory panel.
+    } finally {
+      setContextLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    void refreshContextInventory();
+  }, [refreshContextInventory, showSettings]);
 
   // Persist threads whenever they change
   useEffect(() => {
@@ -1578,13 +1718,20 @@ export default function AutobotChatPage() {
           .slice(-MAX_DISPLAY_HISTORY)
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+        const continuationHistory = buildContinuationHistory(
+          threads,
+          activeThreadId,
+          trimmed,
+        );
+        const requestHistory =
+          continuationHistory.length > 0 ? continuationHistory : history;
 
         const response = await fetch(CHAT_API_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: trimmed,
-            history,
+            history: requestHistory,
             model: selectedModel,
             threadId: activeThreadId,
           }),
@@ -1732,6 +1879,42 @@ export default function AutobotChatPage() {
       body: JSON.stringify({ gpuProvider: value }),
     }).catch(() => {});
   }, []);
+
+  const handleSoulSave = useCallback(async () => {
+    setSavingSoul(true);
+    try {
+      await fetch(SETTINGS_API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customSoulMd: soulDraft }),
+      });
+      await refreshContextInventory();
+    } finally {
+      setSavingSoul(false);
+    }
+  }, [refreshContextInventory, soulDraft]);
+
+  const handleIncludedPersonaToggle = useCallback(
+    async (personaId: string, checked: boolean) => {
+      const nextIds = checked
+        ? Array.from(new Set([...includedPersonaKgIds, personaId]))
+        : includedPersonaKgIds.filter((id) => id !== personaId);
+
+      setIncludedPersonaKgIds(nextIds);
+      setSavingIncludedPersonaId(personaId);
+      try {
+        await fetch(SETTINGS_API_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ includedPersonaKgIds: nextIds }),
+        });
+        await refreshContextInventory();
+      } finally {
+        setSavingIncludedPersonaId(null);
+      }
+    },
+    [includedPersonaKgIds, refreshContextInventory],
+  );
 
   const handleDigitalTwinPatch = useCallback((patch: Partial<DigitalTwinProfile>) => {
     setDigitalTwin((prev) => ({ ...prev, ...patch }));
@@ -2052,6 +2235,123 @@ export default function AutobotChatPage() {
             This chat uses the colocated OpenClaw runtime on Camalot. Each saved Rivr thread is
             bound to a stable OpenClaw session key so follow-up messages keep their full context.
           </p>
+
+          {settingsSubject ? (
+            <div className="rounded-md border border-border/60 bg-background/70 px-3 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <Badge variant={settingsSubject.scopeType === "persona" ? "default" : "secondary"}>
+                  {settingsSubject.scopeType === "persona" ? "Persona" : "Main profile"}
+                </Badge>
+                <span className="font-medium">{settingsSubject.scopeLabel}</span>
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                The model, soul prompt, KG toggles, connections, and runtime settings below belong to this {settingsSubject.scopeType}.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="space-y-2 rounded-md border border-border/60 bg-background/70 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <Label className="text-xs">Agent context</Label>
+                <p className="text-[10px] text-muted-foreground">
+                  Inspect the soul prompt, KG inputs, connected systems, and tool surface OpenClaw sees.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={contextLoading}
+                onClick={() => void refreshContextInventory()}
+              >
+                {contextLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Refresh"}
+              </Button>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Soul override</Label>
+              <textarea
+                value={soulDraft}
+                onChange={(event) => setSoulDraft(event.target.value)}
+                placeholder="Write a custom soul.md override for this agent. Leave blank to use the instance default."
+                className="min-h-[132px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-muted-foreground">
+                  {contextInventory
+                    ? `Effective soul source: ${contextInventory.soul.source}.`
+                    : "Leave blank to inherit the instance-level soul.md."}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-[10px]"
+                  disabled={savingSoul}
+                  onClick={() => void handleSoulSave()}
+                >
+                  {savingSoul ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save soul"}
+                </Button>
+              </div>
+            </div>
+
+            {settingsSubject?.scopeType !== "persona" && contextInventory?.kg.personas.length ? (
+              <div className="space-y-2">
+                <Label className="text-xs">Include persona KGs in this chat</Label>
+                <div className="space-y-2">
+                  {contextInventory.kg.personas.map((persona) => {
+                    const checked = includedPersonaKgIds.includes(persona.id);
+                    return (
+                      <label
+                        key={persona.id}
+                        className="flex items-start gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={savingIncludedPersonaId === persona.id}
+                          onCheckedChange={(value) =>
+                            void handleIncludedPersonaToggle(persona.id, value === true)
+                          }
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium">{persona.name}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {persona.stats.docCount} docs, {persona.stats.entityCount} entities, {persona.stats.tripleCount} triples
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {contextInventory ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[10px]">
+                  <div className="font-medium text-xs">Current KG scope</div>
+                  <div className="mt-1 text-muted-foreground">
+                    Main person KG: {contextInventory.kg.person.docCount} docs, {contextInventory.kg.person.entityCount} entities, {contextInventory.kg.person.tripleCount} triples
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[10px]">
+                  <div className="font-medium text-xs">Connected systems</div>
+                  <div className="mt-1 text-muted-foreground">
+                    {contextInventory.connections.length > 0
+                      ? contextInventory.connections.map((connection) => `${connection.provider}:${connection.status}`).join(", ")
+                      : "No connectors configured."}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[10px] sm:col-span-2">
+                  <div className="font-medium text-xs">OpenClaw tool surface</div>
+                  <div className="mt-1 text-muted-foreground">
+                    {contextInventory.tools.map((tool) => tool.name).join(", ")}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
 
           <Separator />
 

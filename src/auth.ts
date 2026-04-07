@@ -28,6 +28,7 @@
 
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import Google from "next-auth/providers/google";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -48,6 +49,95 @@ const MINIMUM_PASSWORD_LENGTH = 8;
  */
 const MAXIMUM_PASSWORD_LENGTH = 72;
 const buildFallbackAuthSecret = "build-only-auth-secret-not-for-runtime";
+const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+const googleOAuthConfigured = Boolean(googleClientId && googleClientSecret);
+
+if ((googleClientId && !googleClientSecret) || (!googleClientId && googleClientSecret)) {
+  console.warn(
+    "Google OAuth is partially configured. Set both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable connector linking.",
+  );
+}
+
+const authProviders: NonNullable<NextAuthConfig["providers"]> = [
+  Credentials({
+    name: "credentials",
+    credentials: {
+      email: { label: "Email", type: "email" },
+      password: { label: "Password", type: "password" },
+    },
+    /**
+     * Validates email/password credentials against the agents table.
+     *
+     * Returns a user object on success or `null` on any failure,
+     * including missing credentials, invalid length, unknown email,
+     * or wrong password. All failure paths intentionally return `null`
+     * to avoid leaking account existence information.
+     */
+    async authorize(credentials) {
+      if (!credentials?.email || !credentials?.password) {
+        return null;
+      }
+
+      const email = credentials.email as string;
+      const password = credentials.password as string;
+
+      if (
+        password.length < MINIMUM_PASSWORD_LENGTH ||
+        password.length > MAXIMUM_PASSWORD_LENGTH
+      ) {
+        return null;
+      }
+
+      const [agent] = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.email, email))
+        .limit(1);
+
+      if (!agent || !agent.passwordHash) {
+        return null;
+      }
+
+      const passwordValid = await verify(password, agent.passwordHash);
+
+      if (!passwordValid) {
+        return null;
+      }
+
+      return {
+        id: agent.id,
+        name: agent.name,
+        email: agent.email,
+        image: agent.image,
+      };
+    },
+  }),
+];
+
+if (googleOAuthConfigured) {
+  authProviders.push(
+    Google({
+      clientId: googleClientId as string,
+      clientSecret: googleClientSecret as string,
+      authorization: {
+        params: {
+          scope: [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/calendar",
+          ].join(" "),
+          access_type: "offline",
+          prompt: "consent",
+        },
+      },
+      allowDangerousEmailAccountLinking: true,
+    }),
+  );
+}
 
 function clearStaleTokenIdentity(token: Record<string, unknown>) {
   delete token.sub;
@@ -67,61 +157,7 @@ function clearStaleTokenIdentity(token: Record<string, unknown>) {
 export const authConfig: NextAuthConfig = {
   adapter: DrizzleAdapter(db),
 
-  providers: [
-    Credentials({
-      name: "credentials",
-      credentials: {
-        email: { label: "Email", type: "email" },
-        password: { label: "Password", type: "password" },
-      },
-      /**
-       * Validates email/password credentials against the agents table.
-       *
-       * Returns a user object on success or `null` on any failure,
-       * including missing credentials, invalid length, unknown email,
-       * or wrong password. All failure paths intentionally return `null`
-       * to avoid leaking account existence information.
-       */
-      async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
-          return null;
-        }
-
-        const email = credentials.email as string;
-        const password = credentials.password as string;
-
-        if (
-          password.length < MINIMUM_PASSWORD_LENGTH ||
-          password.length > MAXIMUM_PASSWORD_LENGTH
-        ) {
-          return null;
-        }
-
-        const [agent] = await db
-          .select()
-          .from(agents)
-          .where(eq(agents.email, email))
-          .limit(1);
-
-        if (!agent || !agent.passwordHash) {
-          return null;
-        }
-
-        const passwordValid = await verify(password, agent.passwordHash);
-
-        if (!passwordValid) {
-          return null;
-        }
-
-        return {
-          id: agent.id,
-          name: agent.name,
-          email: agent.email,
-          image: agent.image,
-        };
-      },
-    }),
-  ],
+  providers: authProviders,
 
   callbacks: {
     async jwt({ token, user, trigger }) {

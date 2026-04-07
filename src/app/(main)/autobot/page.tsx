@@ -42,12 +42,14 @@ import {
   Drama,
   ExternalLink,
   MessageSquare,
+  Network,
   RefreshCw,
   Shield,
   Terminal,
   XCircle,
 } from "lucide-react";
 import { PersonaManager } from "@/components/persona-manager";
+import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
 import Link from "next/link";
 
 // ---------------------------------------------------------------------------
@@ -790,6 +792,10 @@ export default function AutobotPage() {
             <Activity className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
+          <TabsTrigger value="connections" className="flex-1 gap-1">
+            <Network className="h-3.5 w-3.5" />
+            Connections
+          </TabsTrigger>
           <TabsTrigger value="chat" className="flex-1 gap-1">
             <MessageSquare className="h-3.5 w-3.5" />
             Chat
@@ -806,6 +812,10 @@ export default function AutobotPage() {
 
         <TabsContent value="activity" className="mt-4">
           <ActivityTab />
+        </TabsContent>
+
+        <TabsContent value="connections" className="mt-4">
+          <AutobotConnectionsPanel />
         </TabsContent>
 
         <TabsContent value="chat" className="mt-4">

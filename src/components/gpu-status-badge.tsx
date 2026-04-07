@@ -18,9 +18,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Cpu,
+  ExternalLink,
   Loader2,
   Play,
   Power,
@@ -94,6 +96,15 @@ interface GpuStatusResponse {
   gpuName?: string | null;
   dphTotal?: number | null;
   storageCostDph?: number | null;
+  provider?: "vast" | "local" | "custom";
+  providerLabel?: string | null;
+  providerConsoleUrl?: string | null;
+  providerBalance?: number | null;
+  providerBalanceStatus?: "ok" | "empty" | "unknown" | "unavailable";
+  providerApiKeyConfigured?: boolean;
+  walletBalanceDollars?: number | null;
+  walletBalanceStatus?: "ok" | "empty" | "unknown";
+  settingsUrl?: string;
 }
 
 /** Statuses where the GPU is actively computing */
@@ -138,6 +149,7 @@ function playNotificationSound(): void {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function GpuStatusBadge() {
+  const router = useRouter();
   const [gpuStatus, setGpuStatus] = useState<GpuStatusResponse | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [minimized, setMinimized] = useState(false);
@@ -251,9 +263,27 @@ export function GpuStatusBadge() {
   const priceLabel = formatPrice(gpuStatus?.dphTotal);
   const storageLabel = formatPrice(gpuStatus?.storageCostDph);
   const gpuLabel = gpuStatus?.gpuName || null;
+  const providerLabel = gpuStatus?.providerLabel || "Provider";
+  const providerBalanceLabel =
+    typeof gpuStatus?.providerBalance === "number"
+      ? `$${gpuStatus.providerBalance.toFixed(2)}`
+      : null;
+  const isProviderEmpty = gpuStatus?.providerBalanceStatus === "empty";
+  const isWalletEmpty = gpuStatus?.walletBalanceStatus === "empty";
+  const settingsUrl = gpuStatus?.settingsUrl || "/autobot/chat?settings=voice";
+
+  const openSettings = useCallback(() => {
+    router.push(settingsUrl);
+  }, [router, settingsUrl]);
+
+  const openProviderConsole = useCallback(() => {
+    if (!gpuStatus?.providerConsoleUrl) return;
+    window.open(gpuStatus.providerConsoleUrl, "_blank", "noopener,noreferrer");
+  }, [gpuStatus?.providerConsoleUrl]);
 
   // Status label and color
   let badgeLabel = "No GPU";
+  let badgeSubLabel: string | null = null;
   let badgeColor = "border-slate-500/40 bg-slate-900/80 text-slate-400";
   let dotColor = "bg-slate-500";
 
@@ -261,16 +291,31 @@ export function GpuStatusBadge() {
     badgeLabel = "GPU Offline";
     badgeColor = "border-slate-500/40 bg-slate-900/80 text-slate-400";
     dotColor = "bg-slate-500";
+  } else if (isProviderEmpty) {
+    badgeLabel = `${providerLabel} credits empty`;
+    badgeSubLabel = providerBalanceLabel
+      ? `Balance ${providerBalanceLabel} · add provider credits`
+      : "Add provider credits to start voice";
+    badgeColor = "border-red-500/40 bg-red-950/80 text-red-200";
+    dotColor = "bg-red-500";
+  } else if (isWalletEmpty) {
+    badgeLabel = "Buy credits";
+    badgeSubLabel = "Your Autobot balance is empty";
+    badgeColor = "border-red-500/40 bg-red-950/80 text-red-200";
+    dotColor = "bg-red-500";
   } else if (isProvisioning) {
     badgeLabel = gpuLabel ? `${gpuLabel} starting...` : "GPU Starting";
+    badgeSubLabel = priceLabel;
     badgeColor = "border-amber-500/40 bg-amber-950/80 text-amber-300";
     dotColor = "bg-amber-500 animate-pulse";
   } else if (isRunning) {
     badgeLabel = gpuLabel ? `${gpuLabel} active` : "GPU Active";
+    badgeSubLabel = priceLabel;
     badgeColor = "border-emerald-500/40 bg-emerald-950/80 text-emerald-300";
     dotColor = "bg-emerald-500";
   } else if (isRentedIdle) {
     badgeLabel = gpuLabel ? `${gpuLabel} idle` : "GPU Idle";
+    badgeSubLabel = storageLabel ? `Storage: ${storageLabel}` : null;
     badgeColor = "border-zinc-500/40 bg-zinc-900/80 text-zinc-400";
     dotColor = "bg-zinc-500";
   } else if (isOff) {
@@ -379,22 +424,34 @@ export function GpuStatusBadge() {
             )}
 
             {/* Label + price sub-line */}
-            <div className="flex flex-col leading-tight">
+            <button
+              type="button"
+              onClick={
+                isProviderEmpty
+                  ? openProviderConsole
+                  : isWalletEmpty
+                    ? openSettings
+                    : undefined
+              }
+              className={cn(
+                "flex flex-col leading-tight text-left",
+                (isProviderEmpty || isWalletEmpty) && "hover:opacity-90",
+              )}
+              disabled={
+                (isProviderEmpty && !gpuStatus?.providerConsoleUrl) ||
+                (!isProviderEmpty && !isWalletEmpty)
+              }
+            >
               <span className="text-xs font-medium whitespace-nowrap">
                 {badgeLabel}
               </span>
-              {(isRunning || isProvisioning) && priceLabel && (
-                <span className="text-[10px] opacity-70">{priceLabel}</span>
+              {badgeSubLabel && (
+                <span className="text-[10px] opacity-70">{badgeSubLabel}</span>
               )}
-              {isRentedIdle && storageLabel && (
-                <span className="text-[10px] opacity-70">
-                  Storage: {storageLabel}
-                </span>
-              )}
-            </div>
+            </button>
 
             {/* Start Voice button (no GPU / off / stopped without instance) */}
-            {(isOff || (status === "stopped" && !gpuStatus?.instanceId)) && (
+            {!isProviderEmpty && !isWalletEmpty && (isOff || (status === "stopped" && !gpuStatus?.instanceId)) && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -412,6 +469,35 @@ export function GpuStatusBadge() {
                   <Play className="h-3 w-3" />
                 )}
                 Start Voice
+              </Button>
+            )}
+
+            {isWalletEmpty && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={openSettings}
+                className={cn(
+                  "h-6 px-2 rounded-full text-[10px] font-medium gap-1",
+                  "text-red-200 hover:text-white hover:bg-red-500/20",
+                )}
+              >
+                Buy Credits
+              </Button>
+            )}
+
+            {isProviderEmpty && gpuStatus?.providerConsoleUrl && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={openProviderConsole}
+                className={cn(
+                  "h-6 px-2 rounded-full text-[10px] font-medium gap-1",
+                  "text-red-200 hover:text-white hover:bg-red-500/20",
+                )}
+              >
+                <ExternalLink className="h-3 w-3" />
+                Open {providerLabel}
               </Button>
             )}
 
