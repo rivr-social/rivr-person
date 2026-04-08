@@ -21,7 +21,7 @@ const PANE_SIZE_HEIGHTS: Record<PaneSizePreset, string> = {
   expanded: "600px",
 };
 
-type AgentRole = "architect" | "orchestrator" | "worker" | "observer";
+type AgentRole = "executive" | "architect" | "orchestrator" | "worker" | "observer";
 type AgentWorkspaceScope = "foundation" | "app" | "shared";
 type AgentLauncherProvider = "claude" | "codex" | "opencode" | "custom";
 
@@ -138,10 +138,11 @@ function stripAnsi(value: string) {
 }
 
 function architectRank(session: AgentSession) {
-  if (session.metadata.role === "architect") return 0;
-  if (session.metadata.role === "orchestrator") return 1;
-  if (session.metadata.role === "worker") return 2;
-  return 3;
+  if (session.metadata.role === "executive") return 0;
+  if (session.metadata.role === "architect") return 1;
+  if (session.metadata.role === "orchestrator") return 2;
+  if (session.metadata.role === "worker") return 3;
+  return 4;
 }
 
 function buildChildrenMap(sessions: AgentSession[]) {
@@ -641,7 +642,7 @@ export function BuilderAgentsPanel() {
     [captureSession],
   );
 
-  const launchArchitect = useCallback(async () => {
+  const launchExecutive = useCallback(async () => {
     if (!selectedWorkspace) {
       setError("Select a workspace first.");
       return;
@@ -659,11 +660,11 @@ export function BuilderAgentsPanel() {
           provider: preferredArchitectProvider,
           workspaceId: selectedWorkspace.id,
           cwd: selectedWorkspace.cwd,
-          displayLabel: `${selectedWorkspace.label} Architect`,
-          role: "architect",
+          displayLabel: `${selectedWorkspace.label} Executive`,
+          role: "executive",
           parent: null,
-          objective: getArchitectObjective(selectedWorkspace.label, launchPreset),
-          notes: getArchitectNotes(selectedWorkspace.scope, selectedWorkspace.liveSubdomain, launchPreset),
+          objective: `Act as the user-facing executive for ${selectedWorkspace.label}. Keep responses concise, delegate implementation, and report progress clearly.`,
+          notes: `Primary interactive pane. ${getArchitectNotes(selectedWorkspace.scope, selectedWorkspace.liveSubdomain, launchPreset)}`,
           capabilityIds:
             selectedWorkspace.scope === "foundation"
               ? ["foundation_read", "foundation_deploy", "deploy", "dns", "git"]
@@ -675,17 +676,17 @@ export function BuilderAgentsPanel() {
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok || data.error) {
-        throw new Error(data.error || "Failed to launch architect");
+        throw new Error(data.error || "Failed to launch executive");
       }
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch architect");
+      setError(err instanceof Error ? err.message : "Failed to launch executive");
     } finally {
       setLaunching(false);
     }
   }, [kgScopeDraft, launchPreset, preferredArchitectProvider, refresh, selectedPersona, selectedWorkspace]);
 
-  const launchArchitectTeam = useCallback(async () => {
+  const launchExecutiveTeam = useCallback(async () => {
     if (!selectedWorkspace) {
       setError("Select a workspace first.");
       return;
@@ -730,12 +731,22 @@ export function BuilderAgentsPanel() {
 
     setLaunching(true);
     try {
+      const executivePane = await launchNode({
+        ...basePayload,
+        provider: preferredArchitectProvider,
+        displayLabel: `${selectedWorkspace.label} Executive`,
+        role: "executive",
+        parent: null,
+        objective: `Act as the user-facing executive for ${selectedWorkspace.label}. Keep interaction concise and clear, then delegate implementation to the architect team.`,
+        notes: `Primary interactive pane. Persona: ${selectedPersona?.name ?? "main profile"}.`,
+      });
+
       const architectPane = await launchNode({
         ...basePayload,
         provider: preferredArchitectProvider,
         displayLabel: `${selectedWorkspace.label} Architect`,
         role: "architect",
-        parent: null,
+        parent: executivePane,
         objective:
           launchPreset === "guide_builder"
             ? `Lead Guide delivery for ${selectedWorkspace.label}. Compile user asks into adaptive manifest-driven surfaces and orchestrate safe implementation.`
@@ -785,7 +796,7 @@ export function BuilderAgentsPanel() {
 
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch architect team");
+      setError(err instanceof Error ? err.message : "Failed to launch executive team");
     } finally {
       setLaunching(false);
     }
@@ -949,7 +960,7 @@ export function BuilderAgentsPanel() {
           <div className="space-y-1">
             <h3 className="text-sm font-semibold">Architect Console</h3>
             <p className="text-xs text-muted-foreground">
-              Pick an app workspace, then talk to its primary architect. The team stays in the background unless you open it.
+              Pick an app workspace, then talk to its primary executive. The team stays in the background unless you open it.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -957,11 +968,11 @@ export function BuilderAgentsPanel() {
               variant="outline"
               size="sm"
               className="h-8 gap-1.5 text-xs"
-              onClick={() => void launchArchitectTeam()}
+              onClick={() => void launchExecutiveTeam()}
               disabled={launching || !selectedWorkspace}
             >
               {launching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}
-              Launch Team
+              Launch Exec Team
             </Button>
             <Button
               variant="ghost"
@@ -1093,7 +1104,7 @@ export function BuilderAgentsPanel() {
           <CardHeader className="pb-3">
             <CardTitle className="text-sm">Workspace Files</CardTitle>
             <p className="text-xs text-muted-foreground">
-              Edit filesystem-backed context files directly (for example: <code>persona/soul.md</code>) so architect sessions and Claude runs use current instructions.
+              Edit filesystem-backed context files directly (for example: <code>persona/soul.md</code>) so executive sessions and Claude runs use current instructions.
             </p>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -1138,9 +1149,9 @@ export function BuilderAgentsPanel() {
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                  <CardTitle className="text-base">{primarySession.metadata.label || "Primary architect"}</CardTitle>
+                  <CardTitle className="text-base">{primarySession.metadata.label || "Primary executive"}</CardTitle>
                   <p className="text-xs text-muted-foreground">
-                    {primarySession.metadata.objective || "Primary tmux-backed architect session for this workspace."}
+                    {primarySession.metadata.objective || "Primary tmux-backed executive session for this workspace."}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1191,19 +1202,19 @@ export function BuilderAgentsPanel() {
             <CardContent className="flex flex-col gap-3 p-6">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Bot className="h-4 w-4" />
-                No architect session yet for this workspace
+                No executive session yet for this workspace
               </div>
               <p className="text-sm text-muted-foreground">
-                Launch a primary architect and use it as the single top-tier entry point for this app. It can spin up orchestrators and workers behind the scenes.
+                Launch a primary executive and use it as the single user-facing entry point for this app. It can drive architect/orchestrator/worker panes behind the scenes.
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button onClick={() => void launchArchitect()} disabled={launching || !selectedWorkspace}>
+                <Button onClick={() => void launchExecutive()} disabled={launching || !selectedWorkspace}>
                   {launching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Launch Architect
+                  Launch Executive
                 </Button>
-                <Button variant="outline" onClick={() => void launchArchitectTeam()} disabled={launching || !selectedWorkspace}>
+                <Button variant="outline" onClick={() => void launchExecutiveTeam()} disabled={launching || !selectedWorkspace}>
                   {launching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Launch Architect Team
+                  Launch Executive Team
                 </Button>
               </div>
             </CardContent>

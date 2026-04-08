@@ -12,6 +12,7 @@ export async function GET() {
       sessions,
       templates: registry.templates ?? [],
       grouped: [
+        { role: "executive", sessions: sessions.filter((session) => session.metadata.role === "executive") },
         { role: "architect", sessions: sessions.filter((session) => session.metadata.role === "architect") },
         { role: "orchestrator", sessions: sessions.filter((session) => session.metadata.role === "orchestrator") },
         { role: "worker", sessions: sessions.filter((session) => session.metadata.role === "worker") },

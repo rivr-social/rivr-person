@@ -5,7 +5,7 @@ import path from "node:path";
 import { auth } from "@/auth";
 import { getDeployCapability } from "@/lib/deploy/capability";
 
-export type AgentRole = "architect" | "orchestrator" | "worker" | "observer";
+export type AgentRole = "executive" | "architect" | "orchestrator" | "worker" | "observer";
 export type AgentLauncherProvider = "claude" | "codex" | "opencode" | "custom";
 export type AgentWorkspaceScope = "foundation" | "app" | "shared";
 export type AgentCapability =
