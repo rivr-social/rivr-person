@@ -35,12 +35,14 @@ import { serializeAgent } from "@/lib/graph-serializers";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDeployCapability, type InstanceDeployCapability } from "@/lib/deploy/capability";
 import { getAutobotSandbox, getSandboxSummary, isOperationAllowed } from "@/lib/autobot/isolation";
+import type { PersonaContext } from "@/lib/federation/execution-context";
 
 export type McpToolCallContext = {
   actorId: string;
   controllerId?: string;
   actorType: "human" | "persona" | "autobot";
   authMode: "session" | "token";
+  personaContext?: PersonaContext;
 };
 
 export type McpToolResult = unknown;

@@ -14,6 +14,15 @@ export { QueryFacade, queryFacade } from './query-facade';
 export type { QueryResult, DataSource } from './query-facade';
 export { getProfileUrl, buildProfileUrl } from './profile-link';
 export { getGlobalBaseUrl, getGlobalUrl } from './global-url';
+export { callRemoteMcpTool, listRemoteMcpTools, RemoteMcpClient, RemoteMcpError } from './remote-mcp-client';
+export type {
+  RemoteMcpCallParams,
+  RemoteMcpCallResult,
+  RemoteMcpListParams,
+  RemoteMcpListResult,
+  RemoteMcpToolDefinition,
+  RemoteMcpClientOptions,
+} from './remote-mcp-client';
 export type {
   HomeAuthorityRef,
   FederatedActorContext,

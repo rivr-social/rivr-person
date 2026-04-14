@@ -46,6 +46,7 @@ export async function GET(request: Request) {
   const spatialFabricRef = requestUrl.searchParams.get("spatialFabricRef");
   const consent = requestUrl.searchParams.get("consent");
   const fieldsParam = requestUrl.searchParams.get("fields");
+  const personaIdParam = requestUrl.searchParams.get("personaId");
   const requestedDataFields = fieldsParam
     ? fieldsParam
         .split(",")
@@ -65,12 +66,37 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: false, error: "Actor not found" }, { status: 404 });
   }
 
+  // Resolve persona context if a personaId was provided
+  let personaContext: import("@/lib/federation-remote-session").FederatedAssertionPersonaContext | undefined;
+  if (personaIdParam) {
+    const persona = await db.query.agents.findFirst({
+      where: and(
+        eq(agents.id, personaIdParam),
+        eq(agents.parentAgentId, session.user.id),
+        isNull(agents.deletedAt),
+      ),
+      columns: {
+        id: true,
+        name: true,
+        parentAgentId: true,
+      },
+    });
+    if (persona && persona.parentAgentId) {
+      personaContext = {
+        personaId: persona.id,
+        personaDisplayName: persona.name ?? undefined,
+        parentAgentId: persona.parentAgentId,
+      };
+    }
+  }
+
   const { token, payload } = createFederatedAssertion({
     actorId: actor.id,
     homeBaseUrl: config.baseUrl.replace(/\/+$/, ""),
     audienceBaseUrl: parsedTarget.origin,
     manifestUrl: actor.peermeshManifestUrl ?? undefined,
     displayName: actor.name ?? undefined,
+    persona: personaContext,
     consentScopes: consent ? [consent] : undefined,
     spatialFabricRefs: spatialFabricRef ? [spatialFabricRef] : undefined,
     dataFields: requestedDataFields,

@@ -1,11 +1,20 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+export type PersonaContext = {
+  personaId: string;
+  name: string;
+  bio?: string;
+  kgRefs?: string[];
+  metadata?: Record<string, unknown>;
+};
+
 export type FederationExecutionContext = {
   actorId: string;
   source: "federation" | "mcp";
   forceLocal: boolean;
   controllerId?: string;
   actorType?: "human" | "persona" | "autobot";
+  personaContext?: PersonaContext;
 };
 
 const federationExecutionStorage = new AsyncLocalStorage<FederationExecutionContext>();
@@ -36,6 +45,7 @@ export async function runWithMcpExecutionContext<T>(
     actorId: string;
     controllerId?: string;
     actorType?: "human" | "persona" | "autobot";
+    personaContext?: PersonaContext;
   },
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -44,6 +54,7 @@ export async function runWithMcpExecutionContext<T>(
       actorId: context.actorId,
       controllerId: context.controllerId,
       actorType: context.actorType,
+      personaContext: context.personaContext,
       source: "mcp",
       forceLocal: true,
     },

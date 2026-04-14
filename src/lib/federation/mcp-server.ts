@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { isPersonaOf } from "@/lib/persona";
-import { runWithMcpExecutionContext } from "@/lib/federation/execution-context";
+import { runWithMcpExecutionContext, type PersonaContext } from "@/lib/federation/execution-context";
 import {
   getMcpToolDefinition,
   listMcpToolsForMode,
@@ -9,6 +9,10 @@ import {
 } from "@/lib/federation/mcp-tools";
 import { logMcpProvenance } from "@/lib/federation/mcp-provenance";
 import { withApprovalCheck } from "@/lib/autobot/with-approval-check";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { eq, and, isNull } from "drizzle-orm";
+import * as kg from "@/lib/kg/autobot-kg-client";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
@@ -53,6 +57,45 @@ function getBearerToken(request: Request): string | null {
 function getQueryToken(request: Request): string | null {
   const token = new URL(request.url).searchParams.get("token")?.trim();
   return token ? token : null;
+}
+
+/**
+ * Fetch full persona context from the DB for a given persona agent ID.
+ * Returns null if the agent is not found or is deleted.
+ */
+async function fetchPersonaContext(personaId: string): Promise<PersonaContext | null> {
+  const [row] = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      description: agents.description,
+      metadata: agents.metadata,
+    })
+    .from(agents)
+    .where(and(eq(agents.id, personaId), isNull(agents.deletedAt)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  const bio = typeof meta.bio === "string" ? meta.bio : row.description ?? undefined;
+
+  // Gather KG doc references for this persona scope
+  let kgRefs: string[] = [];
+  try {
+    const docs = await kg.listDocs("persona", personaId);
+    kgRefs = docs.map((d) => String(d.id));
+  } catch {
+    // KG unavailable — proceed without refs
+  }
+
+  return {
+    personaId: row.id,
+    name: row.name,
+    bio,
+    kgRefs: kgRefs.length > 0 ? kgRefs : undefined,
+    metadata: Object.keys(meta).length > 0 ? meta : undefined,
+  };
 }
 
 async function authorizeMcpRequest(
@@ -156,6 +199,30 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
     return errorResponse(id, -32001, "Unauthorized", "Valid session or AIAGENT_MCP_TOKEN required.");
   }
 
+  // Resolve persona context when the actor is a persona, or when a remote
+  // agent asserts a persona via the X-Persona-Id header.
+  let personaContext: PersonaContext | null = null;
+  const headerPersonaId = request.headers.get("x-persona-id")?.trim() || null;
+
+  if (authContext.actorType === "persona") {
+    // Auth already resolved to a persona — fetch its full context
+    personaContext = await fetchPersonaContext(authContext.actorId).catch(() => null);
+  } else if (headerPersonaId) {
+    // Remote agent assertion via header — validate ownership before accepting
+    const controllerId = authContext.controllerId ?? authContext.actorId;
+    const owned = await isPersonaOf(headerPersonaId, controllerId).catch(() => false);
+    if (owned) {
+      personaContext = await fetchPersonaContext(headerPersonaId).catch(() => null);
+      // Upgrade the auth context to reflect persona acting mode
+      authContext.actorType = "persona";
+      authContext.actorId = headerPersonaId;
+    }
+  }
+
+  if (personaContext) {
+    authContext.personaContext = personaContext;
+  }
+
   if (method === "initialize") {
     const config = getInstanceConfig();
     return successResponse(id, {
@@ -202,6 +269,7 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
               actorId: authContext.actorId,
               controllerId: authContext.controllerId,
               actorType: authContext.actorType,
+              personaContext: authContext.personaContext,
             },
             async () => tool.handler(toolArgs, authContext),
           ),
