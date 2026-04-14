@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { db } from "@/db";
+import { agents, ledger } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import { authorizeFederationRequest } from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
+import { REMOTE_VIEWER_COOKIE_NAME, validateRemoteViewerToken } from "@/lib/federation-remote-session";
 import type {
   FederatedInteractionRequest,
   FederatedInteractionAction,
@@ -23,11 +27,13 @@ const KNOWN_MUTATION_TYPES = [
   "deleteGroupResource",
   "createPostResource",
   "createEventResource",
+  "toggleFollowAgent",
   "toggleJoinGroup",
   "createOffering",
   "updateAgent",
   "createComment",
   "toggleReaction",
+  "applyMembershipProjection",
 ] as const;
 
 /** Federated interaction actions dispatched via the new interaction protocol */
@@ -81,7 +87,13 @@ export async function POST(request: Request) {
   const config = getInstanceConfig();
 
   try {
-    const remoteViewerToken = request.headers.get("X-Remote-Viewer-Token");
+    const cookieToken = request.headers
+      .get("cookie")
+      ?.split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${REMOTE_VIEWER_COOKIE_NAME}=`))
+      ?.slice(`${REMOTE_VIEWER_COOKIE_NAME}=`.length);
+    const remoteViewerToken = request.headers.get("X-Remote-Viewer-Token") || cookieToken || null;
     const remoteViewerSession = remoteViewerToken
       ? validateRemoteViewerToken(remoteViewerToken, config.instanceId)
       : null;
@@ -487,6 +499,41 @@ async function handleLegacyMutation(
 
   const isKnownType = (KNOWN_MUTATION_TYPES as readonly string[]).includes(type);
 
+  if (type === "toggleFollowAgent") {
+    const result = await runWithFederationExecutionContext(actorId, () => toggleFollowAgent(targetAgentId));
+    return NextResponse.json({
+      success: result.success,
+      data: result,
+      knownType: true,
+      instanceId: config.instanceId,
+      ...(routedFrom
+        ? {
+            routedFrom: {
+              originInstanceSlug: routedFrom.originInstanceSlug,
+              originInstanceId: routedFrom.originInstanceId,
+            },
+          }
+        : {}),
+    });
+  }
+
+  if (type === "applyMembershipProjection") {
+    const result = await applyMembershipProjection(actorId, payload);
+    return NextResponse.json({
+      ...result,
+      instanceId: config.instanceId,
+      knownType: true,
+      ...(routedFrom
+        ? {
+            routedFrom: {
+              originInstanceSlug: routedFrom.originInstanceSlug,
+              originInstanceId: routedFrom.originInstanceId,
+            },
+          }
+        : {}),
+    });
+  }
+
   return NextResponse.json({
     success: true,
     phase: "forwarding-stub",
@@ -542,31 +589,159 @@ function validateRoutingProvenance(
   return null;
 }
 
-type RemoteViewerSessionPayload = {
-  type: "remote_viewer";
-  actorId: string;
-  homeBaseUrl: string;
-  localInstanceId: string;
-  issuedAt: string;
-  expiresAt: string;
-  nonce: string;
-};
+async function applyMembershipProjection(
+  actorId: string,
+  payload: unknown,
+): Promise<{
+  success: boolean;
+  data?: {
+    joined: boolean;
+    groupId: string;
+  };
+  error?: string;
+}> {
+  const projection =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : null;
 
-function validateRemoteViewerToken(
-  token: string,
-  localInstanceId: string,
-): RemoteViewerSessionPayload | null {
-  try {
-    const decoded = JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as Partial<RemoteViewerSessionPayload>;
-    if (decoded.type !== "remote_viewer") return null;
-    if (!decoded.actorId || !decoded.homeBaseUrl || !decoded.localInstanceId) return null;
-    if (decoded.localInstanceId !== localInstanceId) return null;
+  const group =
+    projection?.group && typeof projection.group === "object"
+      ? (projection.group as Record<string, unknown>)
+      : null;
 
-    const expiresAt = decoded.expiresAt ? new Date(decoded.expiresAt).getTime() : NaN;
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  const groupId = typeof group?.id === "string" ? group.id : null;
+  const groupName = typeof group?.name === "string" ? group.name.trim() : "";
+  const groupType = typeof group?.type === "string" ? group.type : "organization";
+  const joined = projection?.joined === true;
+  const remoteRole =
+    typeof projection?.role === "string" && projection.role.length > 0
+      ? projection.role
+      : "member";
 
-    return decoded as RemoteViewerSessionPayload;
-  } catch {
-    return null;
+  if (!groupId || !groupName) {
+    return { success: false, error: "Membership projection requires group.id and group.name" };
   }
+
+  const metadata =
+    group?.metadata && typeof group.metadata === "object"
+      ? (group.metadata as Record<string, unknown>)
+      : {};
+  const sourceOwner =
+    group?.sourceOwner && typeof group.sourceOwner === "object"
+      ? (group.sourceOwner as Record<string, unknown>)
+      : null;
+  const homeBaseUrl =
+    typeof group?.homeBaseUrl === "string"
+      ? group.homeBaseUrl
+      : typeof sourceOwner?.homeBaseUrl === "string"
+        ? sourceOwner.homeBaseUrl
+        : null;
+
+  await db
+    .insert(agents)
+    .values({
+      id: groupId,
+      name: groupName,
+      type: groupType as typeof agents.$inferInsert.type,
+      description: typeof group?.description === "string" ? group.description : null,
+      visibility: "public",
+      metadata: {
+        ...metadata,
+        ...(homeBaseUrl ? { federatedHomeBaseUrl: homeBaseUrl } : {}),
+        federatedProjection: true,
+        sourceType: "federated_group_projection",
+      },
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: agents.id,
+      set: {
+        name: groupName,
+        type: groupType as typeof agents.$inferInsert.type,
+        description: typeof group?.description === "string" ? group.description : null,
+        metadata: {
+          ...metadata,
+          ...(homeBaseUrl ? { federatedHomeBaseUrl: homeBaseUrl } : {}),
+          federatedProjection: true,
+          sourceType: "federated_group_projection",
+        },
+        updatedAt: new Date(),
+      },
+    });
+
+  const existingMembership = await db.query.ledger.findFirst({
+    where: and(
+      eq(ledger.subjectId, actorId),
+      eq(ledger.verb, "join"),
+      sql`${ledger.metadata}->>'interactionType' = 'membership'`,
+      sql`${ledger.metadata}->>'targetId' = ${groupId}`,
+      isNull(ledger.expiresAt),
+    ),
+    columns: {
+      id: true,
+      isActive: true,
+    },
+    orderBy: (fields, { desc }) => [desc(fields.timestamp)],
+  });
+
+  if (joined) {
+    if (existingMembership) {
+      await db
+        .update(ledger)
+        .set({
+          isActive: true,
+          expiresAt: null,
+          role: remoteRole,
+          metadata: {
+            interactionType: "membership",
+            targetId: groupId,
+            targetType: "group",
+            sourceType: "federated_membership_projection",
+            sourceGroupId: groupId,
+          },
+        })
+        .where(eq(ledger.id, existingMembership.id));
+    } else {
+      await db.insert(ledger).values({
+        verb: "join",
+        subjectId: actorId,
+        objectId: groupId,
+        objectType: "agent",
+        role: remoteRole,
+        isActive: true,
+        visibility: "public",
+        metadata: {
+          interactionType: "membership",
+          targetId: groupId,
+          targetType: "group",
+          sourceType: "federated_membership_projection",
+          sourceGroupId: groupId,
+        },
+      });
+    }
+  } else if (existingMembership) {
+    await db
+      .update(ledger)
+      .set({
+        isActive: false,
+        expiresAt: new Date(),
+        metadata: {
+          interactionType: "membership",
+          targetId: groupId,
+          targetType: "group",
+          sourceType: "federated_membership_projection",
+          sourceGroupId: groupId,
+        },
+      })
+      .where(eq(ledger.id, existingMembership.id));
+  }
+
+  return {
+    success: true,
+    data: {
+      joined,
+      groupId,
+    },
+  };
 }

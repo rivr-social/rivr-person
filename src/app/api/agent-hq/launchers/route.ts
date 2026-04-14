@@ -40,7 +40,7 @@ export async function GET() {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to list launchers";
-    const status = message === "Authentication required" ? 401 : 403;
+    const status = message === "Authentication required" ? 401 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

@@ -41,13 +41,15 @@ import {
   Download,
   Drama,
   ExternalLink,
-  MessageSquare,
+  Network,
   RefreshCw,
   Shield,
   Terminal,
   XCircle,
 } from "lucide-react";
 import { PersonaManager } from "@/components/persona-manager";
+import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
+import { SupervisorConsole } from "@/components/supervisor-console";
 import Link from "next/link";
 
 // ---------------------------------------------------------------------------
@@ -763,21 +765,34 @@ export default function AutobotPage() {
   }, []);
 
   return (
-    <div className="container max-w-2xl mx-auto px-4 py-6 space-y-6">
+    <div className="container max-w-5xl mx-auto px-4 py-6 space-y-6">
       <div className="flex items-center gap-3">
         <div className="rounded-full bg-primary/10 p-2">
-          <Bot className="h-5 w-5 text-primary" />
+          <Terminal className="h-5 w-5 text-primary" />
         </div>
         <div>
-          <h1 className="text-lg font-semibold">Autobot Control Plane</h1>
+          <h1 className="text-lg font-semibold">Executive Control Plane</h1>
           <p className="text-sm text-muted-foreground">
-            MCP status, personas, activity log, and chat
+            Persistent executive runtime, supervisor sessions, identity, and system controls
           </p>
         </div>
       </div>
 
-      <Tabs defaultValue="status">
+      <Card className="border-border/70 bg-muted/10">
+        <CardContent className="flex flex-col gap-2 py-4 text-sm">
+          <p className="font-medium">Primary interaction has moved to the bottom-right executive bubble.</p>
+          <p className="text-muted-foreground">
+            Use this page as the supervisor console for the live executive session and background agents. The old chat page is now a legacy voice and settings workspace, not the main assistant surface.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="supervisor">
         <TabsList className="w-full">
+          <TabsTrigger value="supervisor" className="flex-1 gap-1">
+            <Terminal className="h-3.5 w-3.5" />
+            Supervisor
+          </TabsTrigger>
           <TabsTrigger value="status" className="flex-1 gap-1">
             <CircleDot className="h-3.5 w-3.5" />
             Status
@@ -790,11 +805,15 @@ export default function AutobotPage() {
             <Activity className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
-          <TabsTrigger value="chat" className="flex-1 gap-1">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Chat
+          <TabsTrigger value="connections" className="flex-1 gap-1">
+            <Network className="h-3.5 w-3.5" />
+            Connections
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="supervisor" className="mt-4">
+          <SupervisorConsole />
+        </TabsContent>
 
         <TabsContent value="status" className="mt-4">
           <StatusTab status={status} />
@@ -808,28 +827,10 @@ export default function AutobotPage() {
           <ActivityTab />
         </TabsContent>
 
-        <TabsContent value="chat" className="mt-4">
-          <Card>
-            <CardContent className="py-8 flex flex-col items-center gap-4">
-              <div className="rounded-full bg-primary/10 p-4">
-                <MessageSquare className="h-8 w-8 text-primary" />
-              </div>
-              <div className="text-center space-y-1">
-                <h3 className="font-medium">Chat with your Autobot</h3>
-                <p className="text-sm text-muted-foreground max-w-sm">
-                  Talk to your autobot via text or voice. It can create posts,
-                  update your profile, manage personas, and more.
-                </p>
-              </div>
-              <Link href="/autobot/chat">
-                <Button className="gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  Open Chat
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
+        <TabsContent value="connections" className="mt-4">
+          <AutobotConnectionsPanel />
         </TabsContent>
+
       </Tabs>
     </div>
   );

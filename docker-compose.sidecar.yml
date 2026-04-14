@@ -159,9 +159,13 @@ services:
       DATABASE_URL: "postgresql://${RIVR_DB_USER:-rivr}:${RIVR_DB_PASSWORD}@postgres:5432/${RIVR_DB_NAME:-rivr_person}"
       REDIS_URL: ""
       WHISPER_TRANSCRIBE_URL: "http://whisperx:9200/"
+      AGENT_HQ_DATA_DIR: "/workspace/.agent-hq"
+      AGENT_HQ_APP_WORKSPACE_ROOT: "/workspace/apps"
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - rivr_agent_hq:/workspace
     networks:
       - proxy
       - db
@@ -355,6 +359,10 @@ volumes:
 
   # OpenClaw agent workspace
   rivr_openclaw_workspace:
+    driver: local
+
+  # Agent HQ state + generated app workspaces
+  rivr_agent_hq:
     driver: local
 
   # Voice sample uploads

@@ -64,6 +64,7 @@ export {
   createBadgeResourceAction,
   createLiveClassAction,
   createDocumentResourceAction,
+  createScopedDocumentAction,
   createPersonalDocumentAction,
   createProjectResource,
 } from "./lifecycle";

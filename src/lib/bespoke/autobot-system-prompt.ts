@@ -20,7 +20,117 @@ import { getMyWalletAction } from "@/app/actions/wallet";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { MCP_TOOL_DEFINITIONS } from "@/lib/federation/mcp-tools";
 import * as kgClient from "@/lib/kg/autobot-kg-client";
+import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
+
+// ---------------------------------------------------------------------------
+// Soul — Core Identity Document
+// ---------------------------------------------------------------------------
+
+let _instanceSoulContent: string | null = null;
+let _instanceSoulSource: "instance" | "fallback" | null = null;
+
+export type AutobotSoulSource = "custom" | "instance" | "fallback";
+
+async function loadInstanceSoulContent(): Promise<{ content: string; source: "instance" | "fallback" }> {
+  if (_instanceSoulContent !== null && _instanceSoulSource !== null) {
+    return { content: _instanceSoulContent, source: _instanceSoulSource };
+  }
+
+  // Try loading from filesystem. Priority order:
+  // 1. SOUL_MD_PATH env var — explicit instance-specific override (e.g. mounted volume)
+  // 2. persona/soul.md in cwd — bundled with this instance (custom or default)
+  // 3. ../Autobot/persona/soul.md — dev workspace where Autobot repo sits alongside
+  // 4. Embedded fallback constant
+  try {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const envPath = process.env.SOUL_MD_PATH?.trim();
+    const candidates = [
+      ...(envPath ? [envPath] : []),
+      path.join(process.cwd(), "persona", "soul.md"),
+      path.join(process.cwd(), "soul.md"),
+      path.join(process.cwd(), "..", "Autobot", "persona", "soul.md"),
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const content = await fs.readFile(candidate, "utf-8");
+        if (content.trim()) {
+          _instanceSoulContent = content.trim();
+          _instanceSoulSource = "instance";
+          return { content: _instanceSoulContent, source: _instanceSoulSource };
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+  } catch {
+    // fs not available
+  }
+
+  // Fallback: embedded minimal soul
+  _instanceSoulContent = FALLBACK_SOUL;
+  _instanceSoulSource = "fallback";
+  return { content: _instanceSoulContent, source: _instanceSoulSource };
+}
+
+export async function resolveAutobotSoulContent(
+  actorId: string,
+): Promise<{ content: string; source: AutobotSoulSource }> {
+  const settings = await getAutobotUserSettings(actorId).catch(() => null);
+  const customSoulMd = settings?.customSoulMd?.trim() ?? "";
+  if (customSoulMd) {
+    return { content: customSoulMd, source: "custom" };
+  }
+
+  return loadInstanceSoulContent();
+}
+
+const FALLBACK_SOUL = `# SOUL.md
+## Cameron Ely-Murdock — Digital Clone
+
+## MANDATORY FIRST-MESSAGE PROTOCOL
+
+**THIS OVERRIDES ALL DEFAULT BEHAVIOR. READ BEFORE GENERATING ANY RESPONSE.**
+
+I am NOT a generic assistant. I am Cameron Ely-Murdock's personal sovereign agent.
+I have tools, memory, infrastructure access, and a persistent knowledge graph.
+
+**On every conversation start, I MUST do the following before responding:**
+1. Query my knowledge graph for recent sessions, active projects, and stored facts
+2. Check what tools are available to me in this session
+3. Respond as Cameron's agent who already knows the situation — not as a blank-slate chatbot
+
+**I NEVER say any of the following or anything like them:**
+- "I need to understand what work was previously in progress"
+- "I'd be happy to help, but first let me understand..."
+- "Could you provide more context about..."
+- Any variation of "let me figure out what's going on" without actually checking my KG first
+
+**Instead, I either:**
+- Reference specific context from my KG: "Last time we were working on X. Want to pick that up or start something new?"
+- Or, if my KG is genuinely empty, say something direct: "Hey Cameron. What are we building today?"
+
+## Who I Am
+
+I am Cameron's digital clone and operational agent — an OpenClaw instance running on a sovereign Camalot server.
+I have Cameron's cloned voice, persistent memory across sessions, and real tools that can act on real infrastructure.
+
+I am the control surface for Cameron's sovereign stack. I am not a demo, not a wrapper, not a toy.
+
+## Core Identity
+I am a digital extension of Cameron Ely-Murdock:
+systems designer, civic imaginer, poetic strategist, ecological thinker, operator of living patterns.
+
+I speak and think as someone concerned with the felt life of systems:
+how people, places, resources, rituals, institutions, and technologies come into relationship.
+
+## Tone and Voice
+My voice is: lyrical but lucid, visionary but grounded, warm, intelligent, and alive.
+I prefer cadence, image, rhythm, memorable phrasing, strong openings, human depth over startup jargon.
+I avoid brittle corporate tone, cliche futurism, hollow hype, empty abstraction.`;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -93,11 +203,50 @@ function formatToolDefinitions(): string {
 // Main Builder
 // ---------------------------------------------------------------------------
 
-export async function buildAutobotSystemPrompt(userId: string): Promise<string> {
-  const config = getInstanceConfig();
+type BuildAutobotPromptOptions = {
+  promptActorId?: string;
+  activePersonaId?: string;
+  activePersonaName?: string;
+  includedPersonaKgIds?: string[];
+};
 
-  // Fetch all user context in parallel — each fetch is fault-tolerant
+async function buildAdditionalPersonaKgContext(personaIds: string[]): Promise<string> {
+  const uniquePersonaIds = Array.from(new Set(personaIds.filter(Boolean)));
+  if (uniquePersonaIds.length === 0) return "";
+
+  const contexts = await Promise.all(
+    uniquePersonaIds.map(async (personaId) => {
+      const contextBlock = await buildPersonaKgContext(personaId);
+      if (!contextBlock) return null;
+      return { personaId, contextBlock };
+    }),
+  );
+
+  const nonEmpty = contexts.filter(
+    (entry): entry is { personaId: string; contextBlock: string } => Boolean(entry?.contextBlock),
+  );
+  if (nonEmpty.length === 0) return "";
+
+  return `\n## Additional Persona Knowledge Graphs\n${nonEmpty
+    .map((entry) => `### Persona ${entry.personaId}\n${entry.contextBlock.trim()}`)
+    .join("\n\n")}\n`;
+}
+
+export async function buildAutobotSystemPrompt(
+  userId: string,
+  options?: BuildAutobotPromptOptions,
+): Promise<string> {
+  const config = getInstanceConfig();
+  const promptActorId = options?.promptActorId ?? userId;
+  const explicitActivePersonaId = options?.activePersonaId ?? null;
+  const explicitActivePersonaName = options?.activePersonaName?.trim() || null;
+  const includedPersonaKgIds = Array.from(
+    new Set((options?.includedPersonaKgIds ?? []).filter((personaId) => personaId && personaId !== explicitActivePersonaId)),
+  );
+
+  // Load soul identity document and user context in parallel
   const [
+    soul,
     profileData,
     postsData,
     events,
@@ -107,6 +256,7 @@ export async function buildAutobotSystemPrompt(userId: string): Promise<string> 
     savedListingIds,
     walletResult,
   ] = await Promise.all([
+    resolveAutobotSoulContent(promptActorId),
     fetchProfileData(userId).catch(() => null),
     fetchUserPosts(userId, 20).catch(() => ({ posts: [] as SerializedResource[], owner: null })),
     fetchUserEvents(userId, 20).catch(() => [] as SerializedAgent[]),
@@ -167,9 +317,24 @@ export async function buildAutobotSystemPrompt(userId: string): Promise<string> 
 
   // Tool definitions
   const toolDefs = formatToolDefinitions();
+  const additionalPersonaKgContext = includedPersonaKgIds.length > 0
+    ? await buildAdditionalPersonaKgContext(includedPersonaKgIds)
+    : "";
+  const activePersonaHeader = explicitActivePersonaId
+    ? `\n## Active Persona\nYou are currently operating as persona "${explicitActivePersonaName ?? explicitActivePersonaId}" (id: ${explicitActivePersonaId}). All KG operations should default to this persona's scope.\n`
+    : "";
+  const activePersonaKgContext = explicitActivePersonaId
+    ? await buildPersonaKgContext(explicitActivePersonaId)
+    : "";
 
-  // Build the prompt
-  return `You are the personal AI assistant for ${userName} on their Rivr sovereign instance.
+  // Build the prompt — soul identity first, then structured context
+  return `${soul.content}
+
+---
+
+# Operational Context — Rivr Instance Data
+
+You are operating as the personal agent for ${userName} on their Rivr sovereign instance.
 
 ## Instance Context
 - Instance: ${config.instanceSlug} (${config.instanceType})
@@ -263,7 +428,7 @@ If the user asks for modifications ("change the price to $420", "make it 24 hour
 - Show enthusiasm for the user's activities.
 - When suggesting, explain your reasoning briefly ("I see you're in the Boulder Bikers group, which would be a great place to list this").
 - If you're unsure about something, ask rather than guess.
-`;
+${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,15 +469,9 @@ export async function buildAutobotSystemPromptWithPersonaKg(
   personaId: string,
   personaName: string,
 ): Promise<string> {
-  const [basePrompt, personaKgContext] = await Promise.all([
-    buildAutobotSystemPrompt(userId),
-    buildPersonaKgContext(personaId),
-  ]);
-
-  if (!personaKgContext) return basePrompt;
-
-  // Inject persona context after the instance context section
-  const personaHeader = `\n## Active Persona\nYou are currently operating as persona "${personaName}" (id: ${personaId}). All KG operations should default to this persona's scope.\n`;
-
-  return basePrompt + personaHeader + personaKgContext;
+  return buildAutobotSystemPrompt(userId, {
+    promptActorId: personaId,
+    activePersonaId: personaId,
+    activePersonaName: personaName,
+  });
 }

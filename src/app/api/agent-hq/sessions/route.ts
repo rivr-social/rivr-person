@@ -22,7 +22,23 @@ export async function GET() {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to list sessions";
-    const status = message === "Authentication required" ? 401 : 403;
-    return NextResponse.json({ error: message }, { status });
+    if (message === "Authentication required") {
+      return NextResponse.json({ error: message }, { status: 401 });
+    }
+    // Keep Agent HQ usable even when tmux/data paths are temporarily unavailable.
+    console.error("[agent-hq/sessions] fallback to empty list:", message);
+    return NextResponse.json({
+      sessions: [],
+      templates: [],
+      grouped: [
+        { role: "executive", sessions: [] },
+        { role: "architect", sessions: [] },
+        { role: "orchestrator", sessions: [] },
+        { role: "worker", sessions: [] },
+        { role: "observer", sessions: [] },
+      ],
+      warning: message,
+      lastUpdatedAt: new Date().toISOString(),
+    });
   }
 }

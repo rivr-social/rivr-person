@@ -284,6 +284,89 @@ export async function pushSiteToGitHub(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Fetch files from GitHub repo (preload before editing)
+// ---------------------------------------------------------------------------
+
+/** File extensions the builder can meaningfully edit. */
+const BUILDER_FILE_EXTENSIONS = new Set([
+  '.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.json', '.svg', '.md', '.txt',
+]);
+
+/** Maximum total bytes to pull to avoid loading huge repos. */
+const MAX_TOTAL_BYTES = 2 * 1024 * 1024; // 2 MB
+
+/**
+ * Fetch the current file tree from a connected GitHub repo and return
+ * them as a flat `Record<string, string>` matching the builder's SiteFiles
+ * shape. Only pulls text files with builder-relevant extensions.
+ */
+export async function fetchFilesFromGitHub(params: {
+  repoOwner: string;
+  repoName: string;
+  branch: string;
+  token: string;
+  basePath?: string;
+}): Promise<{ files: Record<string, string>; truncated: boolean }> {
+  const { repoOwner, repoName, branch, token, basePath } = params;
+  const repoPath = `/repos/${repoOwner}/${repoName}`;
+
+  // Get the recursive tree for the branch
+  const refData = await githubApi<{ object: { sha: string } }>(
+    `${repoPath}/git/ref/heads/${branch}`,
+    { token },
+  );
+  const commitData = await githubApi<{ tree: { sha: string } }>(
+    `${repoPath}/git/commits/${refData.object.sha}`,
+    { token },
+  );
+  const treeData = await githubApi<{
+    tree: Array<{ path: string; type: string; size?: number; sha: string }>;
+    truncated: boolean;
+  }>(
+    `${repoPath}/git/trees/${commitData.tree.sha}?recursive=1`,
+    { token },
+  );
+
+  // Filter to blobs within basePath that have builder-relevant extensions
+  const prefix = basePath ? basePath.replace(/\/$/, '') + '/' : '';
+  const candidates = treeData.tree.filter((entry) => {
+    if (entry.type !== 'blob') return false;
+    if (prefix && !entry.path.startsWith(prefix)) return false;
+    const ext = entry.path.substring(entry.path.lastIndexOf('.'));
+    return BUILDER_FILE_EXTENSIONS.has(ext.toLowerCase());
+  });
+
+  // Fetch blob contents, respecting size cap
+  const files: Record<string, string> = {};
+  let totalBytes = 0;
+  let truncated = treeData.truncated;
+
+  for (const entry of candidates) {
+    if ((entry.size ?? 0) > 256 * 1024) continue; // skip files > 256 KB
+    if (totalBytes + (entry.size ?? 0) > MAX_TOTAL_BYTES) {
+      truncated = true;
+      break;
+    }
+
+    const blobData = await githubApi<{ content: string; encoding: string }>(
+      `${repoPath}/git/blobs/${entry.sha}`,
+      { token },
+    );
+
+    const decoded = blobData.encoding === 'base64'
+      ? Buffer.from(blobData.content, 'base64').toString('utf-8')
+      : blobData.content;
+
+    // Strip basePath prefix from the key so builder sees relative paths
+    const relativePath = prefix ? entry.path.slice(prefix.length) : entry.path;
+    files[relativePath] = decoded;
+    totalBytes += Buffer.byteLength(decoded);
+  }
+
+  return { files, truncated };
+}
+
+// ---------------------------------------------------------------------------
 // Deploy status
 // ---------------------------------------------------------------------------
 

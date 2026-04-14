@@ -10,9 +10,13 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
+      AGENT_HQ_DATA_DIR: "/workspace/.agent-hq"
+      AGENT_HQ_APP_WORKSPACE_ROOT: "/workspace/apps"
       # Autobot / MCP — set a strong random token to enable AI agent access.
       # Generate with: openssl rand -hex 32
       # AIAGENT_MCP_TOKEN: "replace-with-a-long-random-token"
+    volumes:
+      - rivr_agent_hq:/workspace
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)throw new Error(String(r.status));}).then(()=>process.exit(0)).catch(()=>process.exit(1))\""]
@@ -22,3 +26,6 @@ services:
       start_period: 60s
     ports:
       - "3000:3000"
+
+volumes:
+  rivr_agent_hq:

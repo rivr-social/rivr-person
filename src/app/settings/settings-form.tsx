@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, Globe, MapPin, Moon, Plus, Shield, Sun, User, Store, CheckCircle2, AlertCircle, ExternalLink, Loader2, X, Sparkles, Brain, Eye, Wallet, Activity, UserCheck, Fingerprint, Upload, Trash2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { updateProfileAction, updateProfileImageAction } from "@/app/actions/settings";
@@ -34,6 +34,8 @@ import type { FederationIdentityStatus } from "@/lib/federation-identities";
 import type { AppReleaseStatus } from "@/lib/app-release";
 import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { DomainSettings } from "@/components/domain-settings";
+import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
+import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
 
 export type SettingsInitialData = {
   name: string;
@@ -58,6 +60,27 @@ export type SettingsInitialData = {
   privacySettings: Partial<PrivacySettings>;
   notificationSettings: Omit<NotificationSettings, "murmurationsPublishing">;
 };
+
+type SettingsTab =
+  | "account"
+  | "privacy"
+  | "notifications"
+  | "appearance"
+  | "agent-hq"
+  | "connections"
+  | "seller"
+  | "federation";
+
+const SETTINGS_TAB_VALUES: SettingsTab[] = [
+  "account",
+  "privacy",
+  "notifications",
+  "appearance",
+  "agent-hq",
+  "connections",
+  "seller",
+  "federation",
+];
 
 /** Visibility scope for individual privacy controls. */
 type VisibilityScope = "public" | "locale" | "connections" | "self";
@@ -281,8 +304,15 @@ export function SettingsForm({
   initialAppReleaseStatus: AppReleaseStatus | null;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const { theme, setTheme } = useTheme();
+  const requestedTab = searchParams.get("tab");
+  const initialTab: SettingsTab = SETTINGS_TAB_VALUES.includes(
+    requestedTab as SettingsTab,
+  )
+    ? (requestedTab as SettingsTab)
+    : "account";
 
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -316,6 +346,7 @@ export function SettingsForm({
   const [personInstanceUsername, setPersonInstanceUsername] = useState(initialPersonInstanceSetup.username || initialData.username);
   const [personInstanceNotes, setPersonInstanceNotes] = useState(initialPersonInstanceSetup.notes);
   const [personInstanceSaving, setPersonInstanceSaving] = useState<"save" | "verify" | null>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const localeOptions = useMemo(
     () =>
       localesData.locales.map((locale) => ({
@@ -327,6 +358,10 @@ export function SettingsForm({
       })),
     [localesData.locales]
   );
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   useEffect(() => {
     if (!profile.homeLocale || localesData.locales.length === 0) return;
@@ -666,12 +701,14 @@ export function SettingsForm({
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="account" className="space-y-4">
-        <TabsList className="grid grid-cols-6">
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SettingsTab)} className="space-y-4">
+        <TabsList className="grid grid-cols-4 md:grid-cols-8">
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="privacy">Privacy</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
+          <TabsTrigger value="agent-hq">Agent HQ</TabsTrigger>
+          <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="seller">Seller</TabsTrigger>
           <TabsTrigger value="federation">Federation</TabsTrigger>
         </TabsList>
@@ -1724,6 +1761,29 @@ export function SettingsForm({
         </TabsContent>
         <TabsContent value="seller" className="space-y-4">
           <SellerAccountSection />
+        </TabsContent>
+
+        <TabsContent value="agent-hq" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Brain className="h-5 w-5" />
+                Agent HQ
+              </CardTitle>
+              <CardDescription>
+                Manage the executive and child agent containers, terminals, and working context. Use this surface to append folders and files into each agent runtime.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="min-h-[820px] border-t">
+                <BuilderAgentsPanel workspaceId="app-playground" />
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="connections" className="space-y-4">
+          <AutobotConnectionsPanel />
         </TabsContent>
 
         <TabsContent value="federation" className="space-y-4">

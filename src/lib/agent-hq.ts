@@ -37,6 +37,7 @@ export interface AgentSessionMetadata {
   personaId?: string | null;
   personaName?: string;
   kgScopeSet?: string[];
+  mountedPaths?: string[];
 }
 
 export interface AgentSession {
@@ -125,6 +126,61 @@ export interface AgentLauncher {
   defaultCommandTemplate?: string;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Executive Session Model                                           */
+/* ------------------------------------------------------------------ */
+
+export type ExecutiveSessionState = "active" | "suspended" | "terminated";
+
+/** A context mount attached to the executive session. */
+export interface ExecutiveContextMount {
+  kind: "person" | "persona" | "group" | "kg-scope" | "workspace";
+  id: string;
+  label: string;
+  /** Provider-specific reference (e.g. workspace cwd, KG scope id). */
+  ref?: string;
+}
+
+/** Persistent executive session descriptor stored on disk. */
+export interface ExecutiveSession {
+  /** Stable session identifier (survives page reloads). */
+  id: string;
+  /** tmux session name backing this executive. */
+  tmuxSession: string;
+  /** tmux pane key (%<id> or session:window.pane). */
+  paneKey: string;
+  /** Agent launcher provider running inside the pane. */
+  provider: AgentLauncherProvider;
+  /** Working directory the executive was launched in. */
+  cwd: string;
+  /** Human label. */
+  label: string;
+  /** Current lifecycle state. */
+  state: ExecutiveSessionState;
+  /** Attached context mounts. */
+  contextMounts: ExecutiveContextMount[];
+  /** Persona driving this executive (optional). */
+  personaId: string | null;
+  personaName?: string;
+  /** Voice mode preference forwarded from autobot settings. */
+  voiceMode?: "browser" | "clone";
+  /** Child session pane keys owned by this executive. */
+  childPaneKeys: string[];
+  /** Server-owned chat transcript for the executive bubble. */
+  messages: ExecutiveChatMessage[];
+  /** ISO timestamp of creation. */
+  createdAt: string;
+  /** ISO timestamp of last activity / resume. */
+  updatedAt: string;
+}
+
+export interface ExecutiveChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  createdAt: string;
+}
+
 /**
  * In Docker the WORKDIR `/app` is read-only for the nextjs user, so
  * `process.cwd()/.agent-hq` fails with EACCES. Use the cwd path only when
@@ -163,6 +219,16 @@ const APP_WORKSPACE_ROOT = process.env.AGENT_HQ_APP_WORKSPACE_ROOT
   : path.join(USER_DOCUMENTS_ROOT, "Playground");
 const SWARM_STATE_DIR = path.join(OPS_ROOT, ".agent-hq", "swarm-state");
 const SWARM_STATE_LEDGER_PATH = path.join(SWARM_STATE_DIR, "current-state.json");
+const CLAUDE_RUNTIME_HOME = process.env.AGENT_HQ_CLAUDE_HOME
+  ? path.resolve(process.env.AGENT_HQ_CLAUDE_HOME)
+  : path.join(process.env.AGENT_HQ_DATA_DIR ? path.resolve(process.env.AGENT_HQ_DATA_DIR) : DATA_DIR, "..", ".claude-runtime");
+
+function buildClaudeRuntimePrefix() {
+  const runtimeHome = shellQuote(CLAUDE_RUNTIME_HOME);
+  const xdgConfigHome = shellQuote(path.join(CLAUDE_RUNTIME_HOME, ".config"));
+  const xdgStateHome = shellQuote(path.join(CLAUDE_RUNTIME_HOME, ".local", "state"));
+  return `env -u ANTHROPIC_API_KEY HOME=${runtimeHome} XDG_CONFIG_HOME=${xdgConfigHome} XDG_STATE_HOME=${xdgStateHome}`;
+}
 
 export function getAgentAppWorkspaceRoot() {
   return APP_WORKSPACE_ROOT;
@@ -185,6 +251,22 @@ function execTmux(args: string[]) {
       resolve(stdout);
     });
   });
+}
+
+function isTmuxServerMissing(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("no server running on") ||
+    normalized.includes("failed to connect to server") ||
+    normalized.includes("error connecting to") ||
+    normalized.includes("no such file or directory") ||
+    normalized.includes("can't find socket")
+  );
+}
+
+function isTmuxUnavailable(message: string) {
+  const normalized = message.toLowerCase();
+  return normalized.includes("spawn tmux enoent") || normalized.includes("tmux: not found");
 }
 
 async function ensureMetadataStore() {
@@ -369,6 +451,15 @@ function normalizeMetadata(input?: Partial<AgentSessionMetadata>): AgentSessionM
         ),
       )
     : undefined;
+  const mountedPaths = Array.isArray(input?.mountedPaths)
+    ? Array.from(
+        new Set(
+          input.mountedPaths.filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          ),
+        ),
+      )
+    : undefined;
   return {
     ...DEFAULT_METADATA,
     ...input,
@@ -378,10 +469,16 @@ function normalizeMetadata(input?: Partial<AgentSessionMetadata>): AgentSessionM
     personaId: input?.personaId ?? null,
     personaName: input?.personaName?.trim() || undefined,
     kgScopeSet,
+    mountedPaths,
   };
 }
 
-export function paneKeyForSession(session: Pick<AgentSession, "sessionName" | "windowIndex" | "paneIndex">) {
+export function paneKeyForSession(
+  session: Pick<AgentSession, "sessionName" | "windowIndex" | "paneIndex" | "paneId">,
+) {
+  if (typeof session.paneId === "string" && session.paneId.startsWith("%")) {
+    return session.paneId;
+  }
   return `${session.sessionName}:${session.windowIndex}.${session.paneIndex}`;
 }
 
@@ -404,37 +501,77 @@ export async function listAgentSessions(): Promise<AgentSession[]> {
     "#{pane_id}",
     "#{pane_current_command}",
     "#{pane_pid}",
-    "#{pane_title}",
     "#{pane_active}",
     "#{pane_dead}",
   ].join("\t");
-  const stdout = await execTmux(["list-panes", "-a", "-F", format]);
+  let stdout = "";
+  try {
+    stdout = await execTmux(["list-panes", "-a", "-F", format]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isTmuxServerMissing(message) || isTmuxUnavailable(message)) {
+      return [];
+    }
+    throw error;
+  }
   const metadataStore = await loadMetadataStore();
 
-  return stdout
+  const lines = stdout
     .trim()
     .split("\n")
-    .filter(Boolean)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines
     .map((line) => {
-      const [sessionName, windowIndex, paneIndex, paneId, command, pid, title, active, dead] = line.split("\t");
-      const paneKey = `${sessionName}:${windowIndex}.${paneIndex}`;
-      const savedMetadata = metadataStore[paneKey];
+      const splitOnTab = line.split("\t");
+      const splitOnEscapedTab = line.split("\\t");
+      let parts = splitOnTab.length >= 8 ? splitOnTab : splitOnEscapedTab;
+      if (parts.length < 8) {
+        const underscoreMatch = line.match(/^(.*)_(\d+)_(\d+)_(%[0-9]+)_([^_]+)_(\d+)_([01])_([01])$/);
+        if (underscoreMatch) {
+          parts = underscoreMatch.slice(1);
+        }
+      }
+      if (parts.length < 8) {
+        console.warn("[agent-hq] unable to parse tmux list-panes line", { line });
+        return null;
+      }
+
+      const [sessionName, windowIndexRaw, paneIndexRaw, paneIdRaw, command, pidRaw, activeRaw, deadRaw] = parts;
+      const windowIndex = Number(windowIndexRaw);
+      const paneIndex = Number(paneIndexRaw);
+      const pid = Number(pidRaw);
+      const paneId = paneIdRaw?.trim() || "";
+
+      const legacyPaneKey = `${sessionName}:${windowIndexRaw}.${paneIndexRaw}`;
+      const metadataKey = paneId.startsWith("%") ? paneId : legacyPaneKey;
+      const savedMetadata = metadataStore[metadataKey] ?? metadataStore[legacyPaneKey];
+      const savedLabel =
+        typeof savedMetadata?.label === "string" && !savedMetadata.label.endsWith(":null.null")
+          ? savedMetadata.label
+          : undefined;
+      const fallbackKey = paneId.startsWith("%")
+        ? paneId
+        : `${sessionName}:${Number.isFinite(windowIndex) ? windowIndex : 0}.${Number.isFinite(paneIndex) ? paneIndex : 0}`;
+
       return {
         sessionName,
-        windowIndex: Number(windowIndex),
-        paneIndex: Number(paneIndex),
+        windowIndex: Number.isFinite(windowIndex) ? windowIndex : 0,
+        paneIndex: Number.isFinite(paneIndex) ? paneIndex : 0,
         paneId,
         command,
-        pid: Number(pid),
-        title,
-        active: active === "1",
-        dead: dead === "1",
+        pid: Number.isFinite(pid) ? pid : 0,
+        title: savedLabel ?? fallbackKey,
+        active: activeRaw === "1",
+        dead: deadRaw === "1",
         metadata: normalizeMetadata({
           ...savedMetadata,
-          label: savedMetadata?.label || title || paneKey,
+          label: savedLabel || fallbackKey,
         }),
-      };
-    });
+      } satisfies AgentSession;
+    })
+    .filter((session): session is AgentSession => session !== null);
 }
 
 export async function captureAgentPane(target: string, lines = 120) {
@@ -447,7 +584,7 @@ export async function captureAgentPaneRaw(target: string, lines = 120) {
 
 export async function sendAgentInput(target: string, text: string, enter = true) {
   if (text) {
-    await execTmux(["send-keys", "-t", target, text]);
+    await execTmux(["send-keys", "-l", "-t", target, text]);
   }
   if (enter) {
     await execTmux(["send-keys", "-t", target, "C-m"]);
@@ -463,6 +600,7 @@ export async function reloadAgentContext(paneKey: string) {
   if (!metadata.contextFile) {
     throw new Error("No context file configured for this pane.");
   }
+  await syncContextFileFromMetadata(paneKey, metadata);
 
   const prompt = [
     `Re-read the session context file at ${metadata.contextFile}.`,
@@ -487,6 +625,7 @@ export async function updateAgentMetadata(
   });
   current[paneKey] = next;
   await saveMetadataStore(current);
+  await syncContextFileFromMetadata(paneKey, next);
   await upsertTeamNodeFromMetadata(paneKey, next);
   return next;
 }
@@ -504,9 +643,75 @@ function replaceTemplate(template: string, values: Record<string, string>): stri
   return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key: string) => values[key] ?? "");
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stripAnsiForAgentOutput(value: string) {
+  return value
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/\u0000/g, "");
+}
+
+async function settleClaudeStartup(target: string) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await sleep(700);
+    const raw = await captureAgentPaneRaw(target, 120).catch(() => "");
+    const text = stripAnsiForAgentOutput(raw);
+
+    if (text.includes("Bypass Permissions mode") && text.includes("Yes, I accept")) {
+      await sendAgentInput(target, "2", true);
+      continue;
+    }
+
+    if (
+      text.includes("? for shortcuts") ||
+      text.includes("Paste code here if prompted") ||
+      text.includes("cwd:") ||
+      text.includes("> ")
+    ) {
+      return;
+    }
+  }
+}
+
 function shellQuote(value: string): string {
   if (value.length === 0) return "''";
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+async function resolveWorkspaceForMetadata(metadata: AgentSessionMetadata) {
+  const workspaces = await discoverAgentProjects();
+  const metadataCwd = metadata.cwd ? path.resolve(metadata.cwd) : null;
+  return (
+    (metadata.workspaceId ? workspaces.find((candidate) => candidate.id === metadata.workspaceId) : null) ??
+    (metadataCwd ? workspaces.find((candidate) => path.resolve(candidate.cwd) === metadataCwd) : null) ??
+    null
+  );
+}
+
+async function syncContextFileFromMetadata(sessionName: string, metadata: AgentSessionMetadata) {
+  if (!metadata.contextFile || !metadata.cwd || !metadata.provider) return;
+  const workspace = await resolveWorkspaceForMetadata(metadata);
+  await writeFile(
+    metadata.contextFile,
+    renderAgentContext({
+      sessionName,
+      workspace,
+      cwd: metadata.cwd,
+      provider: metadata.provider,
+      role: metadata.role,
+      objective: metadata.objective,
+      notes: metadata.notes,
+      capabilities: metadata.capabilityIds ?? [],
+      personaId: metadata.personaId ?? null,
+      personaName: metadata.personaName,
+      kgScopeSet: metadata.kgScopeSet,
+      mountedPaths: metadata.mountedPaths,
+    }),
+    "utf8",
+  );
 }
 
 function slugify(value: string): string {
@@ -767,7 +972,20 @@ export async function readWorkspaceFile(workspaceId: string, relativePath: strin
   }
 
   const filePath = assertInsideRoot(workspace.cwd, path.join(workspace.cwd, safeRelative));
-  const fileInfo = await stat(filePath);
+  let fileInfo;
+  try {
+    fileInfo = await stat(filePath);
+  } catch (error) {
+    // Missing context files should not hard-fail Agent HQ UX.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return {
+        workspace,
+        relativePath: safeRelative,
+        content: "",
+      };
+    }
+    throw error;
+  }
   if (!fileInfo.isFile()) {
     throw new Error("Requested path is not a file.");
   }
@@ -832,21 +1050,21 @@ export async function listAgentLaunchers(): Promise<{
         label: "OpenCode",
         description: "Launch an OpenCode session in the selected app directory.",
         installed: opencodeInstalled,
-        defaultCommandTemplate: "opencode {cwd}",
+        defaultCommandTemplate: "opencode",
       },
       {
         provider: "claude",
         label: "Claude",
         description: "Launch a Claude Code session in the selected app directory.",
         installed: claudeInstalled,
-        defaultCommandTemplate: "claude -n {label}",
+        defaultCommandTemplate: "claude --dangerously-skip-permissions",
       },
       {
         provider: "codex",
         label: "Codex",
         description: "Launch a Codex session in the selected app directory.",
         installed: codexInstalled,
-        defaultCommandTemplate: "codex -n {label}",
+        defaultCommandTemplate: "codex",
       },
       {
         provider: "custom",
@@ -907,6 +1125,7 @@ function renderAgentContext(options: {
   personaId?: string | null;
   personaName?: string;
   kgScopeSet?: string[];
+  mountedPaths?: string[];
 }) {
   const workspace = options.workspace;
   const lines = [
@@ -932,6 +1151,9 @@ function renderAgentContext(options: {
   }
   if (options.kgScopeSet && options.kgScopeSet.length > 0) {
     lines.push(`- KG scope set: ${options.kgScopeSet.join(", ")}`);
+  }
+  if (options.mountedPaths && options.mountedPaths.length > 0) {
+    lines.push(`- Mounted context paths: ${options.mountedPaths.join(", ")}`);
   }
   lines.push("");
   lines.push("## Operating Model");
@@ -969,23 +1191,35 @@ function renderAgentContext(options: {
     lines.push("- Operate as the assigned persona for this pane.");
     lines.push("- Keep KG operations constrained to the KG scope set unless explicitly elevated.");
   }
+  if (options.mountedPaths && options.mountedPaths.length > 0) {
+    lines.push("- Treat mounted context paths as explicitly attached working context for this pane.");
+    lines.push("- Read the mounted files or inspect the mounted directories when the task depends on them.");
+    lines.push("");
+    lines.push("## Mounted Context Paths");
+    for (const mountedPath of options.mountedPaths) {
+      lines.push(`- ${mountedPath}`);
+    }
+  }
   return `${lines.join("\n")}\n`;
 }
 
 export async function launchAgentSession(input: LaunchAgentSessionInput): Promise<LaunchAgentSessionResult> {
   const cwd = path.resolve(input.cwd);
-  if (!isInsideAnyWorkspace(cwd)) {
-    throw new Error("Launch cwd must be inside the configured workspace root.");
-  }
-  if (!existsSync(cwd)) {
-    throw new Error(`Launch cwd does not exist: ${cwd}`);
-  }
-
   const workspaces = await discoverAgentProjects();
   const workspace =
     (input.workspaceId ? workspaces.find((candidate) => candidate.id === input.workspaceId) : null) ??
     workspaces.find((candidate) => path.resolve(candidate.cwd) === cwd) ??
     null;
+  if (!isInsideAnyWorkspace(cwd)) {
+    throw new Error("Launch cwd must be inside the configured workspace root.");
+  }
+  if (!existsSync(cwd)) {
+    if (workspace?.scope === "app") {
+      await mkdir(cwd, { recursive: true });
+    } else {
+      throw new Error(`Launch cwd does not exist: ${cwd}`);
+    }
+  }
   const provider = input.provider;
   const displayLabel = input.displayLabel.trim();
   if (!displayLabel) {
@@ -997,11 +1231,11 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
   const sessionName = `${baseName}-${uniqueSuffix}`.slice(0, 32);
   const defaultTemplate =
     provider === "opencode"
-      ? "opencode {cwd}"
+      ? "opencode"
       : provider === "claude"
-      ? "claude -n {label}"
+      ? `${buildClaudeRuntimePrefix()} claude --dangerously-skip-permissions`
       : provider === "codex"
-        ? "codex -n {label}"
+        ? "codex"
         : input.commandTemplate;
 
   const commandTemplate = input.commandTemplate || defaultTemplate;
@@ -1018,17 +1252,7 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
     projectName: shellQuote(path.basename(cwd)),
   });
 
-  await execTmux([
-    "new-session",
-    "-d",
-    "-s",
-    sessionName,
-    "-c",
-    cwd,
-    "bash",
-    "-lc",
-    command,
-  ]);
+  await execTmux(["new-session", "-d", "-s", sessionName, "-c", cwd]);
 
   const paneKey = `${sessionName}:0.0`;
   const capabilityIds =
@@ -1059,6 +1283,7 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
       personaId: input.personaId ?? null,
       personaName: input.personaName,
       kgScopeSet,
+      mountedPaths: [],
     }),
     "utf8",
   );
@@ -1074,18 +1299,27 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
     cwd,
     commandTemplate,
     projectName: path.basename(cwd),
-    workspaceId: workspace?.id,
-    workspaceScope: workspace?.scope,
+    workspaceId: input.workspaceId ?? workspace?.id,
+    workspaceScope: workspace?.scope ?? "app",
     capabilityIds,
     contextFile,
     liveSubdomain: workspace?.liveSubdomain ?? undefined,
     personaId: input.personaId ?? null,
     personaName: input.personaName?.trim() || undefined,
     kgScopeSet,
+    mountedPaths: [],
   });
   const current = await loadMetadataStore();
   current[paneKey] = metadata;
   await saveMetadataStore(current);
+
+  // Start the requested agent runtime inside an interactive shell pane.
+  if (command.trim()) {
+    await sendAgentInput(paneKey, command, true);
+    if (provider === "claude") {
+      await settleClaudeStartup(paneKey);
+    }
+  }
 
   const bootstrapPrompt = [
     `Read the session context file at ${contextFile}.`,
@@ -1107,4 +1341,167 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
     command,
     metadata,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Executive Session Persistence                                     */
+/* ------------------------------------------------------------------ */
+
+const EXECUTIVE_SESSION_PATH = path.join(DATA_DIR, "executive-session.json");
+
+export async function loadExecutiveSession(): Promise<ExecutiveSession | null> {
+  await ensureMetadataStore();
+  if (!existsSync(EXECUTIVE_SESSION_PATH)) return null;
+  try {
+    const raw = await readFile(EXECUTIVE_SESSION_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.id) return null;
+    return {
+      ...(parsed as ExecutiveSession),
+      messages: Array.isArray((parsed as ExecutiveSession).messages) ? (parsed as ExecutiveSession).messages : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveExecutiveSession(session: ExecutiveSession): Promise<ExecutiveSession> {
+  await ensureMetadataStore();
+  const updated = {
+    ...session,
+    messages: Array.isArray(session.messages) ? session.messages : [],
+    updatedAt: new Date().toISOString(),
+  };
+  await writeFile(EXECUTIVE_SESSION_PATH, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
+  return updated;
+}
+
+export async function appendExecutiveMessages(
+  ...messages: Array<Omit<ExecutiveChatMessage, "id" | "createdAt">>
+): Promise<ExecutiveSession | null> {
+  const session = await loadExecutiveSession();
+  if (!session || session.state !== "active") return null;
+  const stamped = messages.map((message) => ({
+    id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    createdAt: new Date().toISOString(),
+    ...message,
+  }));
+  session.messages = [...session.messages, ...stamped];
+  return saveExecutiveSession(session);
+}
+
+/**
+ * Determine whether the executive's tmux pane is still alive.
+ * Returns `true` if the pane exists in `tmux list-panes`.
+ */
+export async function isExecutivePaneAlive(paneKey: string): Promise<boolean> {
+  try {
+    const sessions = await listAgentSessions();
+    return sessions.some((s) => paneKeyForSession(s) === paneKey && !s.dead);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resume or create the executive session.
+ * If a persisted session exists and its tmux pane is still alive, return it.
+ * Otherwise launch a new executive session and persist it.
+ */
+export async function resumeOrCreateExecutive(options?: {
+  provider?: AgentLauncherProvider;
+  cwd?: string;
+  personaId?: string | null;
+  personaName?: string;
+  contextMounts?: ExecutiveContextMount[];
+  voiceMode?: "browser" | "clone";
+}): Promise<ExecutiveSession> {
+  const existing = await loadExecutiveSession();
+  if (existing && existing.state === "active") {
+    const alive = await isExecutivePaneAlive(existing.paneKey);
+    if (alive) {
+      // Update context mounts if provided
+      if (options?.contextMounts) {
+        existing.contextMounts = options.contextMounts;
+        return saveExecutiveSession(existing);
+      }
+      return existing;
+    }
+    // Pane died — mark as terminated so we create a fresh one.
+    existing.state = "terminated";
+    await saveExecutiveSession(existing);
+  }
+
+  const provider = options?.provider ?? "claude";
+  const cwd = options?.cwd ?? process.cwd();
+  const label = "Executive";
+  const now = new Date().toISOString();
+  const sessionId = `exec-${Date.now().toString(36)}`;
+
+  const result = await launchAgentSession({
+    provider,
+    cwd,
+    displayLabel: label,
+    role: "executive",
+    objective: "You are the executive orchestrator for this sovereign instance. Manage child agents, coordinate work across workspaces, and maintain session continuity.",
+    notes: "Persistent executive session. Resume context from prior transcript when possible.",
+    personaId: options?.personaId ?? null,
+    personaName: options?.personaName,
+    capabilityIds: ["edit", "git", "deploy", "kg_read", "kg_write"],
+  });
+
+  const session: ExecutiveSession = {
+    id: sessionId,
+    tmuxSession: result.sessionName,
+    paneKey: result.paneKey,
+    provider,
+    cwd,
+    label,
+    state: "active",
+    contextMounts: options?.contextMounts ?? [],
+    personaId: options?.personaId ?? null,
+    personaName: options?.personaName,
+    voiceMode: options?.voiceMode,
+    childPaneKeys: [],
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  return saveExecutiveSession(session);
+}
+
+/**
+ * Register a child pane under the executive session.
+ */
+export async function registerChildSession(childPaneKey: string): Promise<ExecutiveSession | null> {
+  const session = await loadExecutiveSession();
+  if (!session || session.state !== "active") return null;
+  if (!session.childPaneKeys.includes(childPaneKey)) {
+    session.childPaneKeys.push(childPaneKey);
+    return saveExecutiveSession(session);
+  }
+  return session;
+}
+
+/**
+ * Update context mounts on the executive session.
+ */
+export async function updateExecutiveContextMounts(
+  mounts: ExecutiveContextMount[],
+): Promise<ExecutiveSession | null> {
+  const session = await loadExecutiveSession();
+  if (!session || session.state !== "active") return null;
+  session.contextMounts = mounts;
+  return saveExecutiveSession(session);
+}
+
+/**
+ * Terminate the executive session (mark state, leave tmux for cleanup).
+ */
+export async function terminateExecutiveSession(): Promise<ExecutiveSession | null> {
+  const session = await loadExecutiveSession();
+  if (!session) return null;
+  session.state = "terminated";
+  return saveExecutiveSession(session);
 }

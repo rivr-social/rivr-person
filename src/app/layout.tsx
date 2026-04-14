@@ -11,6 +11,12 @@ import { PersonaBanner } from "@/components/persona-banner";
 import { AppProvider } from "@/contexts/app-context";
 import { UserProvider } from "@/contexts/user-context";
 import { auth } from "@/auth";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { ExecutiveLauncherHost } from "@/components/executive-launcher-host";
+import { getGroupsForUser } from "@/lib/queries/agents";
+import { and, eq, isNull } from "drizzle-orm";
+import "@xterm/xterm/css/xterm.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -30,6 +36,28 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const session = await auth();
+  const ownerId = session?.user?.id ?? null;
+  const [personaRows, groupRows] = ownerId
+    ? await Promise.all([
+        db
+          .select({
+            id: agents.id,
+            name: agents.name,
+          })
+          .from(agents)
+          .where(and(eq(agents.parentAgentId, ownerId), isNull(agents.deletedAt)))
+          .orderBy(agents.createdAt),
+        getGroupsForUser(ownerId, 100),
+      ])
+    : [[], []];
+  const personas = personaRows.map((persona) => ({
+    id: persona.id,
+    label: persona.name?.trim() || "Persona",
+  }));
+  const groups = groupRows.map((group) => ({
+    id: group.id,
+    label: group.name?.trim() || "Group",
+  }));
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -43,6 +71,7 @@ export default async function RootLayout({
                 <AuthGuard>
                   <main className="pt-16 pb-16 md:pb-0">{children}</main>
                 </AuthGuard>
+                {ownerId ? <ExecutiveLauncherHost personas={personas} groups={groups} /> : null}
                 <Toaster />
               </AppProvider>
             </UserProvider>

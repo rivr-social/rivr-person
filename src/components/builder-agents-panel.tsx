@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Bot, ChevronDown, ChevronRight, GripHorizontal, Loader2, RefreshCw, Send, Users } from "lucide-react";
+import { AlertCircle, Bot, ChevronDown, ChevronRight, Circle, Dot, FileText, FolderOpen, GripHorizontal, Loader2, Plus, RefreshCw, Send, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,12 +39,14 @@ interface AgentSessionMetadata {
   personaId?: string | null;
   personaName?: string;
   kgScopeSet?: string[];
+  mountedPaths?: string[];
 }
 
 interface AgentSession {
   sessionName: string;
   windowIndex: number;
   paneIndex: number;
+  paneId?: string;
   active: boolean;
   metadata: AgentSessionMetadata;
 }
@@ -53,11 +55,13 @@ interface AgentSessionsResponse {
   sessions: AgentSession[];
   templates?: AgentSessionTemplate[];
   lastUpdatedAt?: string;
+  warning?: string;
   error?: string;
 }
 
 interface AgentCaptureResponse {
   output?: string;
+  warning?: string;
   error?: string;
 }
 
@@ -68,6 +72,21 @@ interface AgentWorkspace {
   scope: AgentWorkspaceScope;
   description: string;
   liveSubdomain?: string | null;
+}
+
+interface AgentWorkspaceEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size: number;
+}
+
+interface ExplorerNode extends AgentWorkspaceEntry {
+  id: string;
+  expanded?: boolean;
+  loaded?: boolean;
+  loading?: boolean;
+  children?: ExplorerNode[];
 }
 
 interface AgentLauncher {
@@ -100,6 +119,10 @@ interface AgentSessionTemplate {
   kgScopeSet?: string[];
 }
 
+interface BuilderAgentsPanelProps {
+  workspaceId?: string;
+}
+
 function parseKgScopeSet(raw: string): string[] {
   return Array.from(
     new Set(
@@ -126,7 +149,10 @@ function getArchitectNotes(scope: AgentWorkspaceScope, liveSubdomain?: string | 
   return base;
 }
 
-function paneKeyForSession(session: Pick<AgentSession, "sessionName" | "windowIndex" | "paneIndex">) {
+function paneKeyForSession(session: Pick<AgentSession, "sessionName" | "windowIndex" | "paneIndex" | "paneId">) {
+  if (typeof session.paneId === "string" && session.paneId.startsWith("%")) {
+    return session.paneId;
+  }
   return `${session.sessionName}:${session.windowIndex}.${session.paneIndex}`;
 }
 
@@ -139,9 +165,10 @@ function stripAnsi(value: string) {
 
 function architectRank(session: AgentSession) {
   if (session.metadata.role === "executive") return 0;
-  if (session.metadata.role === "architect") return 1;
-  if (session.metadata.role === "orchestrator") return 2;
-  if (session.metadata.role === "worker") return 3;
+  if (session.metadata.role === "observer") return 1;
+  if (session.metadata.role === "architect") return 2;
+  if (session.metadata.role === "orchestrator") return 3;
+  if (session.metadata.role === "worker") return 4;
   return 4;
 }
 
@@ -172,7 +199,101 @@ function extractChoices(rawOutput: string) {
   return unique;
 }
 
-export function BuilderAgentsPanel() {
+function formatKgScopes(scopes?: string[]) {
+  if (!Array.isArray(scopes) || scopes.length === 0) return "person:self";
+  return scopes.join(", ");
+}
+
+interface AgentFilesystemTreeProps {
+  nodes: ExplorerNode[];
+  selectedFile: string;
+  mountedPaths: string[];
+  onToggleDirectory: (node: ExplorerNode) => void;
+  onSelectFile: (node: ExplorerNode) => void;
+  onToggleMount: (node: ExplorerNode) => void;
+  depth?: number;
+}
+
+function AgentFilesystemTree({
+  nodes,
+  selectedFile,
+  mountedPaths,
+  onToggleDirectory,
+  onSelectFile,
+  onToggleMount,
+  depth = 0,
+}: AgentFilesystemTreeProps) {
+  if (nodes.length === 0) return null;
+  return (
+    <div className="space-y-0.5">
+      {nodes.map((node) => {
+        const isDirectory = node.type === "directory";
+        const isSelected = !isDirectory && selectedFile === node.path;
+        const isMounted = mountedPaths.includes(node.path);
+        return (
+          <div key={node.id}>
+            <div
+              className={`flex items-center gap-1 rounded px-1 py-0.5 text-xs ${isSelected ? "bg-primary/10 text-primary" : ""}`}
+              style={{ paddingLeft: `${4 + depth * 12}px` }}
+            >
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-muted"
+                onClick={() => onToggleMount(node)}
+                title={isMounted ? "Remove from this agent context" : "Append to this agent context"}
+              >
+                {isMounted ? <Dot className="h-5 w-5" /> : <Circle className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1 text-left hover:bg-muted"
+                onClick={() => {
+                  if (isDirectory) {
+                    onToggleDirectory(node);
+                    return;
+                  }
+                  onSelectFile(node);
+                }}
+              >
+                {isDirectory ? (
+                  node.expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />
+                ) : (
+                  <span className="inline-block w-3 shrink-0" />
+                )}
+                {isDirectory ? <FolderOpen className="h-3 w-3 shrink-0" /> : <FileText className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{node.name}</span>
+                {node.loading ? <span className="ml-auto text-[10px] text-muted-foreground">…</span> : null}
+              </button>
+            </div>
+            {isDirectory && node.expanded && node.children && node.children.length > 0 ? (
+              <AgentFilesystemTree
+                nodes={node.children}
+                selectedFile={selectedFile}
+                mountedPaths={mountedPaths}
+                onToggleDirectory={onToggleDirectory}
+                onSelectFile={onSelectFile}
+                onToggleMount={onToggleMount}
+                depth={depth + 1}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function pickProvider(
+  installed: Set<AgentLauncherProvider>,
+  preferredOrder: AgentLauncherProvider[],
+): AgentLauncherProvider | null {
+  for (const provider of preferredOrder) {
+    if (installed.has(provider)) return provider;
+  }
+  return null;
+}
+
+export function BuilderAgentsPanel({ workspaceId }: BuilderAgentsPanelProps) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [outputs, setOutputs] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -185,20 +306,28 @@ export function BuilderAgentsPanel() {
   const [sendingKey, setSendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
-  const [showTeam, setShowTeam] = useState(false);
   const [personas, setPersonas] = useState<AgentPersona[]>([]);
   const [selectedPersonaId, setSelectedPersonaId] = useState<string>("");
   const [kgScopeDraft, setKgScopeDraft] = useState<string>("person:self");
+  const [kgScopeInput, setKgScopeInput] = useState<string>("");
   const [launchPreset, setLaunchPreset] = useState<LaunchPreset>("default");
   const [templates, setTemplates] = useState<AgentSessionTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [reloadingPaneKey, setReloadingPaneKey] = useState<string | null>(null);
-  const [fileEditorPath, setFileEditorPath] = useState("persona/soul.md");
-  const [fileEditorValue, setFileEditorValue] = useState("");
-  const [fileEditorLoading, setFileEditorLoading] = useState(false);
-  const [fileEditorSaving, setFileEditorSaving] = useState(false);
-  const [fileEditorMessage, setFileEditorMessage] = useState<string | null>(null);
+  const [panePersonaDrafts, setPanePersonaDrafts] = useState<Record<string, string>>({});
+  const [paneScopesDrafts, setPaneScopesDrafts] = useState<Record<string, string[]>>({});
+  const [paneMountedPathsDrafts, setPaneMountedPathsDrafts] = useState<Record<string, string[]>>({});
+  const [paneScopeInput, setPaneScopeInput] = useState<Record<string, string>>({});
+  const [savingPaneKey, setSavingPaneKey] = useState<string | null>(null);
+  const [selectedContextPaneKey, setSelectedContextPaneKey] = useState<string>("");
+  const [fsRootPath, setFsRootPath] = useState("");
+  const [fsTree, setFsTree] = useState<ExplorerNode[]>([]);
+  const [fsLoading, setFsLoading] = useState(false);
+  const [fsSelectedFile, setFsSelectedFile] = useState("");
+  const [fsFileContent, setFsFileContent] = useState("");
+  const [fsFileLoading, setFsFileLoading] = useState(false);
+  const [fsFileMessage, setFsFileMessage] = useState<string | null>(null);
 
   const [primaryPaneSize, setPrimaryPaneSize] = useState<PaneSizePreset>("normal");
   const [primaryDragHeight, setPrimaryDragHeight] = useState<number | null>(null);
@@ -220,6 +349,9 @@ export function BuilderAgentsPanel() {
     const data = (await response.json().catch(() => ({}))) as AgentCaptureResponse;
     if (!response.ok || data.error) {
       throw new Error(data.error || `Failed to capture ${paneKey}`);
+    }
+    if (data.warning) {
+      setError(data.warning);
     }
     const rawOutput = data.output ?? "";
     setOutputs((prev) => ({ ...prev, [paneKey]: rawOutput }));
@@ -251,18 +383,20 @@ export function BuilderAgentsPanel() {
       const personaOptions = launchersData.personas ?? [];
       setPersonas(personaOptions);
       setLastUpdatedAt(sessionsData.lastUpdatedAt ?? new Date().toISOString());
-      setError(null);
+      setError(sessionsData.warning ?? null);
 
-      setSelectedWorkspaceId((current) => {
-        if (current && (launchersData.workspaces ?? []).some((workspace) => workspace.id === current)) {
-          return current;
-        }
-        return (
-          launchersData.workspaces?.find((workspace) => workspace.scope === "app")?.id ??
-          launchersData.workspaces?.[0]?.id ??
-          ""
-        );
-      });
+      const nextWorkspaces = launchersData.workspaces ?? [];
+      const nextSelectedWorkspaceId =
+        (workspaceId && nextWorkspaces.some((workspace) => workspace.id === workspaceId)
+          ? workspaceId
+          : undefined) ??
+        (selectedWorkspaceId && nextWorkspaces.some((workspace) => workspace.id === selectedWorkspaceId)
+          ? selectedWorkspaceId
+          : undefined) ??
+        nextWorkspaces.find((workspace) => workspace.scope === "app")?.id ??
+        nextWorkspaces[0]?.id ??
+        "";
+      setSelectedWorkspaceId(nextSelectedWorkspaceId);
 
       setSelectedPersonaId((current) => {
         if (current && personaOptions.some((persona) => persona.id === current)) return current;
@@ -278,15 +412,33 @@ export function BuilderAgentsPanel() {
       });
 
       await Promise.all(
-        (sessionsData.sessions ?? []).map(async (session) => {
+        (sessionsData.sessions ?? [])
+          .filter((session) => !nextSelectedWorkspaceId || session.metadata.workspaceId === nextSelectedWorkspaceId)
+          .map(async (session) => {
           const paneKey = paneKeyForSession(session);
           setDrafts((prev) => (paneKey in prev ? prev : { ...prev, [paneKey]: "" }));
+          setPanePersonaDrafts((prev) =>
+            paneKey in prev
+              ? prev
+              : { ...prev, [paneKey]: session.metadata.personaId ?? "" },
+          );
+          setPaneScopesDrafts((prev) =>
+            paneKey in prev
+              ? prev
+              : { ...prev, [paneKey]: session.metadata.kgScopeSet?.length ? session.metadata.kgScopeSet : ["person:self"] },
+          );
+          setPaneMountedPathsDrafts((prev) =>
+            paneKey in prev
+              ? prev
+              : { ...prev, [paneKey]: session.metadata.mountedPaths?.length ? session.metadata.mountedPaths : [] },
+          );
+          setPaneScopeInput((prev) => (paneKey in prev ? prev : { ...prev, [paneKey]: "" }));
           try {
             await captureSession(paneKey);
           } catch {
             return;
           }
-        }),
+          }),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Agent HQ");
@@ -294,7 +446,7 @@ export function BuilderAgentsPanel() {
       setLoading(false);
       if (!silent) setRefreshing(false);
     }
-  }, [captureSession]);
+  }, [captureSession, selectedWorkspaceId, workspaceId]);
 
   const manualRefreshPane = useCallback(
     async (paneKey: string) => {
@@ -329,6 +481,18 @@ export function BuilderAgentsPanel() {
     () => personas.find((persona) => persona.id === selectedPersonaId) ?? null,
     [personas, selectedPersonaId],
   );
+  const kgScopeOptions = useMemo(() => {
+    const values = new Set<string>(["person:self", "workspace:app", "workspace:foundation"]);
+    for (const persona of personas) {
+      values.add(`persona:${persona.id}`);
+    }
+    for (const session of sessions) {
+      for (const scope of session.metadata.kgScopeSet ?? []) {
+        if (scope.trim()) values.add(scope.trim());
+      }
+    }
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [personas, sessions]);
 
   const saveCurrentTemplate = useCallback(
     async (mode: AgentSessionTemplate["mode"]) => {
@@ -368,12 +532,108 @@ export function BuilderAgentsPanel() {
     [kgScopeDraft, launchPreset, selectedPersona],
   );
 
-  const loadWorkspaceFile = useCallback(async () => {
-    if (!selectedWorkspace || !fileEditorPath.trim()) return;
-    setFileEditorLoading(true);
-    setFileEditorMessage(null);
+  const sortWorkspaceEntries = useCallback((entries: AgentWorkspaceEntry[]) => {
+    return [...entries].sort((a, b) => {
+      if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, []);
+
+  const toExplorerNodes = useCallback(
+    (entries: AgentWorkspaceEntry[]): ExplorerNode[] =>
+      sortWorkspaceEntries(entries).map((entry) => ({ ...entry, id: entry.path || "__root__" })),
+    [sortWorkspaceEntries],
+  );
+
+  const updateExplorerNode = useCallback(
+    (nodes: ExplorerNode[], targetId: string, updater: (node: ExplorerNode) => ExplorerNode): ExplorerNode[] =>
+      nodes.map((node) => {
+        if (node.id === targetId) {
+          return updater(node);
+        }
+        if (node.children?.length) {
+          return { ...node, children: updateExplorerNode(node.children, targetId, updater) };
+        }
+        return node;
+      }),
+    [],
+  );
+
+  const fetchWorkspaceEntries = useCallback(async (workspaceId: string, nextPath: string) => {
+    const params = new URLSearchParams();
+    if (nextPath) params.set("path", nextPath);
+    const response = await fetch(
+      `/api/agent-hq/workspaces/${encodeURIComponent(workspaceId)}/entries?${params.toString()}`,
+      { cache: "no-store" },
+    );
+    const data = (await response.json().catch(() => ({}))) as {
+      entries?: AgentWorkspaceEntry[];
+      relativePath?: string;
+      error?: string;
+    };
+    if (!response.ok || data.error) {
+      throw new Error(data.error || `Failed to load workspace entries (${response.status})`);
+    }
+    return {
+      entries: data.entries ?? [],
+      relativePath: data.relativePath ?? nextPath,
+    };
+  }, []);
+
+  const loadWorkspaceTreeRoot = useCallback(async (workspaceId: string, rootPath: string) => {
+    if (!workspaceId) return;
+    setFsLoading(true);
+    setFsFileMessage(null);
     try {
-      const params = new URLSearchParams({ path: fileEditorPath.trim() });
+      const result = await fetchWorkspaceEntries(workspaceId, rootPath);
+      setFsRootPath(result.relativePath);
+      setFsTree(toExplorerNodes(result.entries));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load workspace tree");
+    } finally {
+      setFsLoading(false);
+    }
+  }, [fetchWorkspaceEntries, toExplorerNodes]);
+
+  const toggleWorkspaceDirectory = useCallback(async (node: ExplorerNode) => {
+    if (!selectedWorkspace || node.type !== "directory") return;
+    if (node.expanded) {
+      setFsTree((current) => updateExplorerNode(current, node.id, (entry) => ({ ...entry, expanded: false })));
+      return;
+    }
+    if (node.loaded) {
+      setFsTree((current) => updateExplorerNode(current, node.id, (entry) => ({ ...entry, expanded: true })));
+      return;
+    }
+    setFsTree((current) =>
+      updateExplorerNode(current, node.id, (entry) => ({ ...entry, expanded: true, loading: true })),
+    );
+    try {
+      const result = await fetchWorkspaceEntries(selectedWorkspace.id, node.path);
+      const children = toExplorerNodes(result.entries);
+      setFsTree((current) =>
+        updateExplorerNode(current, node.id, (entry) => ({
+          ...entry,
+          expanded: true,
+          loading: false,
+          loaded: true,
+          children,
+        })),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load directory");
+      setFsTree((current) =>
+        updateExplorerNode(current, node.id, (entry) => ({ ...entry, loading: false })),
+      );
+    }
+  }, [fetchWorkspaceEntries, selectedWorkspace, toExplorerNodes, updateExplorerNode]);
+
+  const loadWorkspaceFile = useCallback(async (targetPath: string) => {
+    if (!selectedWorkspace || !targetPath) return;
+    setFsFileLoading(true);
+    setFsFileMessage(null);
+    try {
+      const params = new URLSearchParams({ path: targetPath });
       const response = await fetch(
         `/api/agent-hq/workspaces/${encodeURIComponent(selectedWorkspace.id)}/file?${params.toString()}`,
         { cache: "no-store" },
@@ -382,62 +642,138 @@ export function BuilderAgentsPanel() {
       if (!response.ok || data.error) {
         throw new Error(data.error || `Failed to load file (${response.status})`);
       }
-      setFileEditorValue(data.content ?? "");
-      setFileEditorMessage(`Loaded ${fileEditorPath.trim()}`);
+      setFsSelectedFile(targetPath);
+      setFsFileContent(data.content ?? "");
+      setFsFileMessage(`Loaded ${targetPath}`);
     } catch (err) {
-      setFileEditorMessage(err instanceof Error ? err.message : "Failed to load file");
+      setFsFileMessage(err instanceof Error ? err.message : "Failed to load file");
     } finally {
-      setFileEditorLoading(false);
+      setFsFileLoading(false);
     }
-  }, [fileEditorPath, selectedWorkspace]);
+  }, [selectedWorkspace]);
 
-  const saveWorkspaceFile = useCallback(async () => {
-    if (!selectedWorkspace || !fileEditorPath.trim()) return;
-    setFileEditorSaving(true);
-    setFileEditorMessage(null);
-    try {
-      const response = await fetch(
-        `/api/agent-hq/workspaces/${encodeURIComponent(selectedWorkspace.id)}/file`,
-        {
-          method: "PUT",
+  const addGlobalScope = useCallback(() => {
+    const next = kgScopeInput.trim();
+    if (!next) return;
+    const merged = Array.from(new Set([...parseKgScopeSet(kgScopeDraft), next]));
+    setKgScopeDraft(merged.join(","));
+    setKgScopeInput("");
+  }, [kgScopeDraft, kgScopeInput]);
+
+  const removeGlobalScope = useCallback((scope: string) => {
+    const next = parseKgScopeSet(kgScopeDraft).filter((entry) => entry !== scope);
+    setKgScopeDraft(next.join(","));
+  }, [kgScopeDraft]);
+
+  const addPaneScope = useCallback((paneKey: string) => {
+    const value = (paneScopeInput[paneKey] ?? "").trim();
+    if (!value) return;
+    setPaneScopesDrafts((prev) => {
+      const current = prev[paneKey] ?? [];
+      return { ...prev, [paneKey]: Array.from(new Set([...current, value])) };
+    });
+    setPaneScopeInput((prev) => ({ ...prev, [paneKey]: "" }));
+  }, [paneScopeInput]);
+
+  const removePaneScope = useCallback((paneKey: string, scope: string) => {
+    setPaneScopesDrafts((prev) => ({
+      ...prev,
+      [paneKey]: (prev[paneKey] ?? []).filter((entry) => entry !== scope),
+    }));
+  }, []);
+
+  const toggleMountedPath = useCallback((paneKey: string, targetPath: string) => {
+    setPaneMountedPathsDrafts((prev) => {
+      const current = prev[paneKey] ?? [];
+      const next = current.includes(targetPath)
+        ? current.filter((entry) => entry !== targetPath)
+        : [...current, targetPath];
+      return { ...prev, [paneKey]: next };
+    });
+  }, []);
+
+  const savePaneContext = useCallback(
+    async (session: AgentSession) => {
+      const paneKey = paneKeyForSession(session);
+      const personaId = (panePersonaDrafts[paneKey] ?? "").trim();
+      const persona = personas.find((entry) => entry.id === personaId);
+      setSavingPaneKey(paneKey);
+      try {
+        const response = await fetch("/api/agent-hq/metadata", {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            path: fileEditorPath.trim(),
-            content: fileEditorValue,
+            paneKey,
+            personaId: personaId || null,
+            personaName: persona?.name,
+            kgScopeSet: paneScopesDrafts[paneKey]?.length
+              ? paneScopesDrafts[paneKey]
+              : ["person:self"],
+            mountedPaths: paneMountedPathsDrafts[paneKey] ?? session.metadata.mountedPaths ?? [],
           }),
-        },
-      );
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok || data.error) {
-        throw new Error(data.error || `Failed to save file (${response.status})`);
+        });
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Failed to save pane context for ${paneKey}`);
+        }
+        await fetch("/api/agent-hq/reload-context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paneKey }),
+        });
+        await captureSession(paneKey);
+        await refresh(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save pane context");
+      } finally {
+        setSavingPaneKey((current) => (current === paneKey ? null : current));
       }
-      setFileEditorMessage(`Saved ${fileEditorPath.trim()}`);
-    } catch (err) {
-      setFileEditorMessage(err instanceof Error ? err.message : "Failed to save file");
-    } finally {
-      setFileEditorSaving(false);
-    }
-  }, [fileEditorPath, fileEditorValue, selectedWorkspace]);
+    },
+    [captureSession, paneMountedPathsDrafts, panePersonaDrafts, paneScopesDrafts, personas, refresh],
+  );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   useEffect(() => {
+    if (!workspaceId) return;
+    if (workspaces.some((workspace) => workspace.id === workspaceId)) {
+      setSelectedWorkspaceId(workspaceId);
+    }
+  }, [workspaceId, workspaces]);
+
+  useEffect(() => {
     if (!selectedWorkspace) {
-      setFileEditorValue("");
-      setFileEditorMessage(null);
+      setFsTree([]);
+      setFsSelectedFile("");
+      setFsFileContent("");
+      setFsFileMessage(null);
       return;
     }
-    void loadWorkspaceFile();
-    // Intentionally only auto-load on workspace switch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWorkspace?.id]);
+    setFsRootPath("");
+    void loadWorkspaceTreeRoot(selectedWorkspace.id, "");
+  }, [loadWorkspaceTreeRoot, selectedWorkspace]);
+
+  useEffect(() => {
+    if (!selectedWorkspace?.id) return;
+    void loadWorkspaceTreeRoot(selectedWorkspace.id, fsRootPath);
+  }, [fsRootPath, loadWorkspaceTreeRoot, selectedWorkspace]);
+
+  useEffect(() => {
+    if (!selectedWorkspace || !fsSelectedFile) return;
+    void loadWorkspaceFile(fsSelectedFile);
+  }, [fsSelectedFile, loadWorkspaceFile, selectedWorkspace]);
 
   const workspaceSessions = useMemo(() => {
     if (!selectedWorkspace) return sessions;
-    return sessions.filter((session) => session.metadata.workspaceId === selectedWorkspace.id);
+    const exact = sessions.filter((session) => session.metadata.workspaceId === selectedWorkspace.id);
+    if (exact.length > 0) return exact;
+    // Backward-compat fallback: older/legacy panes may not carry workspaceId metadata.
+    const unlabeled = sessions.filter((session) => !session.metadata.workspaceId);
+    return unlabeled.length > 0 ? unlabeled : exact;
   }, [selectedWorkspace, sessions]);
+  
 
   const primarySession = useMemo(() => {
     return [...workspaceSessions].sort((a, b) => {
@@ -450,6 +786,14 @@ export function BuilderAgentsPanel() {
     const primaryKey = paneKeyForSession(primarySession);
     return workspaceSessions.filter((session) => paneKeyForSession(session) !== primaryKey);
   }, [primarySession, workspaceSessions]);
+  const primaryPaneKey = useMemo(
+    () => (primarySession ? paneKeyForSession(primarySession) : ""),
+    [primarySession],
+  );
+  const selectedContextSession = useMemo(
+    () => workspaceSessions.find((session) => paneKeyForSession(session) === selectedContextPaneKey) ?? primarySession,
+    [primarySession, selectedContextPaneKey, workspaceSessions],
+  );
   const teamChildrenMap = useMemo(() => buildChildrenMap(workspaceSessions), [workspaceSessions]);
   const topLevelTeamSessions = useMemo(() => {
     if (!primarySession) return teamSessions;
@@ -458,6 +802,18 @@ export function BuilderAgentsPanel() {
     if (direct && direct.length > 0) return direct;
     return teamSessions.filter((session) => !session.metadata.parent);
   }, [primarySession, teamChildrenMap, teamSessions]);
+
+  useEffect(() => {
+    const availablePaneKeys = workspaceSessions.map((session) => paneKeyForSession(session));
+    if (availablePaneKeys.length === 0) {
+      setSelectedContextPaneKey("");
+      return;
+    }
+    setSelectedContextPaneKey((current) => {
+      if (current && availablePaneKeys.includes(current)) return current;
+      return primaryPaneKey || availablePaneKeys[0] || "";
+    });
+  }, [primaryPaneKey, workspaceSessions]);
 
   /* Differential refresh: primary pane at 2s, team panes at 4s */
   useEffect(() => {
@@ -495,24 +851,29 @@ export function BuilderAgentsPanel() {
     }
   }, [outputs]);
 
-  const claudeInstalled = useMemo(
-    () => launchers.some((launcher) => launcher.provider === "claude" && launcher.installed),
+  const installedProviders = useMemo(
+    () =>
+      new Set<AgentLauncherProvider>(
+        launchers.filter((launcher) => launcher.installed).map((launcher) => launcher.provider),
+      ),
     [launchers],
   );
-  const codexInstalled = useMemo(
-    () => launchers.some((launcher) => launcher.provider === "codex" && launcher.installed),
-    [launchers],
+  const executiveDefaultProvider = useMemo(
+    () => pickProvider(installedProviders, ["codex", "opencode", "claude"]),
+    [installedProviders],
   );
-  const opencodeInstalled = useMemo(
-    () => launchers.some((launcher) => launcher.provider === "opencode" && launcher.installed),
-    [launchers],
+  const visionaryDefaultProvider = useMemo(
+    () => pickProvider(installedProviders, ["codex", "opencode", "claude"]),
+    [installedProviders],
   );
-  const preferredArchitectProvider = useMemo<AgentLauncherProvider | null>(() => {
-    if (opencodeInstalled) return "opencode";
-    if (claudeInstalled) return "claude";
-    if (codexInstalled) return "codex";
-    return null;
-  }, [claudeInstalled, codexInstalled, opencodeInstalled]);
+  const architectDefaultProvider = useMemo(
+    () => pickProvider(installedProviders, ["claude", "opencode", "codex"]),
+    [installedProviders],
+  );
+  const teamDefaultProvider = useMemo(
+    () => pickProvider(installedProviders, ["claude", "opencode", "codex"]),
+    [installedProviders],
+  );
 
   const sendToSession = useCallback(
     async (session: AgentSession) => {
@@ -521,28 +882,44 @@ export function BuilderAgentsPanel() {
       if (!text) return;
       setSendingKey(paneKey);
       try {
-        const response = await fetch("/api/agent-hq/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: paneKey, text, enter: true }),
-        });
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        const attemptSend = async (target: string) => {
+          const response = await fetch("/api/agent-hq/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target, text, enter: true }),
+          });
+          const data = (await response.json().catch(() => ({}))) as { error?: string };
+          return { response, data };
+        };
+
+        let target = paneKey;
+        let { response, data } = await attemptSend(target);
+
+        if (!response.ok && response.status === 409) {
+          await refresh(true);
+          const remapped = sessions.find((candidate) => candidate.sessionName === session.sessionName);
+          if (remapped) {
+            target = paneKeyForSession(remapped);
+            ({ response, data } = await attemptSend(target));
+          }
+        }
+
         if (!response.ok || data.error) {
-          throw new Error(data.error || `Failed to send to ${paneKey}`);
+          throw new Error(data.error || `Failed to send to ${target} (${response.status})`);
         }
         const history = commandHistoryRef.current[paneKey] ?? [];
         history.push(text);
         commandHistoryRef.current[paneKey] = history;
         commandHistoryIndexRef.current[paneKey] = history.length;
         setDrafts((prev) => ({ ...prev, [paneKey]: "" }));
-        await captureSession(paneKey);
+        await captureSession(target);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to send input");
       } finally {
         setSendingKey((current) => (current === paneKey ? null : current));
       }
     },
-    [captureSession, drafts],
+    [captureSession, drafts, refresh, sessions],
   );
 
   const handleInputKeyDown = useCallback(
@@ -606,7 +983,10 @@ export function BuilderAgentsPanel() {
         });
         const data = (await response.json().catch(() => ({}))) as { error?: string };
         if (!response.ok || data.error) {
-          throw new Error(data.error || `Failed to send choice to ${paneKey}`);
+          if (response.status === 409) {
+            await refresh(true);
+          }
+          throw new Error(data.error || `Failed to send choice to ${paneKey} (${response.status})`);
         }
         await captureSession(paneKey);
       } catch (err) {
@@ -615,7 +995,7 @@ export function BuilderAgentsPanel() {
         setSendingKey((current) => (current === paneKey ? null : current));
       }
     },
-    [captureSession],
+    [captureSession, refresh],
   );
 
   const reloadPaneContext = useCallback(
@@ -647,8 +1027,8 @@ export function BuilderAgentsPanel() {
       setError("Select a workspace first.");
       return;
     }
-    if (!preferredArchitectProvider) {
-      setError("No supported agent runtime is installed. Install OpenCode, Claude, or Codex in the app environment.");
+    if (!executiveDefaultProvider) {
+      setError("No agent runtime is installed in this app context. Install Codex, Claude, or OpenCode.");
       return;
     }
     setLaunching(true);
@@ -657,7 +1037,7 @@ export function BuilderAgentsPanel() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          provider: preferredArchitectProvider,
+          provider: executiveDefaultProvider,
           workspaceId: selectedWorkspace.id,
           cwd: selectedWorkspace.cwd,
           displayLabel: `${selectedWorkspace.label} Executive`,
@@ -684,22 +1064,17 @@ export function BuilderAgentsPanel() {
     } finally {
       setLaunching(false);
     }
-  }, [kgScopeDraft, launchPreset, preferredArchitectProvider, refresh, selectedPersona, selectedWorkspace]);
+  }, [executiveDefaultProvider, kgScopeDraft, launchPreset, refresh, selectedPersona, selectedWorkspace]);
 
   const launchExecutiveTeam = useCallback(async () => {
     if (!selectedWorkspace) {
       setError("Select a workspace first.");
       return;
     }
-    if (!preferredArchitectProvider) {
-      setError("No supported agent runtime is installed. Install OpenCode, Claude, or Codex in the app environment.");
+    if (!executiveDefaultProvider || !visionaryDefaultProvider || !architectDefaultProvider || !teamDefaultProvider) {
+      setError("Missing required runtimes for defaults. Need Codex/Claude (or fallback runtime) installed.");
       return;
     }
-
-    const teamProvider =
-      claudeInstalled ? "claude" : codexInstalled ? "codex" : preferredArchitectProvider;
-    const workerProvider =
-      codexInstalled ? "codex" : claudeInstalled ? "claude" : preferredArchitectProvider;
     const kgScopeSet = parseKgScopeSet(kgScopeDraft);
     const basePayload = {
       workspaceId: selectedWorkspace.id,
@@ -733,7 +1108,7 @@ export function BuilderAgentsPanel() {
     try {
       const executivePane = await launchNode({
         ...basePayload,
-        provider: preferredArchitectProvider,
+        provider: executiveDefaultProvider,
         displayLabel: `${selectedWorkspace.label} Executive`,
         role: "executive",
         parent: null,
@@ -741,9 +1116,20 @@ export function BuilderAgentsPanel() {
         notes: `Primary interactive pane. Persona: ${selectedPersona?.name ?? "main profile"}.`,
       });
 
+      await launchNode({
+        ...basePayload,
+        provider: visionaryDefaultProvider,
+        displayLabel: `${selectedWorkspace.label} Visionary`,
+        role: "observer",
+        parent: executivePane,
+        objective:
+          "Operate as the visionary lane. Synthesize long-arc direction and advise executive/architect decisions.",
+        notes: "Visionary defaults to Codex when available.",
+      });
+
       const architectPane = await launchNode({
         ...basePayload,
-        provider: preferredArchitectProvider,
+        provider: architectDefaultProvider,
         displayLabel: `${selectedWorkspace.label} Architect`,
         role: "architect",
         parent: executivePane,
@@ -756,7 +1142,7 @@ export function BuilderAgentsPanel() {
 
       const orchestratorPane = await launchNode({
         ...basePayload,
-        provider: teamProvider,
+        provider: teamDefaultProvider,
         displayLabel: `${selectedWorkspace.label} Orchestrator`,
         role: "orchestrator",
         parent: architectPane,
@@ -770,7 +1156,7 @@ export function BuilderAgentsPanel() {
       await Promise.all([
         launchNode({
           ...basePayload,
-          provider: workerProvider,
+          provider: teamDefaultProvider,
           displayLabel: `${selectedWorkspace.label} Worker A`,
           role: "worker",
           parent: orchestratorPane,
@@ -782,7 +1168,7 @@ export function BuilderAgentsPanel() {
         }),
         launchNode({
           ...basePayload,
-          provider: workerProvider,
+          provider: teamDefaultProvider,
           displayLabel: `${selectedWorkspace.label} Worker B`,
           role: "worker",
           parent: orchestratorPane,
@@ -801,14 +1187,15 @@ export function BuilderAgentsPanel() {
       setLaunching(false);
     }
   }, [
-    claudeInstalled,
-    codexInstalled,
+    architectDefaultProvider,
+    executiveDefaultProvider,
     kgScopeDraft,
     launchPreset,
-    preferredArchitectProvider,
     refresh,
     selectedPersona,
     selectedWorkspace,
+    teamDefaultProvider,
+    visionaryDefaultProvider,
   ]);
 
   const renderTerminalPane = useCallback(
@@ -918,6 +1305,8 @@ export function BuilderAgentsPanel() {
     (session: AgentSession, depth = 0) => {
       const paneKey = paneKeyForSession(session);
       const children = teamChildrenMap.get(paneKey) ?? [];
+      const panePersonaId = panePersonaDrafts[paneKey] ?? session.metadata.personaId ?? "";
+      const paneScopes = paneScopesDrafts[paneKey] ?? session.metadata.kgScopeSet ?? ["person:self"];
       return (
         <div key={paneKey} className="space-y-3">
           <div className="rounded-xl border bg-card p-3">
@@ -932,6 +1321,86 @@ export function BuilderAgentsPanel() {
                 {session.active ? "active" : "idle"}
               </Badge>
             </div>
+            <div className="mb-2 flex flex-wrap items-center gap-1.5">
+              {session.metadata.personaName || session.metadata.personaId ? (
+                <Badge variant="outline" className="text-[10px]">
+                  persona: {session.metadata.personaName ?? session.metadata.personaId}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-[10px]">
+                  persona: main
+                </Badge>
+              )}
+              <Badge variant="outline" className="max-w-full truncate text-[10px]">
+                kg: {formatKgScopes(session.metadata.kgScopeSet)}
+              </Badge>
+            </div>
+            <div className="mb-2 grid gap-2 md:grid-cols-[minmax(180px,1fr)_minmax(220px,1fr)_auto]">
+              <select
+                value={panePersonaId}
+                onChange={(event) =>
+                  setPanePersonaDrafts((prev) => ({ ...prev, [paneKey]: event.target.value }))
+                }
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none"
+              >
+                <option value="">Main profile context</option>
+                {personas.map((persona) => (
+                  <option key={persona.id} value={persona.id}>
+                    Persona: {persona.name}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={paneScopeInput[paneKey] ?? ""}
+                  onChange={(event) =>
+                    setPaneScopeInput((prev) => ({ ...prev, [paneKey]: event.target.value }))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addPaneScope(paneKey);
+                    }
+                  }}
+                  list={`kg-scope-options-${paneKey}`}
+                  placeholder="Add KG scope"
+                  className="h-8 text-xs"
+                />
+                <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => addPaneScope(paneKey)}>
+                  Add
+                </Button>
+                <datalist id={`kg-scope-options-${paneKey}`}>
+                  {kgScopeOptions.map((scope) => (
+                    <option key={scope} value={scope} />
+                  ))}
+                </datalist>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => void savePaneContext(session)}
+                disabled={savingPaneKey === paneKey}
+              >
+                {savingPaneKey === paneKey ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Save Context
+              </Button>
+            </div>
+            <div className="mb-2 flex flex-wrap items-center gap-1.5">
+              {paneScopes.map((scope) => (
+                <Badge key={`${paneKey}-${scope}`} variant="secondary" className="max-w-[220px] gap-1 truncate pr-1 text-[10px]">
+                  <span className="truncate">{scope}</span>
+                  <button
+                    type="button"
+                    className="rounded p-0.5 hover:bg-black/10"
+                    onClick={() => removePaneScope(paneKey, scope)}
+                    aria-label={`Remove ${scope}`}
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
             {renderTerminalPane(paneKey, session, { maxHeight: "160px" })}
           </div>
           {children.length > 0 ? (
@@ -942,7 +1411,19 @@ export function BuilderAgentsPanel() {
         </div>
       );
     },
-    [renderTerminalPane, teamChildrenMap],
+    [
+      addPaneScope,
+      kgScopeOptions,
+      panePersonaDrafts,
+      paneScopeInput,
+      paneScopesDrafts,
+      personas,
+      removePaneScope,
+      renderTerminalPane,
+      savePaneContext,
+      savingPaneKey,
+      teamChildrenMap,
+    ],
   );
 
   if (loading) {
@@ -958,12 +1439,21 @@ export function BuilderAgentsPanel() {
       <div className="border-b bg-muted/20 px-4 py-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <h3 className="text-sm font-semibold">Architect Console</h3>
+            <h3 className="text-sm font-semibold">Agent HQ</h3>
             <p className="text-xs text-muted-foreground">
-              Pick an app workspace, then talk to its primary executive. The team stays in the background unless you open it.
+              Executive-first terminal view. All panes are real tmux/OpenCode sessions you can type into directly.
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() => void launchExecutive()}
+              disabled={launching || !selectedWorkspace}
+            >
+              {launching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
+              Launch Executive
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -973,15 +1463,6 @@ export function BuilderAgentsPanel() {
             >
               {launching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}
               Launch Exec Team
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 gap-1.5 text-xs"
-              onClick={() => setShowTeam((current) => !current)}
-            >
-              {showTeam ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              {showTeam ? "Hide team" : "Show team"}
             </Button>
             <Button
               variant="outline"
@@ -1000,6 +1481,7 @@ export function BuilderAgentsPanel() {
           <select
             value={selectedWorkspaceId}
             onChange={(event) => setSelectedWorkspaceId(event.target.value)}
+            disabled={Boolean(workspaceId)}
             className="h-9 min-w-[220px] rounded-md border border-input bg-background px-3 text-sm outline-none"
           >
             {workspaces.map((workspace) => (
@@ -1012,7 +1494,9 @@ export function BuilderAgentsPanel() {
             <>
               <Badge variant="outline">{selectedWorkspace.scope}</Badge>
               {selectedWorkspace.liveSubdomain ? <Badge variant="outline">{selectedWorkspace.liveSubdomain}</Badge> : null}
-              {preferredArchitectProvider ? <Badge variant="outline">launch: {preferredArchitectProvider}</Badge> : null}
+              {executiveDefaultProvider ? <Badge variant="outline">exec: {executiveDefaultProvider}</Badge> : null}
+              {architectDefaultProvider ? <Badge variant="outline">architect/team: {architectDefaultProvider}</Badge> : null}
+              {workspaceId ? <Badge variant="outline">locked to app context</Badge> : null}
             </>
           )}
           {lastUpdatedAt ? (
@@ -1020,6 +1504,9 @@ export function BuilderAgentsPanel() {
               Updated {new Date(lastUpdatedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
             </span>
           ) : null}
+          <span className="text-xs text-muted-foreground">
+            panes: {workspaceSessions.length}/{sessions.length}
+          </span>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1028,7 +1515,9 @@ export function BuilderAgentsPanel() {
             onChange={(event) => {
               const nextId = event.target.value;
               setSelectedPersonaId(nextId);
-              setKgScopeDraft(nextId ? `person:self,persona:${nextId}` : "person:self");
+              const currentScopes = parseKgScopeSet(kgScopeDraft).filter((scope) => !scope.startsWith("persona:"));
+              const merged = nextId ? Array.from(new Set([...currentScopes, `persona:${nextId}`])) : currentScopes;
+              setKgScopeDraft((merged.length > 0 ? merged : ["person:self"]).join(","));
             }}
             className="h-9 min-w-[220px] rounded-md border border-input bg-background px-3 text-sm outline-none"
           >
@@ -1039,13 +1528,43 @@ export function BuilderAgentsPanel() {
               </option>
             ))}
           </select>
-          <Input
-            value={kgScopeDraft}
-            onChange={(event) => setKgScopeDraft(event.target.value)}
-            placeholder="person:self,persona:<id>"
-            className="h-9 min-w-[260px] flex-1"
-          />
-          <span className="text-xs text-muted-foreground">KG scopes (comma-separated)</span>
+          <div className="flex min-w-[260px] flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1.5">
+            {parseKgScopeSet(kgScopeDraft).map((scope) => (
+              <Badge key={scope} variant="secondary" className="max-w-[220px] gap-1 truncate pr-1 text-[10px]">
+                <span className="truncate">{scope}</span>
+                <button
+                  type="button"
+                  className="rounded p-0.5 hover:bg-black/10"
+                  onClick={() => removeGlobalScope(scope)}
+                  aria-label={`Remove ${scope}`}
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </Badge>
+            ))}
+            <Input
+              value={kgScopeInput}
+              onChange={(event) => setKgScopeInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addGlobalScope();
+                }
+              }}
+              list="kg-scope-options-global"
+              placeholder="Add KG scope"
+              className="h-7 min-w-[180px] flex-1 border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
+            />
+            <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={addGlobalScope}>
+              Add
+            </Button>
+            <datalist id="kg-scope-options-global">
+              {kgScopeOptions.map((scope) => (
+                <option key={scope} value={scope} />
+              ))}
+            </datalist>
+          </div>
+          <span className="text-xs text-muted-foreground">KG scopes</span>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1100,56 +1619,12 @@ export function BuilderAgentsPanel() {
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        <Card className="border-border/80 shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Workspace Files</CardTitle>
-            <p className="text-xs text-muted-foreground">
-              Edit filesystem-backed context files directly (for example: <code>persona/soul.md</code>) so executive sessions and Claude runs use current instructions.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                value={fileEditorPath}
-                onChange={(event) => setFileEditorPath(event.target.value)}
-                placeholder="persona/soul.md"
-                className="h-9 min-w-[260px] flex-1"
-              />
-              <Button
-                variant="outline"
-                className="h-9"
-                onClick={() => void loadWorkspaceFile()}
-                disabled={!selectedWorkspace || fileEditorLoading}
-              >
-                {fileEditorLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Load"}
-              </Button>
-              <Button
-                className="h-9"
-                onClick={() => void saveWorkspaceFile()}
-                disabled={!selectedWorkspace || fileEditorSaving}
-              >
-                {fileEditorSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
-              </Button>
-            </div>
-            <textarea
-              value={fileEditorValue}
-              onChange={(event) => setFileEditorValue(event.target.value)}
-              className="min-h-[220px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-              placeholder="Load a workspace file to edit."
-              spellCheck={false}
-            />
-            {fileEditorMessage ? (
-              <p className="text-xs text-muted-foreground">{fileEditorMessage}</p>
-            ) : null}
-          </CardContent>
-        </Card>
-
         {primarySession ? (
           <Card className="border-border/80 shadow-sm">
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                  <CardTitle className="text-base">{primarySession.metadata.label || "Primary executive"}</CardTitle>
+                  <CardTitle className="text-base">Executive Terminal</CardTitle>
                   <p className="text-xs text-muted-foreground">
                     {primarySession.metadata.objective || "Primary tmux-backed executive session for this workspace."}
                   </p>
@@ -1172,11 +1647,12 @@ export function BuilderAgentsPanel() {
                     ))}
                   </div>
                   <Badge variant="outline">{primarySession.metadata.role}</Badge>
-                  {primarySession.metadata.personaName || primarySession.metadata.personaId ? (
-                    <Badge variant="outline">
-                      persona: {primarySession.metadata.personaName ?? primarySession.metadata.personaId}
-                    </Badge>
-                  ) : null}
+                  <Badge variant="outline">
+                    persona: {primarySession.metadata.personaName ?? primarySession.metadata.personaId ?? "main"}
+                  </Badge>
+                  <Badge variant="outline" className="max-w-[280px] truncate">
+                    kg: {formatKgScopes(primarySession.metadata.kgScopeSet)}
+                  </Badge>
                   <Badge variant={primarySession.active ? "default" : "secondary"}>
                     {primarySession.active ? "active" : "idle"}
                   </Badge>
@@ -1184,7 +1660,73 @@ export function BuilderAgentsPanel() {
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              {renderTerminalPane(paneKeyForSession(primarySession), primarySession, {
+              <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_minmax(220px,1fr)_auto]">
+                <select
+                  value={panePersonaDrafts[primaryPaneKey] ?? primarySession.metadata.personaId ?? ""}
+                  onChange={(event) =>
+                    setPanePersonaDrafts((prev) => ({ ...prev, [primaryPaneKey]: event.target.value }))
+                  }
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none"
+                >
+                  <option value="">Main profile context</option>
+                  {personas.map((persona) => (
+                    <option key={persona.id} value={persona.id}>
+                      Persona: {persona.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    value={paneScopeInput[primaryPaneKey] ?? ""}
+                    onChange={(event) =>
+                      setPaneScopeInput((prev) => ({ ...prev, [primaryPaneKey]: event.target.value }))
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addPaneScope(primaryPaneKey);
+                      }
+                    }}
+                    list="kg-scope-options-primary"
+                    placeholder="Add KG scope"
+                    className="h-8 text-xs"
+                  />
+                  <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => addPaneScope(primaryPaneKey)}>
+                    Add
+                  </Button>
+                  <datalist id="kg-scope-options-primary">
+                    {kgScopeOptions.map((scope) => (
+                      <option key={scope} value={scope} />
+                    ))}
+                  </datalist>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => void savePaneContext(primarySession)}
+                  disabled={savingPaneKey === primaryPaneKey}
+                >
+                  {savingPaneKey === primaryPaneKey ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                  Save Context
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(paneScopesDrafts[primaryPaneKey] ?? primarySession.metadata.kgScopeSet ?? ["person:self"]).map((scope) => (
+                  <Badge key={`${primaryPaneKey}-${scope}`} variant="secondary" className="max-w-[220px] gap-1 truncate pr-1 text-[10px]">
+                    <span className="truncate">{scope}</span>
+                    <button
+                      type="button"
+                      className="rounded p-0.5 hover:bg-black/10"
+                      onClick={() => removePaneScope(primaryPaneKey, scope)}
+                      aria-label={`Remove ${scope}`}
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+              {renderTerminalPane(primaryPaneKey, primarySession, {
                 maxHeight: primaryDragHeight !== null ? `${primaryDragHeight}px` : PANE_SIZE_HEIGHTS[primaryPaneSize],
                 isPrimary: true,
               })}
@@ -1205,7 +1747,7 @@ export function BuilderAgentsPanel() {
                 No executive session yet for this workspace
               </div>
               <p className="text-sm text-muted-foreground">
-                Launch a primary executive and use it as the single user-facing entry point for this app. It can drive architect/orchestrator/worker panes behind the scenes.
+                Launch a primary executive to use as your main interactive terminal, then add the background team panes.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button onClick={() => void launchExecutive()} disabled={launching || !selectedWorkspace}>
@@ -1221,25 +1763,129 @@ export function BuilderAgentsPanel() {
           </Card>
         )}
 
-        {showTeam ? (
-          <Card className="border-border/80 shadow-sm">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Users className="h-4 w-4" />
-                <CardTitle className="text-sm">Background Team</CardTitle>
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              <CardTitle className="text-sm">Org Chart Terminals</CardTitle>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Child panes mirror your team structure under the executive. Each pane includes role, persona, and KG scope.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {teamSessions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No additional panes attached to this workspace yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {topLevelTeamSessions.map((session) => renderTeamNode(session))}
               </div>
-            </CardHeader>
-            <CardContent>
-              {teamSessions.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No additional panes attached to this workspace yet.</p>
-              ) : (
-                <div className="space-y-4">
-                  {topLevelTeamSessions.map((session) => renderTeamNode(session))}
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Context Mounts</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Select an agent pane, then append or remove folders and files from that live session using the filesystem browser on the left.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={selectedContextPaneKey}
+                onChange={(event) => setSelectedContextPaneKey(event.target.value)}
+                className="h-9 min-w-[260px] rounded-md border border-input bg-background px-3 text-sm outline-none"
+              >
+                {workspaceSessions.map((session) => {
+                  const paneKey = paneKeyForSession(session);
+                  return (
+                    <option key={paneKey} value={paneKey}>
+                      {session.metadata.label || paneKey} · {session.metadata.role}
+                    </option>
+                  );
+                })}
+              </select>
+              <Input
+                value={fsRootPath || "/"}
+                onChange={(event) => setFsRootPath(event.target.value === "/" ? "" : event.target.value)}
+                className="h-9 min-w-[180px] flex-1 text-xs"
+              />
+              <Button
+                variant="outline"
+                className="h-9"
+                onClick={() => selectedWorkspace && void loadWorkspaceTreeRoot(selectedWorkspace.id, fsRootPath)}
+                disabled={!selectedWorkspace || fsLoading}
+              >
+                {fsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Refresh"}
+              </Button>
+              {selectedContextSession ? (
+                <Button
+                  className="h-9"
+                  onClick={() => void savePaneContext(selectedContextSession)}
+                  disabled={savingPaneKey === selectedContextPaneKey}
+                >
+                  {savingPaneKey === selectedContextPaneKey ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                  Apply Mounts
+                </Button>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(paneMountedPathsDrafts[selectedContextPaneKey] ?? selectedContextSession?.metadata.mountedPaths ?? []).map((mountedPath) => (
+                <Badge key={`${selectedContextPaneKey}-${mountedPath}`} variant="secondary" className="max-w-[320px] gap-1 truncate pr-1 text-[10px]">
+                  <span className="truncate">{mountedPath}</span>
+                  <button
+                    type="button"
+                    className="rounded p-0.5 hover:bg-black/10"
+                    onClick={() => toggleMountedPath(selectedContextPaneKey, mountedPath)}
+                    aria-label={`Remove ${mountedPath}`}
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+              <div className="space-y-2 rounded-lg border p-3">
+                <p className="text-xs font-medium text-muted-foreground">Filesystem</p>
+                <div className="max-h-[520px] overflow-y-auto rounded-md border bg-muted/20 p-2">
+                  <AgentFilesystemTree
+                    nodes={fsTree}
+                    selectedFile={fsSelectedFile}
+                    mountedPaths={paneMountedPathsDrafts[selectedContextPaneKey] ?? selectedContextSession?.metadata.mountedPaths ?? []}
+                    onToggleDirectory={(node) => void toggleWorkspaceDirectory(node)}
+                    onSelectFile={(node) => void loadWorkspaceFile(node.path)}
+                    onToggleMount={(node) => {
+                      if (!selectedContextPaneKey) return;
+                      toggleMountedPath(selectedContextPaneKey, node.path);
+                    }}
+                  />
+                  {!fsLoading && fsTree.length === 0 ? (
+                    <p className="px-2 py-2 text-xs text-muted-foreground">No files in this tree.</p>
+                  ) : null}
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        ) : null}
+              </div>
+              <div className="space-y-2 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-medium">{fsSelectedFile || "Select a file"}</p>
+                </div>
+                <textarea
+                  value={fsFileContent}
+                  readOnly
+                  className="min-h-[520px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                  placeholder={fsFileLoading ? "Loading..." : "Select a file from the left pane."}
+                  spellCheck={false}
+                />
+                {fsFileMessage ? (
+                  <p className="text-xs text-muted-foreground">{fsFileMessage}</p>
+                ) : null}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

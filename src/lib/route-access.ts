@@ -46,6 +46,7 @@ const PUBLIC_API_PREFIXES = [
   "/api/map-tilesets",
   "/api/map-diagnostics",
   "/api/locations/suggest",
+  "/api/wallet/banks/webhook",
   "/.well-known/mcp",
   "/.well-known/matrix",
   "/.well-known/universal-manifest.json",

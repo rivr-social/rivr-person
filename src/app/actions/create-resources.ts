@@ -31,6 +31,7 @@ export {
   createBadgeResourceAction,
   createLiveClassAction,
   createDocumentResourceAction,
+  createScopedDocumentAction,
   createPersonalDocumentAction,
   createProjectResource,
   normalizeEventTickets,

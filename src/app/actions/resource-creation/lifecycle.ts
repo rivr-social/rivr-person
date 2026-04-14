@@ -843,6 +843,171 @@ export async function createDocumentResourceAction(input: {
   return docActionResult;
 }
 
+export async function createScopedDocumentAction(input: {
+  ownerType: "self" | "persona" | "group";
+  ownerId?: string;
+  title: string;
+  content?: string;
+  description?: string;
+  tags?: string[];
+  category?: string;
+}): Promise<ActionResult> {
+  if (!input.title?.trim()) {
+    return {
+      success: false,
+      message: "title is required",
+      error: { code: "INVALID_INPUT" },
+    };
+  }
+
+  const userId = await resolveAuthenticatedUserId();
+  if (!userId) {
+    return {
+      success: false,
+      message: "You must be logged in to create documents",
+      error: { code: "UNAUTHENTICATED" },
+    };
+  }
+
+  const check = await rateLimit(`resources:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
+  if (!check.success) {
+    return {
+      success: false,
+      message: "Rate limit exceeded. Please try again later.",
+      error: { code: "RATE_LIMITED" },
+    };
+  }
+
+  let targetOwnerId = userId;
+  let visibility: VisibilityLevel = "private";
+  let metadata: Record<string, unknown> = {
+    entityType: "document",
+    resourceKind: "document",
+    category: input.category ?? null,
+    createdBy: userId,
+    scopeType: input.ownerType,
+  };
+  let ledgerMetadata: Record<string, unknown> = {
+    resourceType: "document",
+    source: "executive-session-record",
+    scopeType: input.ownerType,
+  };
+
+  if (input.ownerType === "self") {
+    metadata.personalOwnerId = userId;
+    ledgerMetadata.personalOwnerId = userId;
+  } else if (input.ownerType === "persona") {
+    const personaId = input.ownerId?.trim();
+    if (!personaId) {
+      return {
+        success: false,
+        message: "persona ownerId is required",
+        error: { code: "INVALID_INPUT" },
+      };
+    }
+    const [persona] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, personaId), eq(agents.parentAgentId, userId), sql`${agents.deletedAt} IS NULL`))
+      .limit(1);
+    if (!persona) {
+      return {
+        success: false,
+        message: "Persona not found or not owned by you.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+    targetOwnerId = personaId;
+    metadata.personaOwnerId = personaId;
+    ledgerMetadata.personaOwnerId = personaId;
+  } else {
+    const groupId = input.ownerId?.trim();
+    if (!groupId) {
+      return {
+        success: false,
+        message: "group ownerId is required",
+        error: { code: "INVALID_INPUT" },
+      };
+    }
+    const canWrite = await hasGroupWriteAccess(userId, groupId);
+    if (!canWrite) {
+      return {
+        success: false,
+        message: "You do not have permission to create documents for this group.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+    targetOwnerId = groupId;
+    visibility = "members";
+    metadata.groupId = groupId;
+    ledgerMetadata.groupId = groupId;
+  }
+
+  const docFacadeResult = await updateFacade.execute(
+    {
+      type: "createScopedDocumentAction",
+      actorId: userId,
+      targetAgentId: targetOwnerId,
+      payload: input,
+    },
+    async () => {
+      try {
+        const result = await db.transaction(async (tx) => {
+          const [created] = await tx
+            .insert(resources)
+            .values({
+              name: input.title.trim(),
+              type: "document",
+              description: input.description?.trim() ?? null,
+              content: input.content?.trim() ?? null,
+              ownerId: targetOwnerId,
+              visibility,
+              tags: input.tags ?? [],
+              metadata,
+            } as NewResource)
+            .returning({ id: resources.id });
+
+          await tx.insert(ledger).values({
+            verb: "create",
+            subjectId: userId,
+            objectId: created.id,
+            objectType: "resource",
+            resourceId: created.id,
+            metadata: ledgerMetadata,
+          } as NewLedgerEntry);
+
+          return created;
+        });
+
+        await revalidateOwnerPaths(targetOwnerId);
+
+        return {
+          success: true,
+          message: "Document created successfully",
+          resourceId: result.id,
+        } as ActionResult;
+      } catch (error) {
+        console.error("[createScopedDocumentAction] failed:", error);
+        return {
+          success: false,
+          message: "Failed to create document",
+          error: { code: "SERVER_ERROR" },
+        } as ActionResult;
+      }
+    },
+  );
+
+  if (!docFacadeResult.success) {
+    return {
+      success: false,
+      message: docFacadeResult.error ?? "Failed to create document",
+      error: { code: docFacadeResult.errorCode ?? "SERVER_ERROR" },
+    };
+  }
+
+  return docFacadeResult.data as ActionResult;
+}
+
 /**
  * Creates a personal document owned by the authenticated user (not group-scoped).
  *

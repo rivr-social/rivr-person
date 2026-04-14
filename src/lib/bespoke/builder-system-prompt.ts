@@ -129,9 +129,68 @@ function formatCurrentFiles(currentFiles: SiteFiles): string {
 // Main builder
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Workspace context for non-default targets
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceContext {
+  name: string;
+  label: string;
+  scope: string;
+  basePath?: string;
+  liveSubdomain?: string | null;
+}
+
+function formatWorkspaceContext(ws: WorkspaceContext): string {
+  const parts = [
+    `## Active Workspace Target`,
+    ``,
+    `You are NOT building the user's default sovereign personal site.`,
+    `You are building/editing files for a specific app workspace:`,
+    ``,
+    `- **Workspace**: ${ws.label} (${ws.name})`,
+    `- **Scope**: ${ws.scope}`,
+  ];
+  if (ws.basePath) {
+    parts.push(`- **Base Path**: ${ws.basePath}`);
+  }
+  if (ws.liveSubdomain) {
+    parts.push(`- **Live Subdomain**: ${ws.liveSubdomain}`);
+  }
+  parts.push(
+    ``,
+    `When generating or updating files, keep in mind this is a workspace project, not the sovereign profile site. Tailor file structure and content to the workspace scope.`,
+  );
+  return parts.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Main builder
+// ---------------------------------------------------------------------------
+
+function formatExtraDataSources(sources: Record<string, unknown>): string {
+  const entries = Object.entries(sources);
+  if (entries.length === 0) return "";
+
+  const parts = ["## Additional Data Sources\n"];
+  for (const [kind, data] of entries) {
+    parts.push(`### ${kind}\n`);
+    parts.push("```json");
+    parts.push(safeStringify(data, 4000));
+    parts.push("```\n");
+  }
+  parts.push(
+    "Use this additional data alongside the profile data when generating site content. " +
+    "Incorporate relevant information from these sources where appropriate.\n",
+  );
+  return parts.join("\n");
+}
+
 export function buildSystemPrompt(
   profileBundle: Record<string, unknown>,
   currentFiles: SiteFiles,
+  workspaceContext?: WorkspaceContext,
+  extraDataSources?: Record<string, unknown>,
 ): string {
   const profileSummary = extractProfileSummary(profileBundle);
   const filesSection = formatCurrentFiles(currentFiles);
@@ -200,6 +259,10 @@ When generating content sections, use the real data. For example:
 - Posts, events, groups, and offerings should use real titles and descriptions
 
 ${filesSection}
+
+${workspaceContext ? formatWorkspaceContext(workspaceContext) : ""}
+
+${extraDataSources ? formatExtraDataSources(extraDataSources) : ""}
 
 ## Iteration
 The user may ask you to modify the existing site. When they do:

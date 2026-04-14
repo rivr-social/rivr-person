@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Award, Calendar as CalendarIcon, Clock, Drama, Gift, Heart, MapPin, MessageSquare, Users } from "lucide-react";
-import { PersonaChatWidget } from "@/components/persona-chat-widget";
 import { DocumentList } from "@/components/document-list";
 import { DocumentViewer } from "@/components/document-viewer";
 import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/social-platform-icon";
@@ -122,6 +121,8 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const [remoteViewerError, setRemoteViewerError] = useState<string | null>(null);
   const [connectPending, setConnectPending] = useState(false);
   const [connectActive, setConnectActive] = useState(false);
+  const agent = (bundle?.agent as SerializedAgent | null) ?? null;
+  const isOwnProfile = Boolean(session?.user?.id && agent?.id && session.user.id === agent.id);
 
   const visibleSectionIds = useMemo(
     () => isOwnProfile
@@ -144,9 +145,6 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
       setActiveTab(visibleTabs[0]);
     }
   }, [activeTab, visibleTabs]);
-
-  const agent = (bundle?.agent as SerializedAgent | null) ?? null;
-  const isOwnProfile = Boolean(session?.user?.id && agent?.id && session.user.id === agent.id);
   const profile = (bundle?.profile as {
     resources?: SerializedResource[];
     recentActivity?: Array<{ id: string; verb: string; timestamp: string }>;
@@ -176,12 +174,6 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const profileResources = (profile?.resources as SerializedResource[]) ?? [];
   const profileActivity = profile?.recentActivity ?? [];
   const federation = (bundle?.federation as ProfileFederationInfo | undefined) ?? null;
-  const autobotPersona = (bundle as Record<string, unknown> | null)?.autobotPersona as {
-    id: string;
-    name: string;
-    image: string | null;
-  } | null ?? null;
-
   const metadata = (agent?.metadata ?? {}) as Record<string, unknown>;
   const socialLinks = asRecord(metadata.socialLinks ?? metadata.social_links);
   const userId = agent?.id || "";
@@ -405,7 +397,44 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
       !remoteIssuedAt ||
       !remoteExpiresAt
     ) {
-      return;
+      let cancelled = false;
+
+      async function bootstrapFromCookieSession() {
+        try {
+          const response = await fetch("/api/federation/remote-session", {
+            method: "GET",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) return;
+          const json = (await response.json()) as {
+            success?: boolean;
+            actorId?: string;
+            homeBaseUrl?: string;
+            sessionToken?: string;
+          };
+          if (!json.success || !json.actorId || !json.homeBaseUrl || !json.sessionToken) return;
+          if (cancelled) return;
+          setRemoteViewerAuth({
+            actor: {
+              actorId: json.actorId,
+              homeBaseUrl: json.homeBaseUrl,
+              assertionType: "session",
+              assertion: json.sessionToken,
+              issuedAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+            },
+            sessionToken: json.sessionToken,
+            homeBaseUrl: json.homeBaseUrl,
+          });
+        } catch {
+          // Ignore missing/invalid remote cookie session.
+        }
+      }
+
+      void bootstrapFromCookieSession();
+      return () => {
+        cancelled = true;
+      };
     }
 
     const actor: RemoteActorContext = {
@@ -818,18 +847,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
 
           {visibleTabs.includes("docs") ? (
             <TabsContent value="docs" className="mt-4">
-              {selectedDocument ? (
-                <DocumentViewer
-                  document={selectedDocument}
-                  onBack={() => setSelectedDocument(null)}
-                  onDocumentUpdated={(updated) => {
-                    setSelectedDocument(updated);
-                    setUserDocuments((prev) =>
-                      prev.map((d) => (d.id === updated.id ? updated : d))
-                    );
-                  }}
-                />
-              ) : (
+              <div className="grid gap-6 md:grid-cols-[320px_1fr]">
                 <DocumentList
                   documents={userDocuments}
                   ownerId={agent?.id}
@@ -864,7 +882,27 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
                     }
                   } : undefined}
                 />
-              )}
+
+                {selectedDocument ? (
+                  <DocumentViewer
+                    document={selectedDocument}
+                    onBack={() => setSelectedDocument(null)}
+                    onDocumentUpdated={(updated) => {
+                      setSelectedDocument(updated);
+                      setUserDocuments((prev) =>
+                        prev.map((d) => (d.id === updated.id ? updated : d))
+                      );
+                    }}
+                    kgScopeType="person"
+                    kgScopeId={agent?.id}
+                    canPushToKg={Boolean(session?.user?.id && session.user.id === agent?.id)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center rounded-lg border text-muted-foreground">
+                    Select a document to preview
+                  </div>
+                )}
+              </div>
             </TabsContent>
           ) : null}
 
@@ -970,14 +1008,6 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
         ) : null}
       </div>
 
-      {/* Persona chat widget — shown when the user has an autobot-enabled persona */}
-      {autobotPersona ? (
-        <PersonaChatWidget
-          username={profileUser.username}
-          personaName={autobotPersona.name || profileUser.name}
-          personaImage={autobotPersona.image || (profileUser.avatar !== "/placeholder-user.jpg" ? profileUser.avatar : null)}
-        />
-      ) : null}
     </div>
   );
 }

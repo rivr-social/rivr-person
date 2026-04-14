@@ -5,6 +5,7 @@ import {
   saveAutobotUserSettings,
   type AutobotUserSettings,
 } from "@/lib/autobot-user-settings";
+import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +15,9 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const settings = await getAutobotUserSettings(session.user.id);
-  return NextResponse.json({ settings });
+  const subject = await resolveAutobotConnectionScope(session.user.id);
+  const settings = await getAutobotUserSettings(subject.actorId);
+  return NextResponse.json({ settings, subject });
 }
 
 export async function POST(request: Request) {
@@ -24,6 +26,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const subject = await resolveAutobotConnectionScope(session.user.id);
+
   let body: Partial<AutobotUserSettings>;
   try {
     body = await request.json();
@@ -31,6 +35,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const settings = await saveAutobotUserSettings(session.user.id, body);
-  return NextResponse.json({ settings });
+  const settings = await saveAutobotUserSettings(subject.actorId, body);
+  return NextResponse.json({ settings, subject });
 }
