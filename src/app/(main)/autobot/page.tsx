@@ -1056,12 +1056,11 @@ export default function AutobotPage() {
   // ---- Render ----
   return (
     <div
-      className="overflow-hidden"
+      className="overflow-hidden h-[calc(100dvh-8rem)] md:h-[calc(100dvh-4rem)]"
       style={{
         display: "grid",
         gridTemplateColumns: sidebarCollapsed ? "0px 1fr" : "280px 1fr",
         gridTemplateRows: "1fr auto",
-        height: "calc(100dvh - 4rem)",
       }}
     >
       {/* ================================================================ */}
