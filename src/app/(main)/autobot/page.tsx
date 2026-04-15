@@ -1231,11 +1231,11 @@ export default function AutobotPage() {
       </div>
 
       {/* ================================================================ */}
-      {/* BOTTOM - Chat Bar (sends to selected pane)                        */}
+      {/* BOTTOM - Chat Bar (fixed position, always visible)                */}
       {/* ================================================================ */}
       <div
-        className="border-t border-border/50 bg-background/80 backdrop-blur-sm"
-        style={{ gridColumn: 2 }}
+        className="fixed bottom-16 md:bottom-0 right-0 border-t border-border/50 bg-background/95 backdrop-blur-sm z-40"
+        style={{ left: sidebarCollapsed ? 0 : 280 }}
       >
         <PaneChatBar
           targetPaneKey={selectedPaneKey}
