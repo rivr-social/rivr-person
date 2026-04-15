@@ -14,7 +14,9 @@ import {
   listAgentFolder,
   listAgentFolderIds,
   readAgentFile,
+  readHeartbeat,
   writeAgentFile,
+  writeHeartbeatNotes,
 } from "@/lib/agent-docs";
 
 export interface AgentHqDbEntry {
@@ -43,7 +45,7 @@ const AGENTS_MD_DESCRIPTIONS: Record<string, string> = {
 };
 
 function agentsMdForAgentRoot(agentName: string): string {
-  return `This is ${agentName}'s scope. soul.md defines identity. resources/ contains owned content. ledger/ tracks actions. agents/ lists sub-agents. sessions/ shows active LLM session contexts.`;
+  return `This is ${agentName}'s scope. soul.md defines identity. heartbeat.md shows live status and notes. resources/ contains owned content. ledger/ tracks actions. agents/ lists sub-agents. sessions/ shows active LLM session contexts.`;
 }
 
 function agentsMdForResourceType(typeName: string): string {
@@ -201,6 +203,7 @@ export async function listDbEntries(relativePath = ""): Promise<{
       } else {
         entries.push({ name: "soul.md (create)", path: `${root}/soul.md`, type: "file", size: 0 });
       }
+      entries.push({ name: "heartbeat.md", path: `${root}/heartbeat.md`, type: "file", size: 0 });
       entries.push({ name: "resources", path: `${root}/resources`, type: "directory", size: 0 });
       entries.push({ name: "ledger", path: `${root}/ledger`, type: "directory", size: 0 });
       entries.push({ name: "agents", path: `${root}/agents`, type: "directory", size: 0 });
@@ -682,6 +685,12 @@ export async function readDbFile(relativePath: string): Promise<{
       return { relativePath: safeRelative, content: mdContent };
     }
 
+    // heartbeat.md — auto-generated on read
+    if (subParts[0] === "heartbeat.md") {
+      const content = await readHeartbeat(agentId);
+      return { relativePath: safeRelative, content };
+    }
+
     // soul.md and docs/ are on disk
     if (subParts[0] === "soul.md" || subParts[0] === "docs") {
       const relativeFilePath = subParts.join("/");
@@ -900,6 +909,12 @@ export async function writeDbFile(relativePath: string, content: string): Promis
     if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
     const subParts = segments.slice(1);
     if (subParts.length === 0) throw new Error("File path is required.");
+
+    // heartbeat.md — only the Notes section is user-writable
+    if (subParts[0] === "heartbeat.md") {
+      await writeHeartbeatNotes(agentId, content);
+      return { relativePath: safeRelative, size };
+    }
 
     // soul.md and docs/ are on disk
     if (subParts[0] === "soul.md" || subParts[0] === "docs") {

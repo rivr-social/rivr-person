@@ -11,6 +11,10 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, stat, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { desc, eq } from "drizzle-orm";
+import { db } from "@/db";
+import { mcpProvenanceLog } from "@/db/schema";
+import { listAgentSessions } from "@/lib/agent-hq";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -338,4 +342,210 @@ export async function listContextFiles(sessionId: string): Promise<string[]> {
     .filter((e) => e.isFile() && e.name !== "CLAUDE.md" && e.name !== "claude.md")
     .map((e) => e.name)
     .sort();
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat — auto-generated + user-editable status document per agent
+// ---------------------------------------------------------------------------
+
+const HEARTBEAT_FILE_NAME = "heartbeat.md";
+const HEARTBEAT_NOTES_HEADER = "## Notes";
+const HEARTBEAT_DEFAULT_NOTES = "No notes yet. Edit this section to add context about current focus or state.";
+
+function agentHeartbeatPath(agentId: string): string {
+  return path.join(AGENTS_ROOT, agentId, HEARTBEAT_FILE_NAME);
+}
+
+/**
+ * Extract the user-written Notes section from an existing heartbeat.md on disk.
+ * Returns the default placeholder if no heartbeat exists or the Notes section is missing.
+ */
+async function extractExistingNotes(agentId: string): Promise<string> {
+  const heartbeatPath = agentHeartbeatPath(agentId);
+  if (!existsSync(heartbeatPath)) {
+    return HEARTBEAT_DEFAULT_NOTES;
+  }
+  try {
+    const content = await readFile(heartbeatPath, "utf-8");
+    const notesIdx = content.indexOf(HEARTBEAT_NOTES_HEADER);
+    if (notesIdx === -1) {
+      return HEARTBEAT_DEFAULT_NOTES;
+    }
+    const afterHeader = content.slice(notesIdx + HEARTBEAT_NOTES_HEADER.length).trim();
+    return afterHeader.length > 0 ? afterHeader : HEARTBEAT_DEFAULT_NOTES;
+  } catch {
+    return HEARTBEAT_DEFAULT_NOTES;
+  }
+}
+
+/**
+ * Count session context folders that exist on disk for an agent.
+ */
+async function countSessionFolders(agentId: string): Promise<number> {
+  const dir = agentDir(agentId);
+  if (!existsSync(dir)) return 0;
+  let count = 0;
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const contextDir = path.join(dir, entry.name, "context");
+      if (existsSync(contextDir)) {
+        count++;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  // Also check the top-level context folder
+  const topContext = path.join(dir, "context");
+  if (existsSync(topContext)) {
+    count++;
+  }
+  return count;
+}
+
+/**
+ * Generate fresh heartbeat.md content for an agent.
+ * Combines live runtime data with preserved user notes.
+ */
+export async function generateHeartbeat(agentId: string): Promise<string> {
+  // 1. Gather agent name from DB
+  let agentName = agentId;
+  try {
+    const { agents } = await import("@/db/schema");
+    const row = await db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+      columns: { name: true },
+    });
+    if (row?.name) agentName = row.name;
+  } catch {
+    // fall back to agentId
+  }
+
+  // 2. Check tmux sessions
+  let sessions: Awaited<ReturnType<typeof listAgentSessions>> = [];
+  try {
+    sessions = await listAgentSessions();
+  } catch {
+    // tmux may not be available
+  }
+
+  // 3. Query recent provenance entries
+  let recentProvenance: Array<{ toolName: string; resultStatus: string; createdAt: Date }> = [];
+  try {
+    recentProvenance = await db
+      .select({
+        toolName: mcpProvenanceLog.toolName,
+        resultStatus: mcpProvenanceLog.resultStatus,
+        createdAt: mcpProvenanceLog.createdAt,
+      })
+      .from(mcpProvenanceLog)
+      .where(eq(mcpProvenanceLog.actorId, agentId))
+      .orderBy(desc(mcpProvenanceLog.createdAt))
+      .limit(5);
+  } catch {
+    // table may not exist yet
+  }
+
+  // 4. Check soul.md
+  const hasSoul = agentSoulExists(agentId);
+
+  // 5. Count session context folders
+  const sessionFolderCount = await countSessionFolders(agentId);
+
+  // 6. Preserve existing notes
+  const notes = await extractExistingNotes(agentId);
+
+  // 7. Determine status
+  const hasActiveSessions = sessions.length > 0;
+  const status = hasActiveSessions ? "active" : recentProvenance.length > 0 ? "idle" : "offline";
+
+  // 8. Build sessions section
+  let sessionsSection: string;
+  if (sessions.length === 0) {
+    sessionsSection = "No active sessions";
+  } else {
+    sessionsSection = sessions
+      .map((s) => `- ${s.sessionName} (${s.metadata.role}, ${s.metadata.provider ?? "unknown"}) — ${s.dead ? "dead" : "alive"}`)
+      .join("\n");
+  }
+
+  // 9. Build recent activity section
+  let activitySection: string;
+  if (recentProvenance.length === 0) {
+    activitySection = "No recent activity";
+  } else {
+    activitySection = recentProvenance
+      .map((p) => `- ${p.createdAt.toISOString()} — ${p.toolName} (${p.resultStatus})`)
+      .join("\n");
+  }
+
+  // 10. Assemble markdown
+  const now = new Date().toISOString();
+  const markdown = [
+    `# Heartbeat — ${agentName}`,
+    "",
+    `**Last updated:** ${now}`,
+    `**Status:** ${status}`,
+    "",
+    "## Active Sessions",
+    sessionsSection,
+    "",
+    "## Recent Activity",
+    activitySection,
+    "",
+    "## Context",
+    `- Soul: ${hasSoul ? "exists" : "missing"}`,
+    `- Session folders: ${sessionFolderCount}`,
+    "",
+    HEARTBEAT_NOTES_HEADER,
+    notes,
+    "",
+  ].join("\n");
+
+  // Write the generated heartbeat to disk
+  await ensureAgentDocsFolder(agentId);
+  await writeFile(agentHeartbeatPath(agentId), markdown, "utf-8");
+
+  return markdown;
+}
+
+/**
+ * Read heartbeat.md for an agent — regenerates with fresh data on each read.
+ */
+export async function readHeartbeat(agentId: string): Promise<string> {
+  return generateHeartbeat(agentId);
+}
+
+/**
+ * Write only the Notes section of heartbeat.md for an agent.
+ * Preserves all auto-generated sections; only the Notes content is updated.
+ */
+export async function writeHeartbeatNotes(agentId: string, content: string): Promise<void> {
+  // Extract just the notes from the incoming content.
+  // If the user writes the full heartbeat, pull out only the Notes section.
+  // If the user writes plain text, treat it as the notes content.
+  let notes: string;
+  const notesIdx = content.indexOf(HEARTBEAT_NOTES_HEADER);
+  if (notesIdx !== -1) {
+    notes = content.slice(notesIdx + HEARTBEAT_NOTES_HEADER.length).trim();
+  } else {
+    notes = content.trim();
+  }
+
+  if (notes.length === 0) {
+    notes = HEARTBEAT_DEFAULT_NOTES;
+  }
+
+  // Write a minimal heartbeat with just the notes so the next read regenerates correctly
+  await ensureAgentDocsFolder(agentId);
+  const placeholder = [
+    "# Heartbeat",
+    "",
+    HEARTBEAT_NOTES_HEADER,
+    notes,
+    "",
+  ].join("\n");
+  await writeFile(agentHeartbeatPath(agentId), placeholder, "utf-8");
 }
