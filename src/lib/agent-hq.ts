@@ -228,11 +228,7 @@ function buildClaudeRuntimePrefix() {
   const runtimeHome = shellQuote(CLAUDE_RUNTIME_HOME);
   const xdgConfigHome = shellQuote(path.join(CLAUDE_RUNTIME_HOME, ".config"));
   const xdgStateHome = shellQuote(path.join(CLAUDE_RUNTIME_HOME, ".local", "state"));
-  // Pass ANTHROPIC_API_KEY through if set — needed inside Docker containers
-  const apiKeyPart = process.env.ANTHROPIC_API_KEY
-    ? `ANTHROPIC_API_KEY=${shellQuote(process.env.ANTHROPIC_API_KEY)}`
-    : "";
-  return `env ${apiKeyPart} HOME=${runtimeHome} XDG_CONFIG_HOME=${xdgConfigHome} XDG_STATE_HOME=${xdgStateHome}`;
+  return `env -u ANTHROPIC_API_KEY HOME=${runtimeHome} XDG_CONFIG_HOME=${xdgConfigHome} XDG_STATE_HOME=${xdgStateHome}`;
 }
 
 export function getAgentAppWorkspaceRoot() {
