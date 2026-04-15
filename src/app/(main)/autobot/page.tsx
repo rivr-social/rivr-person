@@ -785,7 +785,13 @@ function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBar
       await fetch("/api/agent-hq/launch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "executive", provider: "claude" }),
+        body: JSON.stringify({
+          role: "executive",
+          provider: "opencode",
+          cwd: "/workspace",
+          displayLabel: "Executive",
+          objective: "You are the executive orchestrator for this sovereign instance.",
+        }),
       });
     } catch {
       // silent
