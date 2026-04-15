@@ -228,8 +228,49 @@ function sanitizeSessionId(sessionId: string): string {
 }
 
 /**
+ * Build the claude.md content for a session context folder.
+ * Lists all mounted files (excluding CLAUDE.md and claude.md themselves).
+ */
+async function buildClaudeMdContent(contextDir: string): Promise<string> {
+  let fileList = "- (none)";
+  if (existsSync(contextDir)) {
+    const entries = await readdir(contextDir, { withFileTypes: true });
+    const files = entries
+      .filter((e) => e.isFile() && e.name !== "CLAUDE.md" && e.name !== "claude.md")
+      .map((e) => e.name)
+      .sort();
+    if (files.length > 0) {
+      fileList = files.map((f) => `- ${f}`).join("\n");
+    }
+  }
+  return [
+    "# Session Context",
+    "",
+    "This folder contains context files mounted by the user via Agent HQ.",
+    "",
+    "## Mounted Files",
+    fileList,
+    "",
+    "## Instructions",
+    "- Read all files in this directory to understand the current context",
+    "- These files represent the user's selected scope for this session",
+    "- Files may include agent records, resource content, ledger entries, and transcripts",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Regenerate the claude.md file in a session context folder.
+ */
+async function regenerateClaudeMd(contextDir: string): Promise<void> {
+  const claudeMdPath = path.join(contextDir, "claude.md");
+  const content = await buildClaudeMdContent(contextDir);
+  await writeFile(claudeMdPath, content, "utf-8");
+}
+
+/**
  * Returns the absolute path of the session context folder and creates it
- * (including a CLAUDE.md readme) if it does not already exist.
+ * (including a CLAUDE.md readme and claude.md scope file) if it does not already exist.
  */
 export async function ensureSessionContextFolder(sessionId: string): Promise<string> {
   const safe = sanitizeSessionId(sessionId);
@@ -239,11 +280,14 @@ export async function ensureSessionContextFolder(sessionId: string): Promise<str
   if (!existsSync(readmePath)) {
     await writeFile(readmePath, CONTEXT_FOLDER_README, "utf-8");
   }
+  // Always create/update claude.md (lowercase) with current file listing
+  await regenerateClaudeMd(contextDir);
   return contextDir;
 }
 
 /**
  * Write a context file into a session's context folder.
+ * Regenerates claude.md after writing so the file listing stays current.
  */
 export async function writeContextFile(
   sessionId: string,
@@ -257,11 +301,14 @@ export async function writeContextFile(
   }
   const filePath = path.join(contextDir, safeName);
   await writeFile(filePath, content, "utf-8");
+  // Regenerate claude.md with updated file listing
+  await regenerateClaudeMd(contextDir);
   return filePath;
 }
 
 /**
  * Remove a context file from a session's context folder.
+ * Regenerates claude.md after removal so the file listing stays current.
  */
 export async function removeContextFile(
   sessionId: string,
@@ -273,6 +320,8 @@ export async function removeContextFile(
   if (existsSync(filePath)) {
     await rm(filePath);
   }
+  // Regenerate claude.md with updated file listing
+  await regenerateClaudeMd(contextDir);
 }
 
 /**
@@ -286,7 +335,7 @@ export async function listContextFiles(sessionId: string): Promise<string[]> {
   }
   const entries = await readdir(contextDir, { withFileTypes: true });
   return entries
-    .filter((e) => e.isFile() && e.name !== "CLAUDE.md")
+    .filter((e) => e.isFile() && e.name !== "CLAUDE.md" && e.name !== "claude.md")
     .map((e) => e.name)
     .sort();
 }

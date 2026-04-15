@@ -1,9 +1,13 @@
+import { existsSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import nodePath from "node:path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { agentTypeEnum, agents, builderDataSources, ledger, resourceTypeEnum, resources, verbTypeEnum } from "@/db/schema";
-import { discoverAgentProjects } from "@/lib/agent-hq";
+import { discoverAgentProjects, listAgentSessions } from "@/lib/agent-hq";
 import {
+  AGENTS_ROOT,
   agentFolderExists,
   agentSoulExists,
   ensureAgentDocsFolder,
@@ -24,6 +28,85 @@ interface AgentHqDbViewerContext {
   userId: string;
   personaIds: string[];
   allOwnerIds: string[];
+}
+
+// ---------------------------------------------------------------------------
+// agents.md virtual file — dynamic descriptions per directory level
+// ---------------------------------------------------------------------------
+
+const AGENTS_MD_DESCRIPTIONS: Record<string, string> = {
+  root: "Each folder represents an agent or persona. The primary agent is marked (self).",
+  resources: "Resources are owned content items: documents, listings, posts, events.",
+  ledger: "Ledger entries track actions (create, join, update, etc.) performed by this agent.",
+  agents: "Sub-agents and personas owned by this agent.",
+  sessions: "LLM session context folders. Each session folder contains files appended via the Agent HQ explorer.",
+};
+
+function agentsMdForAgentRoot(agentName: string): string {
+  return `This is ${agentName}'s scope. soul.md defines identity. resources/ contains owned content. ledger/ tracks actions. agents/ lists sub-agents. sessions/ shows active LLM session contexts.`;
+}
+
+function agentsMdForResourceType(typeName: string): string {
+  return `${typeName} resources. Each subfolder contains record.json (full data), metadata.json, and content.md.`;
+}
+
+function getAgentsMdContent(dirKey: string, extra?: string): string {
+  if (extra) return extra;
+  return AGENTS_MD_DESCRIPTIONS[dirKey] ?? "Agent HQ directory.";
+}
+
+function prependAgentsMd(entries: AgentHqDbEntry[], dirPath: string, dirKey: string, extra?: string): AgentHqDbEntry[] {
+  return [
+    { name: "agents.md", path: `${dirPath}/agents.md`, type: "file" as const, size: 0 },
+    ...entries,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Session folder discovery helpers
+// ---------------------------------------------------------------------------
+
+async function discoverSessionFolders(): Promise<Array<{ sessionId: string; hasContext: boolean; fileCount: number }>> {
+  if (!existsSync(AGENTS_ROOT)) return [];
+  const entries = await readdir(AGENTS_ROOT, { withFileTypes: true });
+  const results: Array<{ sessionId: string; hasContext: boolean; fileCount: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const contextDir = nodePath.join(AGENTS_ROOT, entry.name, "context");
+    if (!existsSync(contextDir)) continue;
+    try {
+      const contextEntries = await readdir(contextDir, { withFileTypes: true });
+      const files = contextEntries.filter((e) => e.isFile() && e.name !== "CLAUDE.md" && e.name !== "claude.md");
+      results.push({ sessionId: entry.name, hasContext: true, fileCount: files.length });
+    } catch {
+      // skip unreadable
+    }
+  }
+  return results;
+}
+
+async function listSessionContextFiles(sessionId: string): Promise<Array<{ name: string; size: number }>> {
+  const contextDir = nodePath.join(AGENTS_ROOT, sessionId, "context");
+  if (!existsSync(contextDir)) return [];
+  const entries = await readdir(contextDir, { withFileTypes: true });
+  const results: Array<{ name: string; size: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (entry.name === "CLAUDE.md" || entry.name === "claude.md") continue;
+    try {
+      const fileStat = await stat(nodePath.join(contextDir, entry.name));
+      results.push({ name: entry.name, size: fileStat.size });
+    } catch {
+      results.push({ name: entry.name, size: 0 });
+    }
+  }
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function readSessionContextFile(sessionId: string, fileName: string): Promise<string> {
+  const safeName = nodePath.basename(fileName);
+  const filePath = nodePath.join(AGENTS_ROOT, sessionId, "context", safeName);
+  return readFile(filePath, "utf-8");
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {
@@ -84,14 +167,15 @@ export async function listDbEntries(relativePath = ""): Promise<{
     const personas = dbRows.filter((r) => r.id !== ctx.userId).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     const ordered = primary ? [primary, ...personas] : personas;
 
+    const agentEntries = ordered.map((row) => ({
+      name: row.id === ctx.userId ? `${row.name || "Primary"} (self)` : row.name || row.id,
+      path: `@${row.id}`,
+      type: "directory" as const,
+      size: 0,
+    }));
     return {
       relativePath: safeRelative,
-      entries: ordered.map((row) => ({
-        name: row.id === ctx.userId ? `${row.name || "Primary"} (self)` : row.name || row.id,
-        path: `@${row.id}`,
-        type: "directory" as const,
-        size: 0,
-      })),
+      entries: prependAgentsMd(agentEntries, "", "root"),
     };
   }
 
@@ -106,6 +190,11 @@ export async function listDbEntries(relativePath = ""): Promise<{
       // List scoped sub-folders for this agent
       await ensureAgentDocsFolder(agentId);
       const hasSoul = agentSoulExists(agentId);
+      const agentRow = await db.query.agents.findFirst({
+        where: eq(agents.id, agentId),
+        columns: { name: true },
+      });
+      const agentName = agentRow?.name || agentId;
       const entries: AgentHqDbEntry[] = [];
       if (hasSoul) {
         entries.push({ name: "soul.md", path: `${root}/soul.md`, type: "file", size: 0 });
@@ -115,7 +204,8 @@ export async function listDbEntries(relativePath = ""): Promise<{
       entries.push({ name: "resources", path: `${root}/resources`, type: "directory", size: 0 });
       entries.push({ name: "ledger", path: `${root}/ledger`, type: "directory", size: 0 });
       entries.push({ name: "agents", path: `${root}/agents`, type: "directory", size: 0 });
-      return { relativePath: safeRelative, entries };
+      entries.push({ name: "sessions", path: `${root}/sessions`, type: "directory", size: 0 });
+      return { relativePath: safeRelative, entries: prependAgentsMd(entries, root, "agent-root", agentsMdForAgentRoot(agentName)) };
     }
 
     const [subRoot, ...subRest] = rest;
@@ -148,12 +238,13 @@ export async function listDbEntries(relativePath = ""): Promise<{
           .from(resources)
           .where(and(eq(resources.ownerId, agentId), isNull(resources.deletedAt)));
         const presentTypes = new Set(rows.map((row) => row.type));
+        const resourceEntries = resourceTypeEnum.enumValues
+          .filter((rt) => presentTypes.has(rt))
+          .sort((a, b) => a.localeCompare(b))
+          .map((rt) => ({ name: rt, path: `${root}/resources/${rt}`, type: "directory" as const, size: 0 }));
         return {
           relativePath: safeRelative,
-          entries: resourceTypeEnum.enumValues
-            .filter((rt) => presentTypes.has(rt))
-            .sort((a, b) => a.localeCompare(b))
-            .map((rt) => ({ name: rt, path: `${root}/resources/${rt}`, type: "directory" as const, size: 0 })),
+          entries: prependAgentsMd(resourceEntries, `${root}/resources`, "resources"),
         };
       }
       // Virtual "transcripts" subfolder under document type
@@ -216,7 +307,7 @@ export async function listDbEntries(relativePath = ""): Promise<{
           type: "directory" as const,
           size: 0,
         })));
-        return { relativePath: safeRelative, entries };
+        return { relativePath: safeRelative, entries: prependAgentsMd(entries, `${root}/resources/${type}`, "resource-type", agentsMdForResourceType(type)) };
       }
       return {
         relativePath: safeRelative,
@@ -236,12 +327,13 @@ export async function listDbEntries(relativePath = ""): Promise<{
           .from(ledger)
           .where(eq(ledger.subjectId, agentId));
         const presentVerbs = new Set(rows.map((row) => row.verb));
+        const ledgerEntries = verbTypeEnum.enumValues
+          .filter((v) => presentVerbs.has(v))
+          .sort((a, b) => a.localeCompare(b))
+          .map((v) => ({ name: v, path: `${root}/ledger/${v}`, type: "directory" as const, size: 0 }));
         return {
           relativePath: safeRelative,
-          entries: verbTypeEnum.enumValues
-            .filter((v) => presentVerbs.has(v))
-            .sort((a, b) => a.localeCompare(b))
-            .map((v) => ({ name: v, path: `${root}/ledger/${v}`, type: "directory" as const, size: 0 })),
+          entries: prependAgentsMd(ledgerEntries, `${root}/ledger`, "ledger"),
         };
       }
       const rows = await db
@@ -304,6 +396,53 @@ export async function listDbEntries(relativePath = ""): Promise<{
           { name: "metadata.json", path: `${root}/agents/${type}/${id}/metadata.json`, type: "file" as const, size: 0 },
         ],
       };
+    }
+
+    if (subRoot === "sessions") {
+      const sessionId = subRest[0];
+      const sessionFile = subRest[1];
+
+      if (!sessionId) {
+        // List all session folders that have context directories
+        const sessionFolders = await discoverSessionFolders();
+        let liveSessions: Awaited<ReturnType<typeof listAgentSessions>> = [];
+        try {
+          liveSessions = await listAgentSessions();
+        } catch {
+          // tmux may not be available
+        }
+        const liveSessionNames = new Set(liveSessions.map((s) => s.sessionName));
+
+        const sessionEntries: AgentHqDbEntry[] = sessionFolders
+          .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+          .map((sf) => ({
+            name: liveSessionNames.has(sf.sessionId)
+              ? `${sf.sessionId} (active, ${sf.fileCount} files)`
+              : `${sf.sessionId} (${sf.fileCount} files)`,
+            path: `${root}/sessions/${sf.sessionId}`,
+            type: "directory" as const,
+            size: 0,
+          }));
+        return {
+          relativePath: safeRelative,
+          entries: prependAgentsMd(sessionEntries, `${root}/sessions`, "sessions"),
+        };
+      }
+
+      if (!sessionFile) {
+        // List files inside a specific session's context folder
+        const files = await listSessionContextFiles(sessionId);
+        const fileEntries: AgentHqDbEntry[] = files.map((f) => ({
+          name: f.name,
+          path: `${root}/sessions/${sessionId}/${f.name}`,
+          type: "file" as const,
+          size: f.size,
+        }));
+        return { relativePath: safeRelative, entries: fileEntries };
+      }
+
+      // Should not get here for listing — file reads are handled by readDbFile
+      throw new Error("Use readDbFile for session context files.");
     }
 
     throw new Error(`Unsupported sub-path: ${subRoot}`);
@@ -494,6 +633,15 @@ export async function readDbFile(relativePath: string): Promise<{
 }> {
   const ctx = await getViewerContext();
   const { safeRelative, segments } = splitPath(relativePath);
+  if (segments.length < 1) {
+    throw new Error("File path is required.");
+  }
+
+  // Root-level agents.md virtual file
+  if (segments.length === 1 && segments[0] === "agents.md") {
+    return { relativePath: safeRelative, content: getAgentsMdContent("root") };
+  }
+
   if (segments.length < 2) {
     throw new Error("File path is required.");
   }
@@ -507,10 +655,45 @@ export async function readDbFile(relativePath: string): Promise<{
     const subParts = segments.slice(1);
     if (subParts.length === 0) throw new Error("File path is required.");
 
+    // agents.md virtual file — generate content dynamically based on path
+    if (subParts[subParts.length - 1] === "agents.md") {
+      const dirParts = subParts.slice(0, -1);
+      let mdContent: string;
+      if (dirParts.length === 0) {
+        // @{agentId}/agents.md — agent root
+        const agentRow = await db.query.agents.findFirst({
+          where: eq(agents.id, agentId),
+          columns: { name: true },
+        });
+        mdContent = agentsMdForAgentRoot(agentRow?.name || agentId);
+      } else if (dirParts[0] === "resources" && dirParts.length === 1) {
+        mdContent = getAgentsMdContent("resources");
+      } else if (dirParts[0] === "resources" && dirParts.length === 2) {
+        mdContent = agentsMdForResourceType(dirParts[1]);
+      } else if (dirParts[0] === "ledger") {
+        mdContent = getAgentsMdContent("ledger");
+      } else if (dirParts[0] === "agents") {
+        mdContent = getAgentsMdContent("agents");
+      } else if (dirParts[0] === "sessions") {
+        mdContent = getAgentsMdContent("sessions");
+      } else {
+        mdContent = "Agent HQ directory.";
+      }
+      return { relativePath: safeRelative, content: mdContent };
+    }
+
     // soul.md and docs/ are on disk
     if (subParts[0] === "soul.md" || subParts[0] === "docs") {
       const relativeFilePath = subParts.join("/");
       const content = await readAgentFile(agentId, relativeFilePath);
+      return { relativePath: safeRelative, content };
+    }
+
+    // Session context file reads: @{agentId}/sessions/{sessionId}/{file}
+    if (subParts[0] === "sessions" && subParts.length === 3) {
+      const [, sessionId, fileName] = subParts;
+      if (!sessionId || !fileName) throw new Error("Session file path is required.");
+      const content = await readSessionContextFile(sessionId, fileName);
       return { relativePath: safeRelative, content };
     }
 
