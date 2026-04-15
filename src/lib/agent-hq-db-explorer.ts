@@ -3,6 +3,15 @@ import { auth } from "@/auth";
 import { db } from "@/db";
 import { agentTypeEnum, agents, builderDataSources, ledger, resourceTypeEnum, resources, verbTypeEnum } from "@/db/schema";
 import { discoverAgentProjects } from "@/lib/agent-hq";
+import {
+  agentFolderExists,
+  agentSoulExists,
+  ensureAgentDocsFolder,
+  listAgentFolder,
+  listAgentFolderIds,
+  readAgentFile,
+  writeAgentFile,
+} from "@/lib/agent-docs";
 
 export interface AgentHqDbEntry {
   name: string;
@@ -67,6 +76,7 @@ export async function listDbEntries(relativePath = ""): Promise<{
     return {
       relativePath: safeRelative,
       entries: [
+        { name: "agent-docs", path: "agent-docs", type: "directory", size: 0 },
         { name: "agents", path: "agents", type: "directory", size: 0 },
         { name: "resources", path: "resources", type: "directory", size: 0 },
         { name: "ledger", path: "ledger", type: "directory", size: 0 },
@@ -77,6 +87,77 @@ export async function listDbEntries(relativePath = ""): Promise<{
   }
 
   const [root, type, id] = segments;
+
+  if (root === "agent-docs") {
+    // Virtual filesystem root mapping to /workspace/agents/ on disk.
+    // Structure: agent-docs/ → list agent folders (enriched with DB names)
+    //            agent-docs/{id}/ → soul.md + docs/
+    //            agent-docs/{id}/docs/ → files inside docs subfolder
+    if (!type) {
+      // List all agent folders — combine DB agents with on-disk folders
+      const dbRows = await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(and(inArray(agents.id, ctx.allOwnerIds), isNull(agents.deletedAt)));
+      const dbMap = new Map(dbRows.map((row) => [row.id, row.name || row.id]));
+
+      // Also include any on-disk folders that might not be in DB (edge case)
+      const diskIds = await listAgentFolderIds();
+      const allIds = new Set([...dbMap.keys(), ...diskIds]);
+
+      const entries: AgentHqDbEntry[] = [];
+      for (const agentId of allIds) {
+        // Only show agents the user owns
+        if (!ctx.allOwnerIds.includes(agentId)) continue;
+        const label = dbMap.get(agentId) ?? agentId;
+        const hasFolder = agentFolderExists(agentId);
+        entries.push({
+          name: hasFolder ? `${label} (${agentId})` : `${label} (${agentId}) [no folder]`,
+          path: `agent-docs/${agentId}`,
+          type: "directory",
+          size: 0,
+        });
+      }
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      return { relativePath: safeRelative, entries };
+    }
+
+    // type = agentId at this level
+    const agentId = type;
+    if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+    await ensureAgentDocsFolder(agentId);
+
+    if (!id) {
+      // List contents of agent's root folder: soul.md + docs/
+      const hasSoul = agentSoulExists(agentId);
+      const entries: AgentHqDbEntry[] = [];
+      if (hasSoul) {
+        entries.push({ name: "soul.md", path: `agent-docs/${agentId}/soul.md`, type: "file", size: 0 });
+      }
+      entries.push({ name: "docs", path: `agent-docs/${agentId}/docs`, type: "directory", size: 0 });
+      return { relativePath: safeRelative, entries };
+    }
+
+    if (id === "docs") {
+      // List files inside the agent's docs/ subfolder
+      const subPath = segments.slice(3).join("/");
+      const docsSubPath = subPath ? `docs/${subPath}` : "docs";
+      const diskEntries = await listAgentFolder(agentId, docsSubPath);
+      const basePath = `agent-docs/${agentId}/${docsSubPath}`;
+      return {
+        relativePath: safeRelative,
+        entries: diskEntries.map((entry) => ({
+          name: entry.name,
+          path: `${basePath}/${entry.name}`,
+          type: entry.type,
+          size: entry.size,
+        })),
+      };
+    }
+
+    // Unrecognized sub-path under agent-docs/{id}/
+    throw new Error("Unsupported agent-docs path.");
+  }
 
   if (root === "agents") {
     if (!type) {
@@ -266,6 +347,21 @@ export async function readDbFile(relativePath: string): Promise<{
 
   const [root, segment1, segment2, segment3] = segments;
 
+  if (root === "agent-docs") {
+    // agent-docs/{agentId}/soul.md or agent-docs/{agentId}/docs/...
+    const agentId = segment1;
+    if (!agentId) throw new Error("Agent ID is required.");
+    if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+
+    // Build the relative file path within the agent's folder
+    const fileParts = segments.slice(2);
+    if (fileParts.length === 0) throw new Error("File path is required.");
+    const relativeFilePath = fileParts.join("/");
+
+    const content = await readAgentFile(agentId, relativeFilePath);
+    return { relativePath: safeRelative, content };
+  }
+
   if (root === "agents") {
     const type = segment1;
     const id = segment2;
@@ -414,6 +510,20 @@ export async function writeDbFile(relativePath: string, content: string): Promis
   const size = Buffer.byteLength(content, "utf8");
   if (size > 1024 * 1024) {
     throw new Error("File is too large to save.");
+  }
+
+  if (root === "agent-docs") {
+    // agent-docs/{agentId}/soul.md or agent-docs/{agentId}/docs/...
+    const agentId = segment1;
+    if (!agentId) throw new Error("Agent ID is required.");
+    if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+
+    const fileParts = segments.slice(2);
+    if (fileParts.length === 0) throw new Error("File path is required.");
+    const relativeFilePath = fileParts.join("/");
+
+    const written = await writeAgentFile(agentId, relativeFilePath, content);
+    return { relativePath: safeRelative, size: written };
   }
 
   if (root === "agents") {

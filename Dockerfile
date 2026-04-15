@@ -52,6 +52,7 @@ ENV HOME=/home/nextjs
 ENV COREPACK_HOME=/tmp/corepack
 ENV AGENT_HQ_DATA_DIR=/workspace/.agent-hq
 ENV AGENT_HQ_APP_WORKSPACE_ROOT=/workspace/apps
+ENV AGENT_DOCS_ROOT=/workspace/agents
 ENV AGENT_HQ_CLAUDE_HOME=/workspace/.claude-runtime
 
 ENV PTY_BRIDGE_PORT=3100
@@ -64,7 +65,7 @@ RUN apt-get update && \
 RUN groupadd --system --gid 1001 nodejs && \
     useradd --system --uid 1001 --gid nodejs nextjs
 
-RUN mkdir -p /workspace/.agent-hq /workspace/apps /workspace/.claude-runtime/.config /workspace/.claude-runtime/.local/state /home/nextjs && \
+RUN mkdir -p /workspace/.agent-hq /workspace/apps /workspace/agents /workspace/.claude-runtime/.config /workspace/.claude-runtime/.local/state /home/nextjs && \
     chown -R nextjs:nodejs /workspace /home/nextjs
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

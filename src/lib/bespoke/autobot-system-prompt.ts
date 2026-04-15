@@ -21,6 +21,7 @@ import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { MCP_TOOL_DEFINITIONS } from "@/lib/federation/mcp-tools";
 import * as kgClient from "@/lib/kg/autobot-kg-client";
 import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
+import { readAgentSoul } from "@/lib/agent-docs";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 
 // ---------------------------------------------------------------------------
@@ -30,8 +31,12 @@ import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializer
 let _instanceSoulContent: string | null = null;
 let _instanceSoulSource: "instance" | "fallback" | null = null;
 
-export type AutobotSoulSource = "custom" | "instance" | "fallback";
+export type AutobotSoulSource = "custom" | "agent" | "instance" | "fallback";
 
+/**
+ * Load the instance-level soul.md (not agent-specific).
+ * Cached after first successful load.
+ */
 async function loadInstanceSoulContent(): Promise<{ content: string; source: "instance" | "fallback" }> {
   if (_instanceSoulContent !== null && _instanceSoulSource !== null) {
     return { content: _instanceSoulContent, source: _instanceSoulSource };
@@ -76,15 +81,36 @@ async function loadInstanceSoulContent(): Promise<{ content: string; source: "in
   return { content: _instanceSoulContent, source: _instanceSoulSource };
 }
 
+/**
+ * Load soul content with the full priority chain:
+ * 1. User-configured custom soul.md (from DB settings)
+ * 2. SOUL_MD_PATH env var
+ * 3. /workspace/agents/{actorId}/soul.md (agent-specific on-disk soul)
+ * 4. persona/soul.md in cwd
+ * 5. ../Autobot/persona/soul.md (dev fallback)
+ * 6. Embedded fallback constant
+ */
 export async function resolveAutobotSoulContent(
   actorId: string,
 ): Promise<{ content: string; source: AutobotSoulSource }> {
+  // 1. Check user-configured custom soul.md in DB
   const settings = await getAutobotUserSettings(actorId).catch(() => null);
   const customSoulMd = settings?.customSoulMd?.trim() ?? "";
   if (customSoulMd) {
     return { content: customSoulMd, source: "custom" };
   }
 
+  // 2. Check SOUL_MD_PATH env var (handled inside loadInstanceSoulContent)
+  // But first, check agent-specific on-disk soul before the instance fallbacks.
+  // We only do this if actorId is provided and not empty.
+  if (actorId) {
+    const agentSoulContent = await readAgentSoul(actorId);
+    if (agentSoulContent && agentSoulContent.trim()) {
+      return { content: agentSoulContent.trim(), source: "agent" };
+    }
+  }
+
+  // 3-6. Instance-level chain (env, cwd persona, Autobot dev, embedded fallback)
   return loadInstanceSoulContent();
 }
 
