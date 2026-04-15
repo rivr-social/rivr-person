@@ -777,11 +777,38 @@ function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBar
     [handleSend],
   );
 
+  const [launching, setLaunching] = useState(false);
+
+  const handleLaunchExecutive = useCallback(async () => {
+    setLaunching(true);
+    try {
+      await fetch("/api/agent-hq/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "executive", provider: "claude" }),
+      });
+    } catch {
+      // silent
+    } finally {
+      setLaunching(false);
+    }
+  }, []);
+
   if (!executivePaneKey) {
     return (
-      <div className="flex items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
-        <Terminal className="h-3.5 w-3.5" />
-        <span>No executive session active. Launch one from the builder to use the chat bar.</span>
+      <div className="flex items-center gap-3 px-4 py-3">
+        <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-xs text-muted-foreground">No executive session active.</span>
+        <Button
+          variant="default"
+          size="sm"
+          className="h-7 text-xs"
+          disabled={launching}
+          onClick={handleLaunchExecutive}
+        >
+          {launching ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Terminal className="h-3 w-3 mr-1" />}
+          Launch Executive
+        </Button>
       </div>
     );
   }
