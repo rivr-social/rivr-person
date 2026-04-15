@@ -150,7 +150,7 @@ interface DbExplorerTreeProps {
   nodes: ExplorerNode[];
   selectedPaths: Set<string>;
   onToggleDirectory: (node: ExplorerNode) => void;
-  onSelectFile: (node: ExplorerNode) => void;
+  onSelectItem: (node: ExplorerNode) => void;
   depth?: number;
 }
 
@@ -158,7 +158,7 @@ function DbExplorerTree({
   nodes,
   selectedPaths,
   onToggleDirectory,
-  onSelectFile,
+  onSelectItem,
   depth = 0,
 }: DbExplorerTreeProps) {
   if (nodes.length === 0) return null;
@@ -169,32 +169,24 @@ function DbExplorerTree({
         const isSelected = selectedPaths.has(node.path);
         return (
           <div key={node.id}>
-            <button
-              type="button"
+            <div
               className={`
-                flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-left
+                flex w-full items-center gap-1 rounded px-1 py-1 text-xs text-left
                 transition-colors hover:bg-muted/60
                 ${isSelected ? "bg-primary/10 text-primary" : "text-foreground/80"}
               `}
               style={{ paddingLeft: `${8 + depth * 14}px` }}
-              onClick={() => {
-                if (isDirectory) {
-                  onToggleDirectory(node);
-                } else {
-                  onSelectFile(node);
-                }
-              }}
             >
-              {isDirectory ? (
-                node.expanded ? (
-                  <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                )
-              ) : (
+              {/* Radial — always present for both files and directories */}
+              <button
+                type="button"
+                className="shrink-0 p-0.5 rounded hover:bg-muted/80"
+                onClick={(e) => { e.stopPropagation(); onSelectItem(node); }}
+                title={isSelected ? "Remove from context" : "Append to pane context"}
+              >
                 <span
                   className={`
-                    inline-flex items-center justify-center h-3.5 w-3.5 shrink-0 rounded-full border
+                    inline-flex items-center justify-center h-3.5 w-3.5 rounded-full border
                     ${isSelected
                       ? "border-primary bg-primary"
                       : "border-muted-foreground/40 bg-transparent"
@@ -203,21 +195,46 @@ function DbExplorerTree({
                 >
                   {isSelected && <Check className="h-2 w-2 text-primary-foreground" />}
                 </span>
-              )}
+              </button>
+
+              {/* Chevron for directories — toggles expand/collapse */}
               {isDirectory ? (
-                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <button
+                  type="button"
+                  className="shrink-0 p-0.5 rounded hover:bg-muted/80"
+                  onClick={(e) => { e.stopPropagation(); onToggleDirectory(node); }}
+                >
+                  {node.expanded ? (
+                    <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  )}
+                </button>
               ) : (
-                <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="inline-block w-4 shrink-0" />
               )}
-              <span className="truncate flex-1">{node.name}</span>
+
+              {/* Icon + name — clicking the name also toggles expand for dirs, select for files */}
+              <button
+                type="button"
+                className="flex items-center gap-1.5 flex-1 min-w-0"
+                onClick={() => isDirectory ? onToggleDirectory(node) : onSelectItem(node)}
+              >
+                {isDirectory ? (
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : (
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                )}
+                <span className="truncate flex-1 text-left">{node.name}</span>
+              </button>
               {node.loading && <Loader2 className="h-3 w-3 animate-spin shrink-0 text-muted-foreground" />}
-            </button>
+            </div>
             {isDirectory && node.expanded && node.children && node.children.length > 0 && (
               <DbExplorerTree
                 nodes={node.children}
                 selectedPaths={selectedPaths}
                 onToggleDirectory={onToggleDirectory}
-                onSelectFile={onSelectFile}
+                onSelectItem={onSelectItem}
                 depth={depth + 1}
               />
             )}
@@ -992,9 +1009,59 @@ export default function AutobotPage() {
     [toExplorerNodes, updateExplorerNode],
   );
 
-  const selectDbFile = useCallback(
+  // Helper: fetch a single file's content and send to pane
+  const appendFileToPaneContext = useCallback(
+    async (filePath: string, fileName: string) => {
+      if (!selectedPaneKey) return;
+      try {
+        const params = new URLSearchParams({ path: filePath });
+        const res = await fetch(`/api/agent-hq/db/file?${params.toString()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const content = typeof data.content === "string"
+          ? data.content
+          : JSON.stringify(data.content, null, 2);
+        const contextBlock = `\n--- Context: ${fileName} (${filePath}) ---\n${content.slice(0, 4000)}\n--- End Context ---\n`;
+        await fetch("/api/agent-hq/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: selectedPaneKey, text: contextBlock, enter: false }),
+        });
+      } catch {
+        // silent
+      }
+    },
+    [selectedPaneKey],
+  );
+
+  // Helper: recursively collect all file paths from a directory
+  const collectDirFiles = useCallback(
+    async (dirPath: string): Promise<Array<{ path: string; name: string }>> => {
+      try {
+        const params = new URLSearchParams({ path: dirPath });
+        const res = await fetch(`/api/agent-hq/db/entries?${params.toString()}`, { cache: "no-store" });
+        if (!res.ok) return [];
+        const data = await res.json();
+        const entries: Array<{ name: string; path: string; type: string }> = data.entries ?? [];
+        const files: Array<{ path: string; name: string }> = [];
+        for (const entry of entries) {
+          if (entry.type === "file") {
+            files.push({ path: entry.path, name: entry.name });
+          } else if (entry.type === "directory") {
+            const subFiles = await collectDirFiles(entry.path);
+            files.push(...subFiles);
+          }
+        }
+        return files;
+      } catch {
+        return [];
+      }
+    },
+    [],
+  );
+
+  const selectDbItem = useCallback(
     async (node: ExplorerNode) => {
-      if (node.type === "directory") return;
       const isRemoving = selectedDbPaths.has(node.path);
 
       // Toggle selection
@@ -1008,32 +1075,20 @@ export default function AutobotPage() {
         return next;
       });
 
-      // If adding and there's an active pane, fetch file content and send to pane
+      // If adding and there's an active pane, fetch content and send
       if (!isRemoving && selectedPaneKey) {
-        try {
-          const params = new URLSearchParams({ path: node.path });
-          const res = await fetch(`/api/agent-hq/db/file?${params.toString()}`, { cache: "no-store" });
-          if (!res.ok) return;
-          const data = await res.json();
-          const content = typeof data.content === "string"
-            ? data.content
-            : JSON.stringify(data.content, null, 2);
-          const contextBlock = `\n--- Context: ${node.name} (${node.path}) ---\n${content.slice(0, 4000)}\n--- End Context ---\n`;
-          await fetch("/api/agent-hq/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              target: selectedPaneKey,
-              text: contextBlock,
-              enter: false,
-            }),
-          });
-        } catch {
-          // silent
+        if (node.type === "file") {
+          await appendFileToPaneContext(node.path, node.name);
+        } else {
+          // Directory — recursively collect and append all files
+          const files = await collectDirFiles(node.path);
+          for (const file of files.slice(0, 20)) { // cap at 20 files per folder
+            await appendFileToPaneContext(file.path, file.name);
+          }
         }
       }
     },
-    [selectedDbPaths, selectedPaneKey],
+    [selectedDbPaths, selectedPaneKey, appendFileToPaneContext, collectDirFiles],
   );
 
   // ---- Handle pane selection ----
@@ -1095,7 +1150,7 @@ export default function AutobotPage() {
                     nodes={dbTree}
                     selectedPaths={selectedDbPaths}
                     onToggleDirectory={toggleDbDirectory}
-                    onSelectFile={selectDbFile}
+                    onSelectItem={selectDbItem}
                   />
                 )}
               </div>
