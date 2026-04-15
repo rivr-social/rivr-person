@@ -192,7 +192,17 @@ function DbExplorerTree({
                   <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                 )
               ) : (
-                <span className="inline-block w-3 shrink-0" />
+                <span
+                  className={`
+                    inline-flex items-center justify-center h-3.5 w-3.5 shrink-0 rounded-full border
+                    ${isSelected
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/40 bg-transparent"
+                    }
+                  `}
+                >
+                  {isSelected && <Check className="h-2 w-2 text-primary-foreground" />}
+                </span>
               )}
               {isDirectory ? (
                 <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -201,7 +211,6 @@ function DbExplorerTree({
               )}
               <span className="truncate flex-1">{node.name}</span>
               {node.loading && <Loader2 className="h-3 w-3 animate-spin shrink-0 text-muted-foreground" />}
-              {isSelected && !isDirectory && <Check className="h-3 w-3 shrink-0 text-primary" />}
             </button>
             {isDirectory && node.expanded && node.children && node.children.length > 0 && (
               <DbExplorerTree
@@ -628,14 +637,31 @@ function PaneGraph({ sessions, selectedPaneKey, onSelectPane }: PaneGraphProps) 
 interface TerminalViewerProps {
   session: PaneCardSession | null;
   capture: string;
+  paneKey: string | null;
   termRef: React.RefObject<XTermPaneHandle | null>;
 }
 
-function TerminalViewer({ session, capture, termRef }: TerminalViewerProps) {
+function TerminalViewer({ session, capture, paneKey, termRef }: TerminalViewerProps) {
   if (!session) return null;
 
   const role = session.metadata.role;
   const badgeColor = ROLE_BADGE_COLORS[role] ?? ROLE_BADGE_COLORS.worker;
+
+  const handleTermInput = useCallback(
+    async (data: string) => {
+      if (!paneKey) return;
+      try {
+        await fetch("/api/agent-hq/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: paneKey, text: data, enter: false }),
+        });
+      } catch {
+        // silent
+      }
+    },
+    [paneKey],
+  );
 
   return (
     <Card className="overflow-hidden border-border/50">
@@ -658,6 +684,7 @@ function TerminalViewer({ session, capture, termRef }: TerminalViewerProps) {
           ref={termRef}
           maxHeight="320px"
           active={true}
+          onInput={handleTermInput}
         />
       </div>
     </Card>
@@ -682,25 +709,40 @@ function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBar
   const handleSend = useCallback(async () => {
     if (!executivePaneKey || !inputValue.trim()) return;
     setSending(true);
+    const sent = inputValue.trim();
     try {
-      const res = await fetch("/api/agent-hq/send", {
+      await fetch("/api/agent-hq/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           target: executivePaneKey,
-          text: inputValue.trim(),
+          text: sent,
           enter: true,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.reply) {
-          setLastReply(data.reply);
-        }
-      }
       setInputValue("");
-      // Focus the executive pane
+      setLastReply(`You: ${sent}`);
+      // Focus the executive pane so the user can see the response in the terminal
       onPaneSelected(executivePaneKey);
+
+      // Poll for a response after a short delay
+      setTimeout(async () => {
+        try {
+          const captureRes = await fetch(
+            `/api/agent-hq/capture?target=${encodeURIComponent(executivePaneKey)}&lines=20&raw=1`,
+            { cache: "no-store" },
+          );
+          if (captureRes.ok) {
+            const data = await captureRes.json();
+            const lines = (data.output ?? "").split("\n").filter((l: string) => l.trim());
+            if (lines.length > 0) {
+              setLastReply(lines.slice(-3).join(" ").slice(0, 200));
+            }
+          }
+        } catch {
+          // silent
+        }
+      }, 3000);
     } catch {
       // silent
     } finally {
@@ -1138,6 +1180,7 @@ export default function AutobotPage() {
                     <TerminalViewer
                       session={selectedSession}
                       capture={capture}
+                      paneKey={selectedPaneKey}
                       termRef={termRef}
                     />
                   </div>
