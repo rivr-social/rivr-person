@@ -1167,44 +1167,44 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
               ) : null}
 
               {authSessionPaneKey ? (
-                <div className=”space-y-3 rounded-xl border border-border/70 bg-muted/10 p-4”>
-                  <p className=”text-sm font-medium”>Sign in to Claude</p>
+                <div className="space-y-3 rounded-xl border border-border/70 bg-muted/10 p-4">
+                  <p className="text-sm font-medium">Sign in to Claude</p>
                   {authLoginUrl ? (
-                    <div className=”flex items-center gap-3 rounded-lg border bg-background/60 px-3 py-2.5”>
-                      <ExternalLink className=”h-4 w-4 shrink-0 text-muted-foreground” />
+                    <div className="flex items-center gap-3 rounded-lg border bg-background/60 px-3 py-2.5">
+                      <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <a
                         href={authLoginUrl}
-                        target=”_blank”
-                        rel=”noreferrer”
-                        className=”min-w-0 truncate text-sm text-primary underline underline-offset-2”
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-w-0 truncate text-sm text-primary underline underline-offset-2"
                       >
                         Open this link to sign in
                       </a>
                     </div>
                   ) : (
-                    <div className=”flex items-center gap-2 rounded-lg border bg-background/60 px-3 py-2.5 text-sm text-muted-foreground”>
-                      <Loader2 className=”h-4 w-4 animate-spin” />
+                    <div className="flex items-center gap-2 rounded-lg border bg-background/60 px-3 py-2.5 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
                       Waiting for sign-in link&hellip;
                     </div>
                   )}
-                  <div className=”flex items-center gap-2”>
+                  <div className="flex items-center gap-2">
                     <Input
                       value={authCodeDraft}
                       onChange={(event) => setAuthCodeDraft(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === “Enter” && !event.shiftKey) {
+                        if (event.key === "Enter" && !event.shiftKey) {
                           event.preventDefault();
                           void sendAuthCode();
                         }
                       }}
-                      placeholder=”Paste your login code”
-                      autoComplete=”off”
-                      autoCorrect=”off”
+                      placeholder="Paste your login code"
+                      autoComplete="off"
+                      autoCorrect="off"
                       spellCheck={false}
-                      className=”font-mono text-sm”
+                      className="font-mono text-sm"
                     />
-                    <Button type=”button” size=”sm” onClick={() => void sendAuthCode()} disabled={!authCodeDraft.trim() || authSending}>
-                      {authSending ? <Loader2 className=”mr-1.5 h-3.5 w-3.5 animate-spin” /> : <Send className=”mr-1.5 h-3.5 w-3.5” />}
+                    <Button type="button" size="sm" onClick={() => void sendAuthCode()} disabled={!authCodeDraft.trim() || authSending}>
+                      {authSending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
                       Submit
                     </Button>
                   </div>
