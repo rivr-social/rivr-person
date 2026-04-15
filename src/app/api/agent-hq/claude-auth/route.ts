@@ -68,7 +68,7 @@ async function readStatus(): Promise<ClaudeAuthStatus> {
     const raw = await execClaude(["auth", "status", "--json"]);
     const parsed = JSON.parse(raw) as ClaudeAuthStatus & { apiKeySource?: string };
     const isApiKeyAuth = parsed.authMethod === "api_key";
-    return {
+    const status: ClaudeAuthStatus = {
       loggedIn: isApiKeyAuth ? false : Boolean(parsed.loggedIn),
       authMethod: isApiKeyAuth ? undefined : parsed.authMethod,
       apiProvider: parsed.apiProvider,
@@ -77,6 +77,19 @@ async function readStatus(): Promise<ClaudeAuthStatus> {
       orgName: isApiKeyAuth ? undefined : parsed.orgName,
       subscriptionType: isApiKeyAuth ? undefined : parsed.subscriptionType,
     };
+
+    // Validate token actually works if status says logged in
+    // claude auth status reads cached account info but doesn't test the token
+    if (status.loggedIn) {
+      try {
+        await execClaude(["-p", "ok", "--max-turns", "1", "--output-format", "json"]);
+      } catch {
+        // Token expired or invalid — mark as not logged in
+        status.loggedIn = false;
+      }
+    }
+
+    return status;
   } catch {
     // claude auth status fails when no OAuth login exists and API key is stripped — that's expected
     return { loggedIn: false };
