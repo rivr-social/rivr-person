@@ -995,6 +995,8 @@ export default function AutobotPage() {
   const selectDbFile = useCallback(
     async (node: ExplorerNode) => {
       if (node.type === "directory") return;
+      const isRemoving = selectedDbPaths.has(node.path);
+
       // Toggle selection
       setSelectedDbPaths((prev) => {
         const next = new Set(prev);
@@ -1005,8 +1007,33 @@ export default function AutobotPage() {
         }
         return next;
       });
+
+      // If adding and there's an active pane, fetch file content and send to pane
+      if (!isRemoving && selectedPaneKey) {
+        try {
+          const params = new URLSearchParams({ path: node.path });
+          const res = await fetch(`/api/agent-hq/db/file?${params.toString()}`, { cache: "no-store" });
+          if (!res.ok) return;
+          const data = await res.json();
+          const content = typeof data.content === "string"
+            ? data.content
+            : JSON.stringify(data.content, null, 2);
+          const contextBlock = `\n--- Context: ${node.name} (${node.path}) ---\n${content.slice(0, 4000)}\n--- End Context ---\n`;
+          await fetch("/api/agent-hq/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              target: selectedPaneKey,
+              text: contextBlock,
+              enter: false,
+            }),
+          });
+        } catch {
+          // silent
+        }
+      }
     },
-    [],
+    [selectedDbPaths, selectedPaneKey],
   );
 
   // ---- Handle pane selection ----
@@ -1079,7 +1106,7 @@ export default function AutobotPage() {
               <div className="border-t border-border/50 px-3 py-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    Context ({selectedDbPaths.size})
+                    Appended to {selectedSession?.metadata?.label || selectedSession?.sessionName || "pane"} ({selectedDbPaths.size})
                   </span>
                   <Button
                     variant="ghost"
