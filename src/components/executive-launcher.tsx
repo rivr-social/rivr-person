@@ -375,10 +375,8 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
   const executivePaneKey = executiveSession ? paneKeyForSession(executiveSession) : null;
   const authLoginUrl = useMemo(() => extractFirstUrl(authSessionOutput), [authSessionOutput]);
 
-  const showingAuthTerminal = !executiveSession && Boolean(authSessionPaneKey);
   const previousOutputRef = useRef("");
   const speakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const terminalText = showingAuthTerminal ? authSessionOutput : output;
   const lastAssistantMessageRef = useRef("");
   const buildContextMounts = useCallback((): ExecutiveContextMount[] => {
     const mounts: ExecutiveContextMount[] = [
@@ -1169,52 +1167,45 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
               ) : null}
 
               {authSessionPaneKey ? (
-                <div className="space-y-2 rounded-xl border border-border/70 bg-muted/10 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">Claude subscription session</p>
-                      <p className="text-xs text-muted-foreground">
-                        This is a standard Claude Code terminal for this app runtime. The defaults are preselected so it should land directly on the Claude subscription sign-in step.
-                      </p>
-                    </div>
-                    <Badge variant="outline">{authSessionPaneKey}</Badge>
-                  </div>
+                <div className=”space-y-3 rounded-xl border border-border/70 bg-muted/10 p-4”>
+                  <p className=”text-sm font-medium”>Sign in to Claude</p>
                   {authLoginUrl ? (
-                    <div className="flex items-center justify-between gap-2 rounded-lg border bg-background/60 px-3 py-2">
-                      <p className="min-w-0 truncate text-xs text-muted-foreground">{authLoginUrl}</p>
-                      <Button type="button" size="sm" variant="outline" asChild>
-                        <a href={authLoginUrl} target="_blank" rel="noreferrer">
-                          Open Login
-                        </a>
-                      </Button>
+                    <div className=”flex items-center gap-3 rounded-lg border bg-background/60 px-3 py-2.5”>
+                      <ExternalLink className=”h-4 w-4 shrink-0 text-muted-foreground” />
+                      <a
+                        href={authLoginUrl}
+                        target=”_blank”
+                        rel=”noreferrer”
+                        className=”min-w-0 truncate text-sm text-primary underline underline-offset-2”
+                      >
+                        Open this link to sign in
+                      </a>
                     </div>
                   ) : (
-                    <div className="rounded-lg border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-                      Claude Code is starting in the terminal below.
+                    <div className=”flex items-center gap-2 rounded-lg border bg-background/60 px-3 py-2.5 text-sm text-muted-foreground”>
+                      <Loader2 className=”h-4 w-4 animate-spin” />
+                      Waiting for sign-in link&hellip;
                     </div>
                   )}
-                  <div className="rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
-                    If Claude shows “Paste code here if prompted &gt;”, paste the returned code into the field below and send it. If the flow gets stuck, click Connect Claude again for a fresh terminal.
-                  </div>
-                  <div className="flex items-center gap-2">
+                  <div className=”flex items-center gap-2”>
                     <Input
                       value={authCodeDraft}
                       onChange={(event) => setAuthCodeDraft(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
+                        if (event.key === “Enter” && !event.shiftKey) {
                           event.preventDefault();
                           void sendAuthCode();
                         }
                       }}
-                      placeholder="Paste Claude login code here…"
-                      autoComplete="off"
-                      autoCorrect="off"
+                      placeholder=”Paste your login code”
+                      autoComplete=”off”
+                      autoCorrect=”off”
                       spellCheck={false}
-                      className="font-mono text-sm"
+                      className=”font-mono text-sm”
                     />
-                    <Button type="button" size="sm" onClick={() => void sendAuthCode()} disabled={!authCodeDraft.trim() || authSending}>
-                      {authSending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-                      Send
+                    <Button type=”button” size=”sm” onClick={() => void sendAuthCode()} disabled={!authCodeDraft.trim() || authSending}>
+                      {authSending ? <Loader2 className=”mr-1.5 h-3.5 w-3.5 animate-spin” /> : <Send className=”mr-1.5 h-3.5 w-3.5” />}
+                      Submit
                     </Button>
                   </div>
                 </div>
@@ -1263,9 +1254,15 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
                     )}
                   </div>
                 ) : authSessionPaneKey ? (
-                  <pre className="h-[min(48dvh,420px)] sm:h-[320px] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-6 text-slate-100">
-                    {terminalText || "Waiting for Claude login output…"}
-                  </pre>
+                  <div className="flex h-[min(48dvh,420px)] sm:h-[320px] flex-col items-center justify-center gap-3 px-8 text-center text-slate-300">
+                    <KeyRound className="h-8 w-8" />
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-white">Signing in to Claude&hellip;</p>
+                      <p className="text-xs text-slate-400">
+                        Use the sign-in link above and paste your login code when ready.
+                      </p>
+                    </div>
+                  </div>
                 ) : (
                   <div className="flex h-[min(48dvh,420px)] sm:h-[320px] flex-col items-center justify-center gap-3 px-8 text-center text-slate-300">
                     <Terminal className="h-8 w-8" />
