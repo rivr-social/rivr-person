@@ -864,9 +864,14 @@ export default function AutobotPage() {
   }, [allSessions, selectedPaneKey]);
 
   const executivePaneKey = useMemo(() => {
+    // Use the selected pane if it's an executive, otherwise fall back to the first executive
+    if (selectedPaneKey) {
+      const selectedSession = allSessions.find((s) => paneKeyForSession(s) === selectedPaneKey);
+      if (selectedSession?.metadata?.role === "executive") return selectedPaneKey;
+    }
     const executive = groups.find((g) => g.role === "executive")?.sessions?.[0];
     return executive ? paneKeyForSession(executive as PaneCardSession) : null;
-  }, [groups]);
+  }, [groups, selectedPaneKey, allSessions]);
 
   // ---- Fetch status ----
   useEffect(() => {
