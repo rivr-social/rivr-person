@@ -709,63 +709,41 @@ function TerminalViewer({ session, capture, paneKey, termRef }: TerminalViewerPr
 }
 
 // ---------------------------------------------------------------------------
-// Executive Chat Bar
+// Chat Bar — sends to selected pane
 // ---------------------------------------------------------------------------
 
-interface ExecutiveChatBarProps {
-  executivePaneKey: string | null;
-  onPaneSelected: (paneKey: string) => void;
+interface PaneChatBarProps {
+  targetPaneKey: string | null;
+  targetLabel: string | null;
+  onLaunch: () => void;
 }
 
-function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBarProps) {
+function PaneChatBar({ targetPaneKey, targetLabel, onLaunch }: PaneChatBarProps) {
   const [inputValue, setInputValue] = useState("");
   const [sending, setSending] = useState(false);
-  const [lastReply, setLastReply] = useState<string | null>(null);
+  const [launching, setLaunching] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleSend = useCallback(async () => {
-    if (!executivePaneKey || !inputValue.trim()) return;
+    if (!targetPaneKey || !inputValue.trim()) return;
     setSending(true);
-    const sent = inputValue.trim();
     try {
       await fetch("/api/agent-hq/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          target: executivePaneKey,
-          text: sent,
+          target: targetPaneKey,
+          text: inputValue.trim(),
           enter: true,
         }),
       });
       setInputValue("");
-      setLastReply(`You: ${sent}`);
-      // Focus the executive pane so the user can see the response in the terminal
-      onPaneSelected(executivePaneKey);
-
-      // Poll for a response after a short delay
-      setTimeout(async () => {
-        try {
-          const captureRes = await fetch(
-            `/api/agent-hq/capture?target=${encodeURIComponent(executivePaneKey)}&lines=20&raw=1`,
-            { cache: "no-store" },
-          );
-          if (captureRes.ok) {
-            const data = await captureRes.json();
-            const lines = (data.output ?? "").split("\n").filter((l: string) => l.trim());
-            if (lines.length > 0) {
-              setLastReply(lines.slice(-3).join(" ").slice(0, 200));
-            }
-          }
-        } catch {
-          // silent
-        }
-      }, 3000);
     } catch {
       // silent
     } finally {
       setSending(false);
     }
-  }, [executivePaneKey, inputValue, onPaneSelected]);
+  }, [targetPaneKey, inputValue]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -777,8 +755,6 @@ function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBar
     [handleSend],
   );
 
-  const [launching, setLaunching] = useState(false);
-
   const handleLaunchExecutive = useCallback(async () => {
     setLaunching(true);
     try {
@@ -787,24 +763,25 @@ function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBar
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           role: "executive",
-          provider: "opencode",
+          provider: "claude",
           cwd: "/workspace",
           displayLabel: "Executive",
           objective: "You are the executive orchestrator for this sovereign instance.",
         }),
       });
+      onLaunch();
     } catch {
       // silent
     } finally {
       setLaunching(false);
     }
-  }, []);
+  }, [onLaunch]);
 
-  if (!executivePaneKey) {
+  if (!targetPaneKey) {
     return (
       <div className="flex items-center gap-3 px-4 py-3">
         <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="text-xs text-muted-foreground">No executive session active.</span>
+        <span className="text-xs text-muted-foreground">No session selected.</span>
         <Button
           variant="default"
           size="sm"
@@ -820,45 +797,36 @@ function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBar
   }
 
   return (
-    <div className="space-y-0">
-      {/* Last reply preview */}
-      {lastReply && (
-        <div className="px-4 py-1.5 text-xs text-muted-foreground bg-muted/20 border-b border-border/30 line-clamp-2">
-          <span className="font-medium text-violet-400">Executive: </span>
-          {lastReply}
-        </div>
-      )}
-
-      {/* Input bar */}
-      <div className="flex items-center gap-2 px-3 py-2">
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span className="h-2 w-2 rounded-full bg-violet-500" />
-          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Exec</span>
-        </div>
-        <input
-          ref={inputRef}
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Send to executive..."
-          disabled={sending}
-          className="flex-1 bg-transparent text-sm placeholder:text-muted-foreground/50 focus:outline-none"
-        />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 shrink-0"
-          disabled={sending || !inputValue.trim()}
-          onClick={handleSend}
-        >
-          {sending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Send className="h-3.5 w-3.5" />
-          )}
-        </Button>
+    <div className="flex items-center gap-2 px-3 py-2">
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="h-2 w-2 rounded-full bg-primary" />
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider truncate max-w-[80px]">
+          {targetLabel || "Pane"}
+        </span>
       </div>
+      <input
+        ref={inputRef}
+        type="text"
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={`Send to ${targetLabel || "selected pane"}...`}
+        disabled={sending}
+        className="flex-1 bg-transparent text-sm placeholder:text-muted-foreground/50 focus:outline-none"
+      />
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 shrink-0"
+        disabled={sending || !inputValue.trim()}
+        onClick={handleSend}
+      >
+        {sending ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Send className="h-3.5 w-3.5" />
+        )}
+      </Button>
     </div>
   );
 }
@@ -896,15 +864,8 @@ export default function AutobotPage() {
     return allSessions.find((s) => paneKeyForSession(s) === selectedPaneKey) ?? null;
   }, [allSessions, selectedPaneKey]);
 
-  const executivePaneKey = useMemo(() => {
-    // Use the selected pane if it's an executive, otherwise fall back to the first executive
-    if (selectedPaneKey) {
-      const selectedSession = allSessions.find((s) => paneKeyForSession(s) === selectedPaneKey);
-      if (selectedSession?.metadata?.role === "executive") return selectedPaneKey;
-    }
-    const executive = groups.find((g) => g.role === "executive")?.sessions?.[0];
-    return executive ? paneKeyForSession(executive as PaneCardSession) : null;
-  }, [groups, selectedPaneKey, allSessions]);
+  // Auto-select first executive if nothing is selected yet
+  // (kept as side-effect in fetchSessions callback above)
 
   // ---- Fetch status ----
   useEffect(() => {
@@ -1095,11 +1056,12 @@ export default function AutobotPage() {
   // ---- Render ----
   return (
     <div
-      className="h-[100dvh] overflow-hidden"
+      className="overflow-hidden"
       style={{
         display: "grid",
         gridTemplateColumns: sidebarCollapsed ? "0px 1fr" : "280px 1fr",
         gridTemplateRows: "1fr auto",
+        height: "calc(100dvh - 4rem)",
       }}
     >
       {/* ================================================================ */}
@@ -1270,15 +1232,16 @@ export default function AutobotPage() {
       </div>
 
       {/* ================================================================ */}
-      {/* BOTTOM - Executive Chat Bar                                       */}
+      {/* BOTTOM - Chat Bar (sends to selected pane)                        */}
       {/* ================================================================ */}
       <div
         className="border-t border-border/50 bg-background/80 backdrop-blur-sm"
         style={{ gridColumn: 2 }}
       >
-        <ExecutiveChatBar
-          executivePaneKey={executivePaneKey}
-          onPaneSelected={handleSelectPane}
+        <PaneChatBar
+          targetPaneKey={selectedPaneKey}
+          targetLabel={selectedSession?.metadata?.label || selectedSession?.sessionName || null}
+          onLaunch={fetchSessions}
         />
       </div>
     </div>

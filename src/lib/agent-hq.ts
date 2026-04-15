@@ -1437,7 +1437,7 @@ export async function resumeOrCreateExecutive(options?: {
     await saveExecutiveSession(existing);
   }
 
-  const provider = options?.provider ?? "opencode";
+  const provider = options?.provider ?? "claude";
   const cwd = options?.cwd ?? process.cwd();
   const label = "Executive";
   const now = new Date().toISOString();
