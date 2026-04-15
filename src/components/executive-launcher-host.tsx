@@ -20,7 +20,6 @@ interface ExecutiveLauncherHostProps {
 
 export function ExecutiveLauncherHost({ personas, groups }: ExecutiveLauncherHostProps) {
   const [mounted, setMounted] = useState(false);
-  const pathname = usePathname();
 
   useEffect(() => {
     setMounted(true);
