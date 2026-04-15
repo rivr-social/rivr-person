@@ -1230,19 +1230,7 @@ export default function AutobotPage() {
         </ScrollArea>
       </div>
 
-      {/* ================================================================ */}
-      {/* BOTTOM - Chat Bar (fixed position, always visible)                */}
-      {/* ================================================================ */}
-      <div
-        className="fixed bottom-16 md:bottom-0 right-0 border-t border-border/50 bg-background/95 backdrop-blur-sm z-40"
-        style={{ left: sidebarCollapsed ? 0 : 280 }}
-      >
-        <PaneChatBar
-          targetPaneKey={selectedPaneKey}
-          targetLabel={selectedSession?.metadata?.label || selectedSession?.sessionName || null}
-          onLaunch={fetchSessions}
-        />
-      </div>
+      {/* Chat is handled by the global ExecutiveLauncher bubble */}
     </div>
   );
 }

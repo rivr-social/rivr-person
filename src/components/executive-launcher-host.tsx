@@ -2,7 +2,6 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
 
 const ExecutiveLauncher = dynamic(
   () => import("@/components/executive-launcher").then((mod) => mod.ExecutiveLauncher),
@@ -28,11 +27,6 @@ export function ExecutiveLauncherHost({ personas, groups }: ExecutiveLauncherHos
   }, []);
 
   if (!mounted) {
-    return null;
-  }
-
-  // Hide on /autobot — that page IS the executive interface
-  if (pathname === "/autobot") {
     return null;
   }
 
