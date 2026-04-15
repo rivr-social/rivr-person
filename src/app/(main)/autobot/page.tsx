@@ -1,56 +1,58 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Separator } from "@/components/ui/separator";
 import {
   Activity,
   Bot,
-  Calendar as CalendarIcon,
-  CheckCircle2,
+  Check,
   ChevronDown,
   ChevronRight,
   CircleDot,
-  Clock,
-  Download,
   Drama,
-  ExternalLink,
+  FileText,
+  FolderOpen,
+  Loader2,
   Network,
   RefreshCw,
-  Shield,
+  Send,
+  Settings,
   Terminal,
-  XCircle,
 } from "lucide-react";
+import dynamic from "next/dynamic";
+import type { XTermPaneHandle } from "@/components/xterm-pane";
+import { AgentHqPaneCard, paneKeyForSession } from "@/components/agent-hq-pane-card";
+import type { PaneCardSession } from "@/components/agent-hq-pane-card";
 import { PersonaManager } from "@/components/persona-manager";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
-import { SupervisorConsole } from "@/components/supervisor-console";
-import Link from "next/link";
+
+const XTermPane = dynamic(() => import("@/components/xterm-pane"), { ssr: false });
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const SESSIONS_POLL_MS = 3000;
+const CAPTURE_POLL_MS = 2000;
+const CAPTURE_LINES = 100;
+const DB_ENTRY_POLL_MS = 0; // no polling, load on demand
+
+const ROLE_ORDER = ["executive", "architect", "orchestrator", "worker", "observer"];
+
+const ROLE_BADGE_COLORS: Record<string, string> = {
+  executive: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+  architect: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+  orchestrator: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+  worker: "bg-green-500/20 text-green-300 border-green-500/30",
+  observer: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30",
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +80,54 @@ interface AutobotStatus {
   };
 }
 
+interface AgentSessionMetadata {
+  role: string;
+  parent: string | null;
+  label: string;
+  notes: string;
+  objective: string;
+  provider?: string;
+  cwd?: string;
+  workspaceId?: string;
+  workspaceScope?: string;
+  personaId?: string | null;
+  personaName?: string;
+  kgScopeSet?: string[];
+}
+
+interface AgentSession {
+  sessionName: string;
+  windowIndex: number;
+  paneIndex: number;
+  paneId: string;
+  command: string;
+  pid: number;
+  title: string;
+  active: boolean;
+  dead: boolean;
+  metadata: AgentSessionMetadata;
+}
+
+interface RoleGroup {
+  role: string;
+  sessions: AgentSession[];
+}
+
+interface DbEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size: number;
+}
+
+interface ExplorerNode extends DbEntry {
+  id: string;
+  expanded?: boolean;
+  loaded?: boolean;
+  loading?: boolean;
+  children?: ExplorerNode[];
+}
+
 interface ProvenanceEntry {
   id: string;
   toolName: string;
@@ -93,10 +143,191 @@ interface ProvenanceEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Status Tab
+// Sidebar - DB Explorer Tree
 // ---------------------------------------------------------------------------
 
-function StatusTab({ status }: { status: AutobotStatus | null; }) {
+interface DbExplorerTreeProps {
+  nodes: ExplorerNode[];
+  selectedPaths: Set<string>;
+  onToggleDirectory: (node: ExplorerNode) => void;
+  onSelectFile: (node: ExplorerNode) => void;
+  depth?: number;
+}
+
+function DbExplorerTree({
+  nodes,
+  selectedPaths,
+  onToggleDirectory,
+  onSelectFile,
+  depth = 0,
+}: DbExplorerTreeProps) {
+  if (nodes.length === 0) return null;
+  return (
+    <div className="space-y-0.5">
+      {nodes.map((node) => {
+        const isDirectory = node.type === "directory";
+        const isSelected = selectedPaths.has(node.path);
+        return (
+          <div key={node.id}>
+            <button
+              type="button"
+              className={`
+                flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-left
+                transition-colors hover:bg-muted/60
+                ${isSelected ? "bg-primary/10 text-primary" : "text-foreground/80"}
+              `}
+              style={{ paddingLeft: `${8 + depth * 14}px` }}
+              onClick={() => {
+                if (isDirectory) {
+                  onToggleDirectory(node);
+                } else {
+                  onSelectFile(node);
+                }
+              }}
+            >
+              {isDirectory ? (
+                node.expanded ? (
+                  <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                )
+              ) : (
+                <span className="inline-block w-3 shrink-0" />
+              )}
+              {isDirectory ? (
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
+              <span className="truncate flex-1">{node.name}</span>
+              {node.loading && <Loader2 className="h-3 w-3 animate-spin shrink-0 text-muted-foreground" />}
+              {isSelected && !isDirectory && <Check className="h-3 w-3 shrink-0 text-primary" />}
+            </button>
+            {isDirectory && node.expanded && node.children && node.children.length > 0 && (
+              <DbExplorerTree
+                nodes={node.children}
+                selectedPaths={selectedPaths}
+                onToggleDirectory={onToggleDirectory}
+                onSelectFile={onSelectFile}
+                depth={depth + 1}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar Footer - Tool Buttons for legacy tabs
+// ---------------------------------------------------------------------------
+
+interface SidebarToolButtonsProps {
+  status: AutobotStatus | null;
+}
+
+function SidebarToolButtons({ status }: SidebarToolButtonsProps) {
+  return (
+    <div className="flex items-center gap-1 px-2 py-2 border-t border-border/50">
+      <TooltipProvider delayDuration={200}>
+        {/* Status */}
+        <Sheet>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <CircleDot className="h-3.5 w-3.5" />
+                </Button>
+              </SheetTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top"><p>Status</p></TooltipContent>
+          </Tooltip>
+          <SheetContent side="left" className="w-[400px] sm:w-[480px]">
+            <SheetHeader>
+              <SheetTitle>Instance Status</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4 space-y-4 overflow-y-auto max-h-[calc(100vh-6rem)]">
+              <StatusPanel status={status} />
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        {/* Personas */}
+        <Sheet>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <Drama className="h-3.5 w-3.5" />
+                </Button>
+              </SheetTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top"><p>Personas</p></TooltipContent>
+          </Tooltip>
+          <SheetContent side="left" className="w-[500px] sm:w-[600px]">
+            <SheetHeader>
+              <SheetTitle>Personas</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4 overflow-y-auto max-h-[calc(100vh-6rem)]">
+              <PersonaManager />
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        {/* Activity */}
+        <Sheet>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <Activity className="h-3.5 w-3.5" />
+                </Button>
+              </SheetTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top"><p>Activity</p></TooltipContent>
+          </Tooltip>
+          <SheetContent side="right" className="w-[600px] sm:w-[720px]">
+            <SheetHeader>
+              <SheetTitle>MCP Activity</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4 overflow-y-auto max-h-[calc(100vh-6rem)]">
+              <ActivityPanel />
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        {/* Connections */}
+        <Sheet>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <Network className="h-3.5 w-3.5" />
+                </Button>
+              </SheetTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top"><p>Connections</p></TooltipContent>
+          </Tooltip>
+          <SheetContent side="right" className="w-[500px] sm:w-[600px]">
+            <SheetHeader>
+              <SheetTitle>Connections</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4 overflow-y-auto max-h-[calc(100vh-6rem)]">
+              <AutobotConnectionsPanel />
+            </div>
+          </SheetContent>
+        </Sheet>
+      </TooltipProvider>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Status Panel (moved from old StatusTab)
+// ---------------------------------------------------------------------------
+
+function StatusPanel({ status }: { status: AutobotStatus | null }) {
   if (!status) {
     return (
       <div className="space-y-4">
@@ -110,115 +341,77 @@ function StatusTab({ status }: { status: AutobotStatus | null; }) {
 
   return (
     <div className="space-y-4">
-      {/* Instance Identity */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <CircleDot className="h-4 w-4" />
-            Instance Identity
+            <CircleDot className="h-4 w-4" /> Instance Identity
           </CardTitle>
         </CardHeader>
         <CardContent>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
             <dt className="text-muted-foreground">Type</dt>
-            <dd>
-              <Badge variant="outline" className="font-mono">
-                {instance.instanceType}
-              </Badge>
-            </dd>
+            <dd><Badge variant="outline" className="font-mono">{instance.instanceType}</Badge></dd>
             <dt className="text-muted-foreground">Slug</dt>
             <dd className="font-mono text-xs">{instance.instanceSlug}</dd>
-            <dt className="text-muted-foreground">Instance ID</dt>
-            <dd className="font-mono text-xs truncate" title={instance.instanceId}>
-              {instance.instanceId.slice(0, 8)}…
-            </dd>
+            <dt className="text-muted-foreground">ID</dt>
+            <dd className="font-mono text-xs truncate" title={instance.instanceId}>{instance.instanceId.slice(0, 8)}...</dd>
             <dt className="text-muted-foreground">Base URL</dt>
             <dd className="font-mono text-xs truncate">
-              <a
-                href={instance.baseUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline inline-flex items-center gap-1"
-              >
+              <a href={instance.baseUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                 {instance.baseUrl}
-                <ExternalLink className="h-3 w-3" />
               </a>
             </dd>
           </dl>
         </CardContent>
       </Card>
 
-      {/* Primary Agent */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Bot className="h-4 w-4" />
-            Primary Agent
+            <Bot className="h-4 w-4" /> Primary Agent
           </CardTitle>
         </CardHeader>
         <CardContent>
           {autobot.primaryAgent ? (
             <div className="flex items-center gap-3">
-              <Avatar className="h-10 w-10">
-                <AvatarImage
-                  src={autobot.primaryAgent.image ?? undefined}
-                  alt={autobot.primaryAgent.name}
-                />
-                <AvatarFallback>
-                  {autobot.primaryAgent.name.substring(0, 2).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
+              <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold">
+                {autobot.primaryAgent.name.substring(0, 2).toUpperCase()}
+              </div>
               <div>
                 <p className="font-medium text-sm">{autobot.primaryAgent.name}</p>
-                <p className="font-mono text-xs text-muted-foreground">
-                  {autobot.primaryAgentId?.slice(0, 8)}…
-                </p>
+                <p className="font-mono text-xs text-muted-foreground">{autobot.primaryAgentId?.slice(0, 8)}...</p>
               </div>
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               {autobot.primaryAgentId
-                ? `Agent ${autobot.primaryAgentId.slice(0, 8)}… (not found in local DB)`
+                ? `Agent ${autobot.primaryAgentId.slice(0, 8)}... (not found)`
                 : "No PRIMARY_AGENT_ID configured"}
             </p>
           )}
         </CardContent>
       </Card>
 
-      {/* MCP Endpoint Health */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Terminal className="h-4 w-4" />
-            MCP Endpoints
+            <Terminal className="h-4 w-4" /> MCP Endpoints
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center justify-between text-sm">
+        <CardContent className="space-y-2 text-sm">
+          <div className="flex items-center justify-between">
             <span className="text-muted-foreground">Discovery</span>
-            <code className="text-xs bg-muted px-2 py-0.5 rounded">
-              {autobot.discoveryEndpoint}
-            </code>
+            <code className="text-xs bg-muted px-2 py-0.5 rounded">{autobot.discoveryEndpoint}</code>
           </div>
-          <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center justify-between">
             <span className="text-muted-foreground">RPC Transport</span>
-            <code className="text-xs bg-muted px-2 py-0.5 rounded">
-              {autobot.mcpEndpoint}
-            </code>
+            <code className="text-xs bg-muted px-2 py-0.5 rounded">{autobot.mcpEndpoint}</code>
           </div>
-          <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center justify-between">
             <span className="text-muted-foreground">Token Auth</span>
-            {autobot.mcpTokenConfigured ? (
-              <Badge variant="default" className="gap-1">
-                <Shield className="h-3 w-3" />
-                Configured
-              </Badge>
-            ) : (
-              <Badge variant="destructive" className="gap-1">
-                <XCircle className="h-3 w-3" />
-                Not Set
-              </Badge>
-            )}
+            <Badge variant={autobot.mcpTokenConfigured ? "default" : "destructive"}>
+              {autobot.mcpTokenConfigured ? "Configured" : "Not Set"}
+            </Badge>
           </div>
         </CardContent>
       </Card>
@@ -227,525 +420,353 @@ function StatusTab({ status }: { status: AutobotStatus | null; }) {
 }
 
 // ---------------------------------------------------------------------------
-// Activity Tab — helpers
+// Activity Panel (minimal for sheet)
 // ---------------------------------------------------------------------------
 
-/** Well-known ID-like keys in args that can be cross-linked to app resources. */
-const ENTITY_LINK_KEYS = new Set([
-  "id",
-  "entityId",
-  "docId",
-  "documentId",
-  "groupId",
-  "personId",
-  "userId",
-  "profileId",
-  "postId",
-  "listingId",
-  "ringId",
-  "localeId",
-  "personaId",
-]);
+function ActivityPanel() {
+  const [entries, setEntries] = useState<ProvenanceEntry[]>([]);
+  const [loading, setLoading] = useState(true);
 
-/** Heuristic: looks like a UUID or cuid. */
-const ID_PATTERN = /^[a-f0-9-]{36}$|^c[a-z0-9]{24,}$/i;
-
-/**
- * Map an ID-bearing key to a best-effort in-app route.
- * Returns null when no meaningful route can be inferred.
- */
-function resourceLinkForKey(
-  key: string,
-  value: string
-): { href: string; label: string } | null {
-  if (!ID_PATTERN.test(value)) return null;
-
-  const shortId = value.slice(0, 8);
-
-  switch (key) {
-    case "personaId":
-      return { href: `/autobot`, label: `Persona ${shortId}...` };
-    case "postId":
-      return { href: `/post/${value}`, label: `Post ${shortId}...` };
-    case "docId":
-    case "documentId":
-      return { href: `/doc/${value}`, label: `Doc ${shortId}...` };
-    case "groupId":
-      return { href: `/group/${value}`, label: `Group ${shortId}...` };
-    case "profileId":
-    case "personId":
-    case "userId":
-      return { href: `/profile/${value}`, label: `Profile ${shortId}...` };
-    case "listingId":
-      return { href: `/listing/${value}`, label: `Listing ${shortId}...` };
-    case "ringId":
-      return { href: `/ring/${value}`, label: `Ring ${shortId}...` };
-    case "localeId":
-      return { href: `/locale/${value}`, label: `Locale ${shortId}...` };
-    case "entityId":
-    case "id":
-      return { href: `#`, label: `Entity ${shortId}...` };
-    default:
-      return null;
-  }
-}
-
-/** Render a single JSON value, cross-linking IDs when possible. */
-function ArgValue({ keyName, value }: { keyName: string; value: unknown }) {
-  if (
-    typeof value === "string" &&
-    ENTITY_LINK_KEYS.has(keyName) &&
-    ID_PATTERN.test(value)
-  ) {
-    const link = resourceLinkForKey(keyName, value);
-    if (link) {
-      return (
-        <Link
-          href={link.href}
-          className="text-primary underline underline-offset-2 hover:text-primary/80 inline-flex items-center gap-0.5"
-        >
-          {link.label}
-          <ExternalLink className="h-3 w-3" />
-        </Link>
-      );
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch("/api/autobot/provenance?limit=50");
+        if (res.ok) {
+          const data = await res.json();
+          setEntries(data.entries ?? []);
+        }
+      } catch {
+        // silent
+      } finally {
+        setLoading(false);
+      }
     }
+    load();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-10 w-full" />
+        ))}
+      </div>
+    );
   }
-  return <span>{JSON.stringify(value)}</span>;
-}
 
-/** Format a Date as YYYY-MM-DD for display. */
-function formatDateShort(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-// ---------------------------------------------------------------------------
-// Activity Tab — expanded row detail
-// ---------------------------------------------------------------------------
-
-function ProvenanceRowDetail({ entry }: { entry: ProvenanceEntry }) {
-  const argsEntries = Object.entries(entry.argsSummary ?? {});
-  const hasError =
-    entry.resultStatus !== "success" && entry.errorMessage;
+  if (entries.length === 0) {
+    return <p className="text-sm text-muted-foreground text-center py-8">No MCP activity recorded yet.</p>;
+  }
 
   return (
-    <div className="px-4 py-3 bg-muted/40 border-t space-y-3 text-xs">
-      {/* Args summary */}
-      <div>
-        <p className="font-medium text-muted-foreground mb-1">Arguments</p>
-        {argsEntries.length === 0 ? (
-          <p className="text-muted-foreground italic">No arguments recorded.</p>
-        ) : (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-            {argsEntries.map(([key, val]) => (
-              <div key={key} className="contents">
-                <dt className="font-mono text-muted-foreground">{key}</dt>
-                <dd className="font-mono break-all">
-                  <ArgValue keyName={key} value={val} />
-                </dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </div>
-
-      {/* Error detail */}
-      {hasError && (
-        <div>
-          <p className="font-medium text-destructive mb-1">Error</p>
-          <pre className="whitespace-pre-wrap break-all text-destructive/90 bg-destructive/5 rounded p-2">
-            {entry.errorMessage}
-          </pre>
-        </div>
-      )}
-
-      {/* Metadata row */}
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
-        <span>
-          <strong>Actor ID:</strong>{" "}
-          <code className="font-mono">{entry.actorId.slice(0, 12)}...</code>
-        </span>
-        {entry.controllerId && (
-          <span>
-            <strong>Controller:</strong>{" "}
-            <code className="font-mono">
-              {entry.controllerId.slice(0, 12)}...
-            </code>
+    <div className="space-y-1">
+      {entries.map((entry) => (
+        <div key={entry.id} className="flex items-center gap-2 rounded border border-border/30 px-3 py-2 text-xs">
+          <span className={`h-2 w-2 rounded-full shrink-0 ${entry.resultStatus === "success" ? "bg-green-500" : "bg-red-500"}`} />
+          <span className="font-mono flex-1 truncate">{entry.toolName}</span>
+          <Badge variant="outline" className="text-[10px]">{entry.actorType}</Badge>
+          <span className="text-muted-foreground">
+            {new Date(entry.createdAt).toLocaleString(undefined, {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
           </span>
-        )}
-        <span>
-          <strong>Entry ID:</strong>{" "}
-          <code className="font-mono">{entry.id.slice(0, 12)}...</code>
-        </span>
-      </div>
+        </div>
+      ))}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Activity Tab — date range picker
+// Hierarchical Pane Graph
 // ---------------------------------------------------------------------------
 
-function DateRangePicker({
-  startDate,
-  endDate,
-  onStartChange,
-  onEndChange,
-}: {
-  startDate: Date | undefined;
-  endDate: Date | undefined;
-  onStartChange: (d: Date | undefined) => void;
-  onEndChange: (d: Date | undefined) => void;
-}) {
+function buildChildrenMap(sessions: PaneCardSession[]) {
+  const children = new Map<string, PaneCardSession[]>();
+  for (const session of sessions) {
+    const parent = session.metadata.parent?.trim();
+    if (!parent) continue;
+    const current = children.get(parent) ?? [];
+    current.push(session);
+    children.set(parent, current);
+  }
+  return children;
+}
+
+function roleRank(role: string): number {
+  const idx = ROLE_ORDER.indexOf(role);
+  return idx >= 0 ? idx : ROLE_ORDER.length;
+}
+
+interface TierConfig {
+  label: string;
+  roles: string[];
+}
+
+const TIER_CONFIG: TierConfig[] = [
+  { label: "Visionary / Architect", roles: ["architect"] },
+  { label: "Executive", roles: ["executive"] },
+  { label: "Orchestrators", roles: ["orchestrator"] },
+  { label: "Workers / Subagents", roles: ["worker"] },
+  { label: "Observers", roles: ["observer"] },
+];
+
+interface PaneGraphProps {
+  sessions: PaneCardSession[];
+  selectedPaneKey: string | null;
+  onSelectPane: (paneKey: string) => void;
+}
+
+function PaneGraph({ sessions, selectedPaneKey, onSelectPane }: PaneGraphProps) {
+  const [expandedPanes, setExpandedPanes] = useState<Set<string>>(new Set());
+  const childrenMap = useMemo(() => buildChildrenMap(sessions), [sessions]);
+
+  const toggleExpand = useCallback((paneKey: string) => {
+    setExpandedPanes((prev) => {
+      const next = new Set(prev);
+      if (next.has(paneKey)) next.delete(paneKey);
+      else next.add(paneKey);
+      return next;
+    });
+  }, []);
+
+  // Group sessions into tiers by role
+  const tiers = useMemo(() => {
+    return TIER_CONFIG.map((tier) => ({
+      ...tier,
+      sessions: sessions
+        .filter((s) => tier.roles.includes(s.metadata.role))
+        .sort((a, b) => {
+          const ra = roleRank(a.metadata.role);
+          const rb = roleRank(b.metadata.role);
+          if (ra !== rb) return ra - rb;
+          return (a.metadata.label || a.sessionName).localeCompare(b.metadata.label || b.sessionName);
+        }),
+    })).filter((tier) => tier.sessions.length > 0);
+  }, [sessions]);
+
+  if (sessions.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="rounded-full bg-muted/30 p-4 mb-4">
+          <Terminal className="h-8 w-8 text-muted-foreground" />
+        </div>
+        <h3 className="text-sm font-medium text-muted-foreground mb-1">No active agent sessions</h3>
+        <p className="text-xs text-muted-foreground/70 max-w-[280px]">
+          Agent sessions will appear here when launched from the builder or terminal.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
-          <CalendarIcon className="h-3 w-3" />
-          {startDate || endDate
-            ? `${startDate ? formatDateShort(startDate) : "..."} — ${endDate ? formatDateShort(endDate) : "..."}`
-            : "Date range"}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-auto p-0" align="start">
-        <div className="flex flex-col sm:flex-row gap-2 p-3">
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground px-1">
-              From
-            </p>
-            <Calendar
-              mode="single"
-              selected={startDate}
-              onSelect={onStartChange}
-              disabled={(date) =>
-                endDate ? date > endDate : date > new Date()
-              }
-              initialFocus
-            />
+    <div className="space-y-6">
+      {tiers.map((tier) => (
+        <div key={tier.label}>
+          {/* Tier label */}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {tier.label}
+            </span>
+            <Separator className="flex-1" />
           </div>
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground px-1">
-              To
-            </p>
-            <Calendar
-              mode="single"
-              selected={endDate}
-              onSelect={onEndChange}
-              disabled={(date) =>
-                startDate
-                  ? date < startDate || date > new Date()
-                  : date > new Date()
-              }
-            />
+
+          {/* Tier session cards */}
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {tier.sessions.map((session) => {
+              const pk = paneKeyForSession(session);
+              const children = childrenMap.get(pk) ?? [];
+              const isExpanded = expandedPanes.has(pk);
+
+              return (
+                <div key={pk}>
+                  <AgentHqPaneCard
+                    session={session}
+                    isSelected={selectedPaneKey === pk}
+                    isExpanded={isExpanded}
+                    childCount={children.length}
+                    onSelect={() => onSelectPane(pk)}
+                    onToggleExpand={() => toggleExpand(pk)}
+                  />
+
+                  {/* Nested children */}
+                  {isExpanded && children.length > 0 && (
+                    <div className="ml-4 mt-1 space-y-1 border-l-2 border-border/30 pl-3">
+                      {children.map((child) => {
+                        const cpk = paneKeyForSession(child);
+                        const grandchildren = childrenMap.get(cpk) ?? [];
+                        return (
+                          <AgentHqPaneCard
+                            key={cpk}
+                            session={child}
+                            isSelected={selectedPaneKey === cpk}
+                            isExpanded={false}
+                            childCount={grandchildren.length}
+                            onSelect={() => onSelectPane(cpk)}
+                            onToggleExpand={() => toggleExpand(cpk)}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
-        {(startDate || endDate) && (
-          <div className="border-t px-3 py-2 flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs"
-              onClick={() => {
-                onStartChange(undefined);
-                onEndChange(undefined);
-              }}
-            >
-              Clear dates
-            </Button>
-          </div>
-        )}
-      </PopoverContent>
-    </Popover>
+      ))}
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Activity Tab
+// Terminal Viewer (expands when a pane is selected)
 // ---------------------------------------------------------------------------
 
-function ActivityTab() {
-  const [entries, setEntries] = useState<ProvenanceEntry[]>([]);
-  const [distinctToolNames, setDistinctToolNames] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [actorFilter, setActorFilter] = useState<string>("all");
-  const [toolFilter, setToolFilter] = useState<string>("all");
-  const [startDate, setStartDate] = useState<Date | undefined>(undefined);
-  const [endDate, setEndDate] = useState<Date | undefined>(undefined);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+interface TerminalViewerProps {
+  session: PaneCardSession | null;
+  capture: string;
+  termRef: React.RefObject<XTermPaneHandle | null>;
+}
 
-  const fetchEntries = useCallback(async () => {
-    setLoading(true);
+function TerminalViewer({ session, capture, termRef }: TerminalViewerProps) {
+  if (!session) return null;
+
+  const role = session.metadata.role;
+  const badgeColor = ROLE_BADGE_COLORS[role] ?? ROLE_BADGE_COLORS.worker;
+
+  return (
+    <Card className="overflow-hidden border-border/50">
+      <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium truncate">
+            {session.metadata.label || session.sessionName}
+          </span>
+          <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${badgeColor}`}>
+            {role}
+          </Badge>
+          <span
+            className={`h-2 w-2 rounded-full ${session.dead ? "bg-red-500" : session.active ? "bg-green-500" : "bg-yellow-500"}`}
+          />
+        </div>
+      </CardHeader>
+      <div className="border-t border-border/30">
+        <XTermPane
+          ref={termRef}
+          maxHeight="320px"
+          active={true}
+        />
+      </div>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Executive Chat Bar
+// ---------------------------------------------------------------------------
+
+interface ExecutiveChatBarProps {
+  executivePaneKey: string | null;
+  onPaneSelected: (paneKey: string) => void;
+}
+
+function ExecutiveChatBar({ executivePaneKey, onPaneSelected }: ExecutiveChatBarProps) {
+  const [inputValue, setInputValue] = useState("");
+  const [sending, setSending] = useState(false);
+  const [lastReply, setLastReply] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleSend = useCallback(async () => {
+    if (!executivePaneKey || !inputValue.trim()) return;
+    setSending(true);
     try {
-      const params = new URLSearchParams();
-      if (actorFilter !== "all") params.set("actorType", actorFilter);
-      if (toolFilter !== "all") params.set("toolName", toolFilter);
-      if (startDate) params.set("startDate", startDate.toISOString());
-      if (endDate) {
-        // Include the full end day
-        const endOfDay = new Date(endDate);
-        endOfDay.setHours(23, 59, 59, 999);
-        params.set("endDate", endOfDay.toISOString());
-      }
-      params.set("limit", "100");
-      const res = await fetch(`/api/autobot/provenance?${params.toString()}`);
+      const res = await fetch("/api/agent-hq/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: executivePaneKey,
+          text: inputValue.trim(),
+          enter: true,
+        }),
+      });
       if (res.ok) {
         const data = await res.json();
-        setEntries(data.entries ?? []);
-        // Only update tool names from unfiltered fetches so the dropdown
-        // always shows the full set of available tools.
-        if (toolFilter === "all" && data.distinctToolNames) {
-          setDistinctToolNames(data.distinctToolNames);
+        if (data.reply) {
+          setLastReply(data.reply);
         }
       }
+      setInputValue("");
+      // Focus the executive pane
+      onPaneSelected(executivePaneKey);
     } catch {
       // silent
     } finally {
-      setLoading(false);
+      setSending(false);
     }
-  }, [actorFilter, toolFilter, startDate, endDate]);
+  }, [executivePaneKey, inputValue, onPaneSelected]);
 
-  useEffect(() => {
-    fetchEntries();
-  }, [fetchEntries]);
-
-  // Also fetch unfiltered tool names on mount so the dropdown is populated
-  // even when a tool filter is active.
-  useEffect(() => {
-    async function fetchToolNames() {
-      try {
-        const res = await fetch("/api/autobot/provenance?limit=200");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.distinctToolNames) {
-            setDistinctToolNames(data.distinctToolNames);
-          }
-        }
-      } catch {
-        // silent
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
       }
-    }
-    fetchToolNames();
-  }, []);
+    },
+    [handleSend],
+  );
 
-  const handleToggleRow = useCallback((id: string) => {
-    setExpandedId((prev) => (prev === id ? null : id));
-  }, []);
-
-  const handleExport = useCallback(() => {
-    const blob = new Blob([JSON.stringify(entries, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `provenance-log-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-  }, [entries]);
-
-  const activeFilterCount = useMemo(() => {
-    let count = 0;
-    if (actorFilter !== "all") count++;
-    if (toolFilter !== "all") count++;
-    if (startDate || endDate) count++;
-    return count;
-  }, [actorFilter, toolFilter, startDate, endDate]);
+  if (!executivePaneKey) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
+        <Terminal className="h-3.5 w-3.5" />
+        <span>No executive session active. Launch one from the builder to use the chat bar.</span>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4">
-      {/* Filters row */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Actor type filter */}
-        <Select value={actorFilter} onValueChange={setActorFilter}>
-          <SelectTrigger className="w-[130px] h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All actors</SelectItem>
-            <SelectItem value="autobot">Autobot</SelectItem>
-            <SelectItem value="human">Human</SelectItem>
-            <SelectItem value="persona">Persona</SelectItem>
-          </SelectContent>
-        </Select>
-
-        {/* Tool name filter */}
-        <Select value={toolFilter} onValueChange={setToolFilter}>
-          <SelectTrigger className="w-[180px] h-8 text-xs">
-            <SelectValue placeholder="All tools" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All tools</SelectItem>
-            {distinctToolNames.map((name) => (
-              <SelectItem key={name} value={name}>
-                {name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {/* Date range picker */}
-        <DateRangePicker
-          startDate={startDate}
-          endDate={endDate}
-          onStartChange={setStartDate}
-          onEndChange={setEndDate}
-        />
-
-        {/* Active filter indicator */}
-        {activeFilterCount > 0 && (
-          <Badge variant="secondary" className="text-xs">
-            {activeFilterCount} filter{activeFilterCount > 1 ? "s" : ""}
-          </Badge>
-        )}
-
-        {/* Right-aligned actions */}
-        <div className="flex items-center gap-1 ml-auto">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={entries.length === 0}
-            className="h-8 text-xs gap-1"
-          >
-            <Download className="h-3 w-3" />
-            Export
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={fetchEntries}
-            disabled={loading}
-            className="h-8 gap-1"
-          >
-            <RefreshCw
-              className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
-            />
-            Refresh
-          </Button>
-        </div>
-      </div>
-
-      {/* Table */}
-      {loading && entries.length === 0 ? (
-        <div className="space-y-2">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full" />
-          ))}
-        </div>
-      ) : entries.length === 0 ? (
-        <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No MCP activity recorded yet.
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="rounded-md border overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[28px]" />
-                <TableHead className="w-[180px]">Tool</TableHead>
-                <TableHead className="w-[80px]">Actor</TableHead>
-                <TableHead className="w-[70px]">Auth</TableHead>
-                <TableHead className="w-[70px]">Status</TableHead>
-                <TableHead className="w-[60px] text-right">ms</TableHead>
-                <TableHead className="w-[140px]">Time</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {entries.map((entry) => {
-                const isExpanded = expandedId === entry.id;
-                return (
-                  <Collapsible
-                    key={entry.id}
-                    open={isExpanded}
-                    onOpenChange={() => handleToggleRow(entry.id)}
-                    asChild
-                  >
-                    <>
-                      <CollapsibleTrigger asChild>
-                        <TableRow
-                          className="cursor-pointer hover:bg-muted/50 transition-colors"
-                          data-state={isExpanded ? "open" : "closed"}
-                        >
-                          <TableCell className="w-[28px] px-2">
-                            {isExpanded ? (
-                              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                            ) : (
-                              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                            )}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {entry.toolName}
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={
-                                entry.actorType === "autobot"
-                                  ? "default"
-                                  : entry.actorType === "persona"
-                                    ? "secondary"
-                                    : "outline"
-                              }
-                              className="text-xs"
-                            >
-                              {entry.actorType === "autobot" && (
-                                <Bot className="h-3 w-3 mr-1" />
-                              )}
-                              {entry.actorType === "persona" && (
-                                <Drama className="h-3 w-3 mr-1" />
-                              )}
-                              {entry.actorType}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <span className="text-xs text-muted-foreground">
-                              {entry.authMode}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            {entry.resultStatus === "success" ? (
-                              <CheckCircle2 className="h-4 w-4 text-green-500" />
-                            ) : (
-                              <XCircle className="h-4 w-4 text-destructive" />
-                            )}
-                          </TableCell>
-                          <TableCell className="text-right text-xs text-muted-foreground font-mono">
-                            {entry.durationMs ?? "\u2014"}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
-                            <span className="inline-flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              {new Date(entry.createdAt).toLocaleString(
-                                undefined,
-                                {
-                                  month: "short",
-                                  day: "numeric",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                  second: "2-digit",
-                                }
-                              )}
-                            </span>
-                          </TableCell>
-                        </TableRow>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent asChild>
-                        <tr>
-                          <td colSpan={7} className="p-0">
-                            <ProvenanceRowDetail entry={entry} />
-                          </td>
-                        </tr>
-                      </CollapsibleContent>
-                    </>
-                  </Collapsible>
-                );
-              })}
-            </TableBody>
-          </Table>
+    <div className="space-y-0">
+      {/* Last reply preview */}
+      {lastReply && (
+        <div className="px-4 py-1.5 text-xs text-muted-foreground bg-muted/20 border-b border-border/30 line-clamp-2">
+          <span className="font-medium text-violet-400">Executive: </span>
+          {lastReply}
         </div>
       )}
+
+      {/* Input bar */}
+      <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="h-2 w-2 rounded-full bg-violet-500" />
+          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Exec</span>
+        </div>
+        <input
+          ref={inputRef}
+          type="text"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Send to executive..."
+          disabled={sending}
+          className="flex-1 bg-transparent text-sm placeholder:text-muted-foreground/50 focus:outline-none"
+        />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0"
+          disabled={sending || !inputValue.trim()}
+          onClick={handleSend}
+        >
+          {sending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Send className="h-3.5 w-3.5" />
+          )}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -755,8 +776,40 @@ function ActivityTab() {
 // ---------------------------------------------------------------------------
 
 export default function AutobotPage() {
+  // ---- Global state ----
   const [status, setStatus] = useState<AutobotStatus | null>(null);
+  const [groups, setGroups] = useState<RoleGroup[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
+  // ---- Pane selection ----
+  const [selectedPaneKey, setSelectedPaneKey] = useState<string | null>(null);
+  const [capture, setCapture] = useState("");
+  const termRef = useRef<XTermPaneHandle>(null);
+
+  // ---- DB Explorer ----
+  const [dbTree, setDbTree] = useState<ExplorerNode[]>([]);
+  const [dbLoading, setDbLoading] = useState(false);
+  const [selectedDbPaths, setSelectedDbPaths] = useState<Set<string>>(new Set());
+
+  // ---- Sidebar collapse ----
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // ---- Derived sessions ----
+  const allSessions = useMemo<PaneCardSession[]>(() => {
+    return groups.flatMap((g) => g.sessions) as PaneCardSession[];
+  }, [groups]);
+
+  const selectedSession = useMemo(() => {
+    return allSessions.find((s) => paneKeyForSession(s) === selectedPaneKey) ?? null;
+  }, [allSessions, selectedPaneKey]);
+
+  const executivePaneKey = useMemo(() => {
+    const executive = groups.find((g) => g.role === "executive")?.sessions?.[0];
+    return executive ? paneKeyForSession(executive as PaneCardSession) : null;
+  }, [groups]);
+
+  // ---- Fetch status ----
   useEffect(() => {
     fetch("/api/autobot/status")
       .then((r) => (r.ok ? r.json() : null))
@@ -764,74 +817,349 @@ export default function AutobotPage() {
       .catch(() => {});
   }, []);
 
+  // ---- Fetch sessions with polling ----
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agent-hq/sessions", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const grouped = Array.isArray(data.grouped) ? (data.grouped as RoleGroup[]) : [];
+      setGroups(grouped);
+
+      // Auto-select executive if nothing selected
+      if (!selectedPaneKey) {
+        const executive = grouped.find((g) => g.role === "executive")?.sessions?.[0];
+        if (executive) {
+          setSelectedPaneKey(paneKeyForSession(executive as PaneCardSession));
+        }
+      }
+      setError(data.warning ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load sessions");
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedPaneKey]);
+
+  useEffect(() => {
+    void fetchSessions();
+    const id = setInterval(() => void fetchSessions(), SESSIONS_POLL_MS);
+    return () => clearInterval(id);
+  }, [fetchSessions]);
+
+  // ---- Capture selected pane with polling ----
+  const capturePane = useCallback(async () => {
+    if (!selectedPaneKey) return;
+    try {
+      const res = await fetch(
+        `/api/agent-hq/capture?target=${encodeURIComponent(selectedPaneKey)}&lines=${CAPTURE_LINES}&raw=1`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const output = data.output ?? "";
+      setCapture(output);
+      termRef.current?.writeRaw(output);
+    } catch {
+      // silent
+    }
+  }, [selectedPaneKey]);
+
+  useEffect(() => {
+    if (!selectedPaneKey) return;
+    void capturePane();
+    const id = setInterval(() => void capturePane(), CAPTURE_POLL_MS);
+    return () => clearInterval(id);
+  }, [selectedPaneKey, capturePane]);
+
+  // ---- DB Explorer ----
+  const toExplorerNodes = useCallback((entries: DbEntry[]): ExplorerNode[] => {
+    return [...entries]
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .map((entry) => ({ ...entry, id: entry.path || "__root__" }));
+  }, []);
+
+  const updateExplorerNode = useCallback(
+    (nodes: ExplorerNode[], targetId: string, updater: (node: ExplorerNode) => ExplorerNode): ExplorerNode[] =>
+      nodes.map((node) => {
+        if (node.id === targetId) return updater(node);
+        if (node.children?.length) {
+          return { ...node, children: updateExplorerNode(node.children, targetId, updater) };
+        }
+        return node;
+      }),
+    [],
+  );
+
+  const loadDbRoot = useCallback(async () => {
+    setDbLoading(true);
+    try {
+      const res = await fetch("/api/agent-hq/db/entries", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setDbTree(toExplorerNodes(data.entries ?? []));
+    } catch {
+      // silent
+    } finally {
+      setDbLoading(false);
+    }
+  }, [toExplorerNodes]);
+
+  useEffect(() => {
+    loadDbRoot();
+  }, [loadDbRoot]);
+
+  const toggleDbDirectory = useCallback(
+    async (node: ExplorerNode) => {
+      if (node.type !== "directory") return;
+      if (node.expanded) {
+        setDbTree((current) => updateExplorerNode(current, node.id, (n) => ({ ...n, expanded: false })));
+        return;
+      }
+      if (node.loaded) {
+        setDbTree((current) => updateExplorerNode(current, node.id, (n) => ({ ...n, expanded: true })));
+        return;
+      }
+      setDbTree((current) =>
+        updateExplorerNode(current, node.id, (n) => ({ ...n, expanded: true, loading: true })),
+      );
+      try {
+        const params = new URLSearchParams({ path: node.path });
+        const res = await fetch(`/api/agent-hq/db/entries?${params.toString()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const children = toExplorerNodes(data.entries ?? []);
+        setDbTree((current) =>
+          updateExplorerNode(current, node.id, (n) => ({
+            ...n,
+            expanded: true,
+            loading: false,
+            loaded: true,
+            children,
+          })),
+        );
+      } catch {
+        setDbTree((current) =>
+          updateExplorerNode(current, node.id, (n) => ({ ...n, loading: false })),
+        );
+      }
+    },
+    [toExplorerNodes, updateExplorerNode],
+  );
+
+  const selectDbFile = useCallback(
+    async (node: ExplorerNode) => {
+      if (node.type === "directory") return;
+      // Toggle selection
+      setSelectedDbPaths((prev) => {
+        const next = new Set(prev);
+        if (next.has(node.path)) {
+          next.delete(node.path);
+        } else {
+          next.add(node.path);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  // ---- Handle pane selection ----
+  const handleSelectPane = useCallback((paneKey: string) => {
+    setSelectedPaneKey(paneKey);
+  }, []);
+
+  // ---- Render ----
   return (
-    <div className="container max-w-5xl mx-auto px-4 py-6 space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="rounded-full bg-primary/10 p-2">
-          <Terminal className="h-5 w-5 text-primary" />
-        </div>
-        <div>
-          <h1 className="text-lg font-semibold">Executive Control Plane</h1>
-          <p className="text-sm text-muted-foreground">
-            Persistent executive runtime, supervisor sessions, identity, and system controls
-          </p>
-        </div>
+    <div
+      className="h-[100dvh] overflow-hidden"
+      style={{
+        display: "grid",
+        gridTemplateColumns: sidebarCollapsed ? "0px 1fr" : "280px 1fr",
+        gridTemplateRows: "1fr auto",
+      }}
+    >
+      {/* ================================================================ */}
+      {/* LEFT SIDEBAR - DB Explorer                                       */}
+      {/* ================================================================ */}
+      <div
+        className="border-r border-border/50 flex flex-col overflow-hidden bg-background/50"
+        style={{ gridRow: "1 / -1" }}
+      >
+        {!sidebarCollapsed && (
+          <>
+            {/* Sidebar header */}
+            <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+              <div className="flex items-center gap-2">
+                <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Explorer
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={loadDbRoot}
+                disabled={dbLoading}
+              >
+                <RefreshCw className={`h-3 w-3 ${dbLoading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+
+            {/* Tree content */}
+            <ScrollArea className="flex-1">
+              <div className="py-1">
+                {dbLoading && dbTree.length === 0 ? (
+                  <div className="space-y-1 px-2 py-2">
+                    {Array.from({ length: 5 }).map((_, i) => (
+                      <Skeleton key={i} className="h-6 w-full" />
+                    ))}
+                  </div>
+                ) : dbTree.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-4">No entries found</p>
+                ) : (
+                  <DbExplorerTree
+                    nodes={dbTree}
+                    selectedPaths={selectedDbPaths}
+                    onToggleDirectory={toggleDbDirectory}
+                    onSelectFile={selectDbFile}
+                  />
+                )}
+              </div>
+            </ScrollArea>
+
+            {/* Selected context summary */}
+            {selectedDbPaths.size > 0 && (
+              <div className="border-t border-border/50 px-3 py-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    Context ({selectedDbPaths.size})
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-5 text-[10px] px-1"
+                    onClick={() => setSelectedDbPaths(new Set())}
+                  >
+                    Clear
+                  </Button>
+                </div>
+                <div className="space-y-0.5 max-h-[80px] overflow-y-auto">
+                  {Array.from(selectedDbPaths).map((p) => (
+                    <div key={p} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <Check className="h-2.5 w-2.5 text-primary shrink-0" />
+                      <span className="truncate">{p.split("/").pop()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Sidebar footer with tool buttons */}
+            <SidebarToolButtons status={status} />
+          </>
+        )}
       </div>
 
-      <Card className="border-border/70 bg-muted/10">
-        <CardContent className="flex flex-col gap-2 py-4 text-sm">
-          <p className="font-medium">Primary interaction has moved to the bottom-right executive bubble.</p>
-          <p className="text-muted-foreground">
-            Use this page as the supervisor console for the live executive session and background agents. The old chat page is now a legacy voice and settings workspace, not the main assistant surface.
-          </p>
-        </CardContent>
-      </Card>
+      {/* ================================================================ */}
+      {/* MAIN AREA - Pane Graph + Terminal Viewer                          */}
+      {/* ================================================================ */}
+      <div className="overflow-y-auto" style={{ gridColumn: 2 }}>
+        <ScrollArea className="h-full">
+          <div className="p-4 space-y-4">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setSidebarCollapsed((prev) => !prev)}
+                >
+                  {sidebarCollapsed ? (
+                    <ChevronRight className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+                <div className="flex items-center gap-2">
+                  <div className="rounded-full bg-primary/10 p-1.5">
+                    <Terminal className="h-4 w-4 text-primary" />
+                  </div>
+                  <div>
+                    <h1 className="text-sm font-semibold">Agent HQ</h1>
+                    <p className="text-[11px] text-muted-foreground">
+                      {allSessions.length} session{allSessions.length !== 1 ? "s" : ""} active
+                    </p>
+                  </div>
+                </div>
+              </div>
 
-      <Tabs defaultValue="supervisor">
-        <TabsList className="w-full">
-          <TabsTrigger value="supervisor" className="flex-1 gap-1">
-            <Terminal className="h-3.5 w-3.5" />
-            Supervisor
-          </TabsTrigger>
-          <TabsTrigger value="status" className="flex-1 gap-1">
-            <CircleDot className="h-3.5 w-3.5" />
-            Status
-          </TabsTrigger>
-          <TabsTrigger value="personas" className="flex-1 gap-1">
-            <Drama className="h-3.5 w-3.5" />
-            Personas
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="flex-1 gap-1">
-            <Activity className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-          <TabsTrigger value="connections" className="flex-1 gap-1">
-            <Network className="h-3.5 w-3.5" />
-            Connections
-          </TabsTrigger>
-        </TabsList>
+              <div className="flex items-center gap-1">
+                {error && (
+                  <Badge variant="outline" className="text-[10px] text-yellow-400 border-yellow-500/30 mr-2">
+                    {error}
+                  </Badge>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => fetchSessions()}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
+            </div>
 
-        <TabsContent value="supervisor" className="mt-4">
-          <SupervisorConsole />
-        </TabsContent>
+            {/* Loading state */}
+            {loading && allSessions.length === 0 ? (
+              <div className="space-y-3">
+                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-16 w-full" />
+              </div>
+            ) : (
+              <>
+                {/* Pane Graph */}
+                <PaneGraph
+                  sessions={allSessions}
+                  selectedPaneKey={selectedPaneKey}
+                  onSelectPane={handleSelectPane}
+                />
 
-        <TabsContent value="status" className="mt-4">
-          <StatusTab status={status} />
-        </TabsContent>
+                {/* Terminal Viewer for selected pane */}
+                {selectedSession && (
+                  <div className="mt-4">
+                    <TerminalViewer
+                      session={selectedSession}
+                      capture={capture}
+                      termRef={termRef}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </ScrollArea>
+      </div>
 
-        <TabsContent value="personas" className="mt-4">
-          <PersonaManager />
-        </TabsContent>
-
-        <TabsContent value="activity" className="mt-4">
-          <ActivityTab />
-        </TabsContent>
-
-        <TabsContent value="connections" className="mt-4">
-          <AutobotConnectionsPanel />
-        </TabsContent>
-
-      </Tabs>
+      {/* ================================================================ */}
+      {/* BOTTOM - Executive Chat Bar                                       */}
+      {/* ================================================================ */}
+      <div
+        className="border-t border-border/50 bg-background/80 backdrop-blur-sm"
+        style={{ gridColumn: 2 }}
+      >
+        <ExecutiveChatBar
+          executivePaneKey={executivePaneKey}
+          onPaneSelected={handleSelectPane}
+        />
+      </div>
     </div>
   );
 }
