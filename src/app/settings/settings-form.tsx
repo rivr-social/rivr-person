@@ -1771,13 +1771,17 @@ export function SettingsForm({
                 Agent HQ
               </CardTitle>
               <CardDescription>
-                Manage the executive and child agent containers, terminals, and working context. Use this surface to append folders and files into each agent runtime.
+                Agent HQ has moved to its own full-screen page with a filesystem explorer, hierarchical pane graph, and executive chat.
               </CardDescription>
             </CardHeader>
-            <CardContent className="p-0">
-              <div className="min-h-[820px] border-t">
-                <BuilderAgentsPanel workspaceId="app-playground" />
-              </div>
+            <CardContent>
+              <a
+                href="/autobot"
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                <Brain className="h-4 w-4" />
+                Open Agent HQ
+              </a>
             </CardContent>
           </Card>
         </TabsContent>
