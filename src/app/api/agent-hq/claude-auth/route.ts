@@ -78,17 +78,6 @@ async function readStatus(): Promise<ClaudeAuthStatus> {
       subscriptionType: isApiKeyAuth ? undefined : parsed.subscriptionType,
     };
 
-    // Validate token actually works if status says logged in
-    // claude auth status reads cached account info but doesn't test the token
-    if (status.loggedIn) {
-      try {
-        await execClaude(["-p", "ok", "--max-turns", "1", "--output-format", "json"]);
-      } catch {
-        // Token expired or invalid — mark as not logged in
-        status.loggedIn = false;
-      }
-    }
-
     return status;
   } catch {
     // claude auth status fails when no OAuth login exists and API key is stripped — that's expected
