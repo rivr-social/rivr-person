@@ -156,20 +156,67 @@ export async function listDbEntries(relativePath = ""): Promise<{
             .map((rt) => ({ name: rt, path: `${root}/resources/${rt}`, type: "directory" as const, size: 0 })),
         };
       }
+      // Virtual "transcripts" subfolder under document type
+      if (type === "document" && id === "transcripts") {
+        const transcriptId = subRest[2];
+        if (!transcriptId) {
+          const rows = await db
+            .select({ id: resources.id, name: resources.name })
+            .from(resources)
+            .where(and(
+              eq(resources.type, "document"),
+              eq(resources.ownerId, agentId),
+              isNull(resources.deletedAt),
+            ));
+          // Filter to transcript-tagged documents (tags is a text[] column)
+          const transcriptRows = [];
+          for (const row of rows) {
+            const full = await db.query.resources.findFirst({
+              where: eq(resources.id, row.id),
+              columns: { id: true, name: true, tags: true },
+            });
+            if (full?.tags && (full.tags.includes("transcript") || full.tags.includes("session-record"))) {
+              transcriptRows.push(full);
+            }
+          }
+          return {
+            relativePath: safeRelative,
+            entries: transcriptRows.sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((row) => ({
+              name: row.name || row.id,
+              path: `${root}/resources/document/transcripts/${row.id}`,
+              type: "directory" as const,
+              size: 0,
+            })),
+          };
+        }
+        // Individual transcript record
+        return {
+          relativePath: safeRelative,
+          entries: [
+            { name: "record.json", path: `${root}/resources/document/transcripts/${transcriptId}/record.json`, type: "file" as const, size: 0 },
+            { name: "metadata.json", path: `${root}/resources/document/transcripts/${transcriptId}/metadata.json`, type: "file" as const, size: 0 },
+            { name: "content.md", path: `${root}/resources/document/transcripts/${transcriptId}/content.md`, type: "file" as const, size: 0 },
+          ],
+        };
+      }
+
       if (!id) {
         const rows = await db
           .select({ id: resources.id, name: resources.name })
           .from(resources)
           .where(and(eq(resources.type, type as typeof resourceTypeEnum.enumValues[number]), eq(resources.ownerId, agentId), isNull(resources.deletedAt)));
-        return {
-          relativePath: safeRelative,
-          entries: rows.sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((row) => ({
-            name: row.name || row.id,
-            path: `${root}/resources/${type}/${row.id}`,
-            type: "directory" as const,
-            size: 0,
-          })),
-        };
+        const entries: AgentHqDbEntry[] = [];
+        // Add transcripts virtual folder for document type
+        if (type === "document") {
+          entries.push({ name: "transcripts", path: `${root}/resources/document/transcripts`, type: "directory" as const, size: 0 });
+        }
+        entries.push(...rows.sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((row) => ({
+          name: row.name || row.id,
+          path: `${root}/resources/${type}/${row.id}`,
+          type: "directory" as const,
+          size: 0,
+        })));
+        return { relativePath: safeRelative, entries };
       }
       return {
         relativePath: safeRelative,
@@ -472,7 +519,12 @@ export async function readDbFile(relativePath: string): Promise<{
     // @{agentId}/ledger/{verb}/{id}.json → ledger/{verb}/{id}.json (scoped)
     // @{agentId}/agents/{type}/{id}/file → agents/{type}/{id}/file
     if (subParts[0] === "resources" && subParts.length >= 3) {
-      const [, rType, rId, rFile] = subParts;
+      // Handle virtual transcripts path: resources/document/transcripts/{id}/{file}
+      let [, rType, rId, rFile] = subParts;
+      if (rType === "document" && rId === "transcripts" && subParts.length >= 5) {
+        rId = subParts[3];
+        rFile = subParts[4];
+      }
       if (!rType || !rId || !rFile) throw new Error("Resource file path is required.");
       const row = await db.query.resources.findFirst({
         where: and(eq(resources.id, rId), eq(resources.ownerId, agentId), isNull(resources.deletedAt)),
