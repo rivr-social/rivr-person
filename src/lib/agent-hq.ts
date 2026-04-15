@@ -1437,6 +1437,38 @@ export async function resumeOrCreateExecutive(options?: {
     await saveExecutiveSession(existing);
   }
 
+  // Check for orphaned executive tmux sessions (e.g. launched via /api/agent-hq/launch)
+  // and adopt them instead of creating duplicates
+  try {
+    const allSessions = await listAgentSessions();
+    const orphanExec = allSessions.find(
+      (s) => s.metadata.role === "executive" && !s.dead,
+    );
+    if (orphanExec) {
+      const now = new Date().toISOString();
+      const adopted: ExecutiveSession = {
+        id: `exec-adopted-${Date.now().toString(36)}`,
+        tmuxSession: orphanExec.sessionName,
+        paneKey: paneKeyForSession(orphanExec),
+        provider: (orphanExec.metadata.provider as AgentLauncherProvider) ?? "claude",
+        cwd: orphanExec.metadata.cwd ?? options?.cwd ?? process.cwd(),
+        label: orphanExec.metadata.label || "Executive",
+        state: "active",
+        contextMounts: options?.contextMounts ?? [],
+        personaId: orphanExec.metadata.personaId ?? null,
+        personaName: orphanExec.metadata.personaName,
+        voiceMode: options?.voiceMode,
+        childPaneKeys: [],
+        messages: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      return saveExecutiveSession(adopted);
+    }
+  } catch {
+    // fall through to create new
+  }
+
   const provider = options?.provider ?? "claude";
   const cwd = options?.cwd ?? process.cwd();
   const label = "Executive";
