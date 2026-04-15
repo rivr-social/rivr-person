@@ -1014,55 +1014,21 @@ export default function AutobotPage() {
     [toExplorerNodes, updateExplorerNode],
   );
 
-  // Helper: fetch a single file's content and send to pane
-  const appendFileToPaneContext = useCallback(
-    async (filePath: string, fileName: string) => {
+  // Helper: add or remove a context file in the session's on-disk context folder
+  const mountContextItem = useCallback(
+    async (explorerPath: string, action: "add" | "remove") => {
       if (!selectedPaneKey) return;
       try {
-        const params = new URLSearchParams({ path: filePath });
-        const res = await fetch(`/api/agent-hq/db/file?${params.toString()}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const data = await res.json();
-        const content = typeof data.content === "string"
-          ? data.content
-          : JSON.stringify(data.content, null, 2);
-        const contextBlock = `\n--- Context: ${fileName} (${filePath}) ---\n${content.slice(0, 4000)}\n--- End Context ---\n`;
-        await fetch("/api/agent-hq/send", {
+        await fetch("/api/agent-hq/context-mount", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: selectedPaneKey, text: contextBlock, enter: false }),
+          body: JSON.stringify({ sessionId: selectedPaneKey, path: explorerPath, action }),
         });
       } catch {
         // silent
       }
     },
     [selectedPaneKey],
-  );
-
-  // Helper: recursively collect all file paths from a directory
-  const collectDirFiles = useCallback(
-    async (dirPath: string): Promise<Array<{ path: string; name: string }>> => {
-      try {
-        const params = new URLSearchParams({ path: dirPath });
-        const res = await fetch(`/api/agent-hq/db/entries?${params.toString()}`, { cache: "no-store" });
-        if (!res.ok) return [];
-        const data = await res.json();
-        const entries: Array<{ name: string; path: string; type: string }> = data.entries ?? [];
-        const files: Array<{ path: string; name: string }> = [];
-        for (const entry of entries) {
-          if (entry.type === "file") {
-            files.push({ path: entry.path, name: entry.name });
-          } else if (entry.type === "directory") {
-            const subFiles = await collectDirFiles(entry.path);
-            files.push(...subFiles);
-          }
-        }
-        return files;
-      } catch {
-        return [];
-      }
-    },
-    [],
   );
 
   const selectDbItem = useCallback(
@@ -1080,20 +1046,12 @@ export default function AutobotPage() {
         return next;
       });
 
-      // If adding and there's an active pane, fetch content and send
-      if (!isRemoving && selectedPaneKey) {
-        if (node.type === "file") {
-          await appendFileToPaneContext(node.path, node.name);
-        } else {
-          // Directory — recursively collect and append all files
-          const files = await collectDirFiles(node.path);
-          for (const file of files.slice(0, 20)) { // cap at 20 files per folder
-            await appendFileToPaneContext(file.path, file.name);
-          }
-        }
+      // Manage context files on disk — no tmux pasting
+      if (selectedPaneKey) {
+        await mountContextItem(node.path, isRemoving ? "remove" : "add");
       }
     },
-    [selectedDbPaths, selectedPaneKey, appendFileToPaneContext, collectDirFiles],
+    [selectedDbPaths, selectedPaneKey, mountContextItem],
   );
 
   // ---- Handle pane selection ----

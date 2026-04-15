@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -198,5 +198,95 @@ export async function listAgentFolderIds(): Promise<string[]> {
   return entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
+    .sort();
+}
+
+// ---------------------------------------------------------------------------
+// Session Context Folder — per-pane context files on disk
+// ---------------------------------------------------------------------------
+
+const CONTEXT_FOLDER_NAME = "context";
+
+const CONTEXT_FOLDER_README = [
+  "# Session Context",
+  "",
+  "This folder contains context files mounted by the user via Agent HQ.",
+  "Read these files to understand the current context.",
+  "",
+].join("\n");
+
+/**
+ * Sanitize a session ID to prevent path traversal.
+ * Strips anything that is not alphanumeric, dash, underscore, or dot.
+ */
+function sanitizeSessionId(sessionId: string): string {
+  const sanitized = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!sanitized || sanitized === "." || sanitized === "..") {
+    throw new Error("Invalid session ID.");
+  }
+  return sanitized;
+}
+
+/**
+ * Returns the absolute path of the session context folder and creates it
+ * (including a CLAUDE.md readme) if it does not already exist.
+ */
+export async function ensureSessionContextFolder(sessionId: string): Promise<string> {
+  const safe = sanitizeSessionId(sessionId);
+  const contextDir = path.join(AGENTS_ROOT, safe, CONTEXT_FOLDER_NAME);
+  await mkdir(contextDir, { recursive: true });
+  const readmePath = path.join(contextDir, "CLAUDE.md");
+  if (!existsSync(readmePath)) {
+    await writeFile(readmePath, CONTEXT_FOLDER_README, "utf-8");
+  }
+  return contextDir;
+}
+
+/**
+ * Write a context file into a session's context folder.
+ */
+export async function writeContextFile(
+  sessionId: string,
+  fileName: string,
+  content: string,
+): Promise<string> {
+  const contextDir = await ensureSessionContextFolder(sessionId);
+  const safeName = path.basename(fileName); // strip any directory component
+  if (!safeName || safeName === "." || safeName === "..") {
+    throw new Error("Invalid context file name.");
+  }
+  const filePath = path.join(contextDir, safeName);
+  await writeFile(filePath, content, "utf-8");
+  return filePath;
+}
+
+/**
+ * Remove a context file from a session's context folder.
+ */
+export async function removeContextFile(
+  sessionId: string,
+  fileName: string,
+): Promise<void> {
+  const contextDir = await ensureSessionContextFolder(sessionId);
+  const safeName = path.basename(fileName);
+  const filePath = path.join(contextDir, safeName);
+  if (existsSync(filePath)) {
+    await rm(filePath);
+  }
+}
+
+/**
+ * List all context files currently in a session's context folder.
+ * Excludes the CLAUDE.md readme.
+ */
+export async function listContextFiles(sessionId: string): Promise<string[]> {
+  const contextDir = await ensureSessionContextFolder(sessionId);
+  if (!existsSync(contextDir)) {
+    return [];
+  }
+  const entries = await readdir(contextDir, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isFile() && e.name !== "CLAUDE.md")
+    .map((e) => e.name)
     .sort();
 }

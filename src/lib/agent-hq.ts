@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { auth } from "@/auth";
 import { getDeployCapability } from "@/lib/deploy/capability";
+import { ensureSessionContextFolder } from "@/lib/agent-docs";
 
 export type AgentRole = "executive" | "architect" | "orchestrator" | "worker" | "observer";
 export type AgentLauncherProvider = "claude" | "codex" | "opencode" | "custom";
@@ -1288,6 +1289,9 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
     "utf8",
   );
 
+  // Create the session context folder on disk for context-mount files
+  const sessionContextDir = await ensureSessionContextFolder(sessionName);
+
   const metadata = normalizeMetadata({
     role: input.role ?? "worker",
     parent: input.parent ?? null,
@@ -1324,6 +1328,7 @@ export async function launchAgentSession(input: LaunchAgentSessionInput): Promis
   const bootstrapPrompt = [
     `Read the session context file at ${contextFile}.`,
     "Adopt it as your operating context for this workspace before doing other work.",
+    `Context files may be mounted at ${sessionContextDir}/ — read any files there for additional context.`,
     input.objective ? `Primary objective: ${input.objective}` : "",
     input.personaId
       ? `Use persona context ${input.personaName ?? input.personaId} and keep KG operations inside the declared scope set.`
