@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { assertAgentHqAccess } from "@/lib/agent-hq";
+import { assertAgentHqAccess, updateAgentMetadata } from "@/lib/agent-hq";
 
 export const dynamic = "force-dynamic";
 
@@ -205,6 +205,14 @@ window.parent && window.parent.postMessage(${JSON.stringify({
     await execTmux(["send-keys", "-l", "-t", `${sessionName}:0.0`, "1"]);
     await execTmux(["send-keys", "-t", `${sessionName}:0.0`, "C-m"]);
     const paneKey = `${sessionName}:0.0`;
+
+    // Persist executive role metadata so the pane graph correctly identifies
+    // this session as the executive bubble instead of defaulting to "worker".
+    await updateAgentMetadata(paneKey, {
+      role: "executive",
+      label: "Executive",
+      provider: "claude",
+    });
 
     return NextResponse.json({
       ok: true,
