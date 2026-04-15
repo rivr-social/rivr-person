@@ -689,7 +689,8 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
       return;
     }
     if (authStatus && !authStatus.loggedIn) {
-      setError("Claude Code is not signed into your personal account in this workspace runtime yet. Connect Claude first.");
+      // Auth expired — auto-start the login flow instead of just showing an error
+      void startClaudeLogin();
       return;
     }
     setLaunching(true);
@@ -1152,7 +1153,7 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
                     disabled={authLoading}
                   >
                     {authLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
-                    {authStatus?.loggedIn ? "Claude Ready" : "Connect Claude"}
+                    {authStatus?.loggedIn && executiveSession ? "Claude Ready" : "Connect Claude"}
                   </Button>
                   <Button type="button" onClick={() => void launchExecutive()} disabled={launching || !selectedWorkspace || authLoading}>
                     {launching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
