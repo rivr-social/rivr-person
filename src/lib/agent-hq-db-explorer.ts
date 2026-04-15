@@ -112,7 +112,6 @@ export async function listDbEntries(relativePath = ""): Promise<{
       } else {
         entries.push({ name: "soul.md (create)", path: `${root}/soul.md`, type: "file", size: 0 });
       }
-      entries.push({ name: "docs", path: `${root}/docs`, type: "directory", size: 0 });
       entries.push({ name: "resources", path: `${root}/resources`, type: "directory", size: 0 });
       entries.push({ name: "ledger", path: `${root}/ledger`, type: "directory", size: 0 });
       entries.push({ name: "agents", path: `${root}/agents`, type: "directory", size: 0 });
