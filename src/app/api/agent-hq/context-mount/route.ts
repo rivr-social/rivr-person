@@ -105,6 +105,7 @@ export async function POST(request: Request) {
 
   try {
     await assertAgentHqAccess();
+    await ensureSessionContextFolder(sessionId);
 
     if (action === "remove") {
       // For remove, derive file name and delete it
@@ -139,22 +140,26 @@ export async function POST(request: Request) {
     }
 
     if (isDirectory) {
-      const files = await collectAllFiles(explorerPath, MAX_DIR_FILES);
-      for (const file of files) {
-        try {
-          const fileData = await readDbFile(file.path);
-          const content =
-            typeof fileData.content === "string"
-              ? fileData.content
-              : JSON.stringify(fileData.content, null, 2);
-          await writeContextFile(
-            sessionId,
-            deriveFileName(file.path, file.name),
-            content.slice(0, MAX_FILE_BYTES),
-          );
-        } catch {
-          // Skip files that cannot be read
+      try {
+        const files = await collectAllFiles(explorerPath, MAX_DIR_FILES);
+        for (const file of files) {
+          try {
+            const fileData = await readDbFile(file.path);
+            const content =
+              typeof fileData.content === "string"
+                ? fileData.content
+                : JSON.stringify(fileData.content, null, 2);
+            await writeContextFile(
+              sessionId,
+              deriveFileName(file.path, file.name),
+              content.slice(0, MAX_FILE_BYTES),
+            );
+          } catch {
+            // Skip files that cannot be read
+          }
         }
+      } catch {
+        // Path is neither a readable file nor a listable directory — skip silently
       }
     }
 
