@@ -72,78 +72,62 @@ export async function listDbEntries(relativePath = ""): Promise<{
   const ctx = await getViewerContext();
   const { safeRelative, segments } = splitPath(relativePath);
 
+  // ---- Root: list agents/personas as top-level folders ----
   if (segments.length === 0) {
+    const dbRows = await db
+      .select({ id: agents.id, name: agents.name, type: agents.type, parentAgentId: agents.parentAgentId })
+      .from(agents)
+      .where(and(inArray(agents.id, ctx.allOwnerIds), isNull(agents.deletedAt)));
+
+    // Primary agent first, then personas sorted by name
+    const primary = dbRows.find((r) => r.id === ctx.userId);
+    const personas = dbRows.filter((r) => r.id !== ctx.userId).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const ordered = primary ? [primary, ...personas] : personas;
+
     return {
       relativePath: safeRelative,
-      entries: [
-        { name: "agent-docs", path: "agent-docs", type: "directory", size: 0 },
-        { name: "agents", path: "agents", type: "directory", size: 0 },
-        { name: "resources", path: "resources", type: "directory", size: 0 },
-        { name: "ledger", path: "ledger", type: "directory", size: 0 },
-        { name: "apps", path: "apps", type: "directory", size: 0 },
-        { name: "builder-data-sources", path: "builder-data-sources", type: "directory", size: 0 },
-      ],
+      entries: ordered.map((row) => ({
+        name: row.id === ctx.userId ? `${row.name || "Primary"} (self)` : row.name || row.id,
+        path: `@${row.id}`,
+        type: "directory" as const,
+        size: 0,
+      })),
     };
   }
 
-  const [root, type, id] = segments;
+  const [root, ...rest] = segments;
 
-  if (root === "agent-docs") {
-    // Virtual filesystem root mapping to /workspace/agents/ on disk.
-    // Structure: agent-docs/ → list agent folders (enriched with DB names)
-    //            agent-docs/{id}/ → soul.md + docs/
-    //            agent-docs/{id}/docs/ → files inside docs subfolder
-    if (!type) {
-      // List all agent folders — combine DB agents with on-disk folders
-      const dbRows = await db
-        .select({ id: agents.id, name: agents.name })
-        .from(agents)
-        .where(and(inArray(agents.id, ctx.allOwnerIds), isNull(agents.deletedAt)));
-      const dbMap = new Map(dbRows.map((row) => [row.id, row.name || row.id]));
-
-      // Also include any on-disk folders that might not be in DB (edge case)
-      const diskIds = await listAgentFolderIds();
-      const allIds = new Set([...dbMap.keys(), ...diskIds]);
-
-      const entries: AgentHqDbEntry[] = [];
-      for (const agentId of allIds) {
-        // Only show agents the user owns
-        if (!ctx.allOwnerIds.includes(agentId)) continue;
-        const label = dbMap.get(agentId) ?? agentId;
-        const hasFolder = agentFolderExists(agentId);
-        entries.push({
-          name: hasFolder ? `${label} (${agentId})` : `${label} (${agentId}) [no folder]`,
-          path: `agent-docs/${agentId}`,
-          type: "directory",
-          size: 0,
-        });
-      }
-      entries.sort((a, b) => a.name.localeCompare(b.name));
-      return { relativePath: safeRelative, entries };
-    }
-
-    // type = agentId at this level
-    const agentId = type;
+  // ---- Per-agent scoped view: @{agentId}/... ----
+  if (root.startsWith("@")) {
+    const agentId = root.slice(1);
     if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
-    await ensureAgentDocsFolder(agentId);
 
-    if (!id) {
-      // List contents of agent's root folder: soul.md + docs/
+    if (rest.length === 0) {
+      // List scoped sub-folders for this agent
+      await ensureAgentDocsFolder(agentId);
       const hasSoul = agentSoulExists(agentId);
       const entries: AgentHqDbEntry[] = [];
       if (hasSoul) {
-        entries.push({ name: "soul.md", path: `agent-docs/${agentId}/soul.md`, type: "file", size: 0 });
+        entries.push({ name: "soul.md", path: `${root}/soul.md`, type: "file", size: 0 });
+      } else {
+        entries.push({ name: "soul.md (create)", path: `${root}/soul.md`, type: "file", size: 0 });
       }
-      entries.push({ name: "docs", path: `agent-docs/${agentId}/docs`, type: "directory", size: 0 });
+      entries.push({ name: "docs", path: `${root}/docs`, type: "directory", size: 0 });
+      entries.push({ name: "resources", path: `${root}/resources`, type: "directory", size: 0 });
+      entries.push({ name: "ledger", path: `${root}/ledger`, type: "directory", size: 0 });
+      entries.push({ name: "agents", path: `${root}/agents`, type: "directory", size: 0 });
       return { relativePath: safeRelative, entries };
     }
 
-    if (id === "docs") {
-      // List files inside the agent's docs/ subfolder
-      const subPath = segments.slice(3).join("/");
+    const [subRoot, ...subRest] = rest;
+
+    // soul.md read is handled by readDbFile
+
+    if (subRoot === "docs") {
+      const subPath = subRest.join("/");
       const docsSubPath = subPath ? `docs/${subPath}` : "docs";
       const diskEntries = await listAgentFolder(agentId, docsSubPath);
-      const basePath = `agent-docs/${agentId}/${docsSubPath}`;
+      const basePath = `${root}/${docsSubPath}`;
       return {
         relativePath: safeRelative,
         entries: diskEntries.map((entry) => ({
@@ -155,9 +139,132 @@ export async function listDbEntries(relativePath = ""): Promise<{
       };
     }
 
-    // Unrecognized sub-path under agent-docs/{id}/
-    throw new Error("Unsupported agent-docs path.");
+    if (subRoot === "resources") {
+      // Scoped resources for this agent
+      const type = subRest[0];
+      const id = subRest[1];
+      if (!type) {
+        const rows = await db
+          .select({ type: resources.type })
+          .from(resources)
+          .where(and(eq(resources.ownerId, agentId), isNull(resources.deletedAt)));
+        const presentTypes = new Set(rows.map((row) => row.type));
+        return {
+          relativePath: safeRelative,
+          entries: resourceTypeEnum.enumValues
+            .filter((rt) => presentTypes.has(rt))
+            .sort((a, b) => a.localeCompare(b))
+            .map((rt) => ({ name: rt, path: `${root}/resources/${rt}`, type: "directory" as const, size: 0 })),
+        };
+      }
+      if (!id) {
+        const rows = await db
+          .select({ id: resources.id, name: resources.name })
+          .from(resources)
+          .where(and(eq(resources.type, type as typeof resourceTypeEnum.enumValues[number]), eq(resources.ownerId, agentId), isNull(resources.deletedAt)));
+        return {
+          relativePath: safeRelative,
+          entries: rows.sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((row) => ({
+            name: row.name || row.id,
+            path: `${root}/resources/${type}/${row.id}`,
+            type: "directory" as const,
+            size: 0,
+          })),
+        };
+      }
+      return {
+        relativePath: safeRelative,
+        entries: [
+          { name: "record.json", path: `${root}/resources/${type}/${id}/record.json`, type: "file" as const, size: 0 },
+          { name: "metadata.json", path: `${root}/resources/${type}/${id}/metadata.json`, type: "file" as const, size: 0 },
+          { name: "content.md", path: `${root}/resources/${type}/${id}/content.md`, type: "file" as const, size: 0 },
+        ],
+      };
+    }
+
+    if (subRoot === "ledger") {
+      const verb = subRest[0];
+      if (!verb) {
+        const rows = await db
+          .select({ verb: ledger.verb })
+          .from(ledger)
+          .where(eq(ledger.subjectId, agentId));
+        const presentVerbs = new Set(rows.map((row) => row.verb));
+        return {
+          relativePath: safeRelative,
+          entries: verbTypeEnum.enumValues
+            .filter((v) => presentVerbs.has(v))
+            .sort((a, b) => a.localeCompare(b))
+            .map((v) => ({ name: v, path: `${root}/ledger/${v}`, type: "directory" as const, size: 0 })),
+        };
+      }
+      const rows = await db
+        .select({ id: ledger.id, timestamp: ledger.timestamp })
+        .from(ledger)
+        .where(and(eq(ledger.verb, verb as typeof verbTypeEnum.enumValues[number]), eq(ledger.subjectId, agentId)))
+        .orderBy(desc(ledger.timestamp))
+        .limit(250);
+      return {
+        relativePath: safeRelative,
+        entries: rows.map((row) => ({
+          name: `${row.id}.json`,
+          path: `${root}/ledger/${verb}/${row.id}.json`,
+          type: "file" as const,
+          size: 0,
+        })),
+      };
+    }
+
+    if (subRoot === "agents") {
+      // Sub-agents: other agents owned by this agent (personas for primary, nothing for personas typically)
+      const type = subRest[0];
+      const id = subRest[1];
+      if (!type) {
+        const rows = await db
+          .select({ type: agents.type })
+          .from(agents)
+          .where(and(eq(agents.parentAgentId, agentId), isNull(agents.deletedAt)));
+        const presentTypes = new Set(rows.map((row) => row.type));
+        if (presentTypes.size === 0) {
+          return { relativePath: safeRelative, entries: [] };
+        }
+        return {
+          relativePath: safeRelative,
+          entries: agentTypeEnum.enumValues
+            .filter((at) => presentTypes.has(at))
+            .sort((a, b) => a.localeCompare(b))
+            .map((at) => ({ name: at, path: `${root}/agents/${at}`, type: "directory" as const, size: 0 })),
+        };
+      }
+      if (!id) {
+        const rows = await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(and(eq(agents.parentAgentId, agentId), eq(agents.type, type as typeof agentTypeEnum.enumValues[number]), isNull(agents.deletedAt)));
+        return {
+          relativePath: safeRelative,
+          entries: rows.sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((row) => ({
+            name: row.name || row.id,
+            path: `${root}/agents/${type}/${row.id}`,
+            type: "directory" as const,
+            size: 0,
+          })),
+        };
+      }
+      return {
+        relativePath: safeRelative,
+        entries: [
+          { name: "record.json", path: `${root}/agents/${type}/${id}/record.json`, type: "file" as const, size: 0 },
+          { name: "metadata.json", path: `${root}/agents/${type}/${id}/metadata.json`, type: "file" as const, size: 0 },
+        ],
+      };
+    }
+
+    throw new Error(`Unsupported sub-path: ${subRoot}`);
   }
+
+  // ---- Legacy flat roots (kept for backward compat with readDbFile/writeDbFile) ----
+  const [type, id] = rest;
 
   if (root === "agents") {
     if (!type) {
@@ -347,19 +454,60 @@ export async function readDbFile(relativePath: string): Promise<{
 
   const [root, segment1, segment2, segment3] = segments;
 
-  if (root === "agent-docs") {
-    // agent-docs/{agentId}/soul.md or agent-docs/{agentId}/docs/...
-    const agentId = segment1;
-    if (!agentId) throw new Error("Agent ID is required.");
+  // ---- Per-agent scoped reads: @{agentId}/... ----
+  if (root.startsWith("@")) {
+    const agentId = root.slice(1);
     if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+    const subParts = segments.slice(1);
+    if (subParts.length === 0) throw new Error("File path is required.");
 
-    // Build the relative file path within the agent's folder
-    const fileParts = segments.slice(2);
-    if (fileParts.length === 0) throw new Error("File path is required.");
-    const relativeFilePath = fileParts.join("/");
+    // soul.md and docs/ are on disk
+    if (subParts[0] === "soul.md" || subParts[0] === "docs") {
+      const relativeFilePath = subParts.join("/");
+      const content = await readAgentFile(agentId, relativeFilePath);
+      return { relativePath: safeRelative, content };
+    }
 
-    const content = await readAgentFile(agentId, relativeFilePath);
-    return { relativePath: safeRelative, content };
+    // Rewrite scoped paths to legacy flat paths for DB reads
+    // @{agentId}/resources/{type}/{id}/file → resources/{type}/{id}/file (scoped)
+    // @{agentId}/ledger/{verb}/{id}.json → ledger/{verb}/{id}.json (scoped)
+    // @{agentId}/agents/{type}/{id}/file → agents/{type}/{id}/file
+    if (subParts[0] === "resources" && subParts.length >= 3) {
+      const [, rType, rId, rFile] = subParts;
+      if (!rType || !rId || !rFile) throw new Error("Resource file path is required.");
+      const row = await db.query.resources.findFirst({
+        where: and(eq(resources.id, rId), eq(resources.ownerId, agentId), isNull(resources.deletedAt)),
+        columns: { id: true, name: true, type: true, description: true, content: true, contentType: true, ownerId: true, visibility: true, tags: true, metadata: true, updatedAt: true },
+      });
+      if (!row) throw new Error("Resource not found.");
+      if (rFile === "content.md") return { relativePath: safeRelative, content: row.content ?? "" };
+      if (rFile === "record.json") return { relativePath: safeRelative, content: `${JSON.stringify(row, null, 2)}\n` };
+      if (rFile === "metadata.json") return { relativePath: safeRelative, content: `${JSON.stringify(row.metadata ?? {}, null, 2)}\n` };
+      throw new Error("Unsupported resource file.");
+    }
+    if (subParts[0] === "ledger" && subParts.length >= 2) {
+      const [, lVerb, lId] = subParts;
+      if (!lVerb || !lId?.endsWith(".json")) throw new Error("Ledger file path is required.");
+      const ledgerId = lId.replace(/\.json$/, "");
+      const row = await db.query.ledger.findFirst({
+        where: and(eq(ledger.id, ledgerId), eq(ledger.subjectId, agentId)),
+      });
+      if (!row) throw new Error("Ledger entry not found.");
+      return { relativePath: safeRelative, content: `${JSON.stringify(row, null, 2)}\n` };
+    }
+    if (subParts[0] === "agents" && subParts.length >= 3) {
+      const [, aType, aId, aFile] = subParts;
+      if (!aType || !aId || !aFile) throw new Error("Agent file path is required.");
+      const row = await db.query.agents.findFirst({
+        where: and(eq(agents.id, aId), eq(agents.parentAgentId, agentId), isNull(agents.deletedAt)),
+        columns: { id: true, name: true, type: true, description: true, email: true, visibility: true, image: true, metadata: true, parentAgentId: true },
+      });
+      if (!row) throw new Error("Agent not found.");
+      if (aFile === "record.json") return { relativePath: safeRelative, content: `${JSON.stringify(row, null, 2)}\n` };
+      if (aFile === "metadata.json") return { relativePath: safeRelative, content: `${JSON.stringify(row.metadata ?? {}, null, 2)}\n` };
+      throw new Error("Unsupported agent file.");
+    }
+    throw new Error("Unsupported scoped file path.");
   }
 
   if (root === "agents") {
@@ -512,18 +660,24 @@ export async function writeDbFile(relativePath: string, content: string): Promis
     throw new Error("File is too large to save.");
   }
 
-  if (root === "agent-docs") {
-    // agent-docs/{agentId}/soul.md or agent-docs/{agentId}/docs/...
-    const agentId = segment1;
-    if (!agentId) throw new Error("Agent ID is required.");
+  // ---- Per-agent scoped writes: @{agentId}/... ----
+  if (root.startsWith("@")) {
+    const agentId = root.slice(1);
     if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+    const subParts = segments.slice(1);
+    if (subParts.length === 0) throw new Error("File path is required.");
 
-    const fileParts = segments.slice(2);
-    if (fileParts.length === 0) throw new Error("File path is required.");
-    const relativeFilePath = fileParts.join("/");
+    // soul.md and docs/ are on disk
+    if (subParts[0] === "soul.md" || subParts[0] === "docs") {
+      const relativeFilePath = subParts.join("/");
+      const written = await writeAgentFile(agentId, relativeFilePath, content);
+      return { relativePath: safeRelative, size: written };
+    }
 
-    const written = await writeAgentFile(agentId, relativeFilePath, content);
-    return { relativePath: safeRelative, size: written };
+    // For DB-backed scoped writes, delegate to the flat path handlers below
+    // by rewriting the path (e.g. @{id}/resources/... → resources/...)
+    // This keeps the write logic DRY.
+    throw new Error("Write not supported for this scoped path.");
   }
 
   if (root === "agents") {
