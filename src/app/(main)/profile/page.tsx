@@ -1335,7 +1335,10 @@ export default function ProfilePage() {
   return (
     <div className="pb-20">
       <div className="container max-w-6xl mx-auto py-4 space-y-6">
-        <div className="rounded-xl border overflow-hidden bg-card">
+        <div className="liquid-glass rounded-xl border overflow-hidden bg-card">
+          <div className="liquid-glass-effect rounded-xl" />
+          <div className="liquid-glass-tint rounded-xl" />
+          <div className="liquid-glass-shine rounded-xl" />
           <button
             type="button"
             className="relative h-40 md:h-52 bg-cover bg-center w-full group cursor-pointer"

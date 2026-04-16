@@ -1764,7 +1764,7 @@ export function SettingsForm({
         </TabsContent>
 
         <TabsContent value="agent-hq" className="space-y-4">
-          <Card>
+          <Card glass>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Brain className="h-5 w-5" />
