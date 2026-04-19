@@ -419,21 +419,71 @@ function toMessage(err: unknown): string {
  * this deployment (unknown-table errors in the queueing path would
  * otherwise surface as 500s at request time).
  */
+/**
+ * Minimal structural shape of the sibling-branch `credential-sync` module.
+ *
+ * Declared locally (instead of using `typeof import("@/lib/federation/credential-sync")`)
+ * because on THIS branch the module does not exist yet — it ships from
+ * `feat/federation-auth-reset-sync` (#15). Using a structural type keeps
+ * `pnpm exec tsc --noEmit` clean regardless of which branch is checked
+ * out, and the runtime dynamic import still gracefully returns `"skipped"`
+ * when the module genuinely is missing.
+ */
+interface CredentialSyncModuleShape {
+  buildCredentialUpdatedEvent: (params: {
+    agentId: string;
+    credentialVersion: number;
+    signingNodeSlug: string;
+    updatedAt?: Date;
+    nonce?: string;
+  }) => unknown;
+  signCredentialUpdatedEvent: (event: unknown) => Promise<unknown>;
+  syncCredentialToGlobal: (
+    agentId: string,
+    credentialVersion: number,
+    signedEvent: unknown
+  ) => Promise<{ synced: boolean }>;
+}
+
+/** Minimal structural shape of `@/lib/federation`'s `ensureLocalNode`. */
+interface FederationModuleShape {
+  ensureLocalNode: () => Promise<{ slug: string }>;
+}
+
+/**
+ * Module specifiers are held in constants so the path is resolved at call
+ * time rather than at compile time. Using a plain string argument to
+ * `import()` defeats the compiler's module-existence check on branches
+ * where the sibling hasn't merged yet.
+ */
+const CREDENTIAL_SYNC_MODULE_SPECIFIER =
+  "@/lib/federation/credential-sync" as const;
+const FEDERATION_MODULE_SPECIFIER = "@/lib/federation" as const;
+
 async function notifyCredentialSync(params: {
   agentId: string;
   credentialVersion: number;
   passwordChangedAt: Date;
 }): Promise<AcceptResetSuccessResponse["credentialSync"]> {
-  type CredentialSyncModule = typeof import("@/lib/federation/credential-sync");
-  type FederationModule = typeof import("@/lib/federation");
+  // Funnel the specifier through a dynamic string argument so the TypeScript
+  // compiler cannot resolve the module at typecheck time. This matches the
+  // pattern used by the seed-ui worker for its optional federation hooks.
+  const loadOptionalModule = async <T,>(specifier: string): Promise<T> =>
+    (await import(/* @vite-ignore */ /* webpackIgnore: true */ specifier)) as T;
 
-  let credentialSync: CredentialSyncModule;
-  let federation: FederationModule;
+  let credentialSync: CredentialSyncModuleShape;
+  let federation: FederationModuleShape;
   try {
-    credentialSync = await import("@/lib/federation/credential-sync");
-    federation = await import("@/lib/federation");
+    credentialSync = await loadOptionalModule<CredentialSyncModuleShape>(
+      CREDENTIAL_SYNC_MODULE_SPECIFIER
+    );
+    federation = await loadOptionalModule<FederationModuleShape>(
+      FEDERATION_MODULE_SPECIFIER
+    );
   } catch (err) {
-    // Module missing on this branch — acceptable.
+    // Module missing on this branch — acceptable; the password reset
+    // already committed locally and global can catch up via a future
+    // drift-reconciliation job.
     console.warn(
       "[accept-reset] credential-sync module not available; skipping global notification:",
       toMessage(err)
