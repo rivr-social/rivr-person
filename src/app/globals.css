@@ -14,7 +14,7 @@
 
 :root {
   --font-inter: "Inter", system-ui, -apple-system, sans-serif;
-  --background: 180 56% 71%;
+  --background: 180 25% 41%;
   --foreground: 240 10% 3.9%;
   --card: 0 0% 100%;
   --card-foreground: 240 10% 3.9%;
@@ -67,6 +67,7 @@
     color: hsl(var(--foreground));
     font-family: var(--font-inter);
   }
+
 }
 
 /* Custom scrollbar styles for sidebar */
@@ -96,32 +97,80 @@
   scrollbar-width: none;
 }
 
-/* Liquid Glass Effect */
+/* ── Liquid Glass Effect ─────────────────────────────────────────────────── */
+
 .liquid-glass {
-  position: relative;
+  --glass-surface-bg: transparent;
+  --glass-tint-color: rgba(255, 255, 255, 0.14);
+  --glass-shine-light: rgba(255, 255, 255, 0.06);
+  --glass-shine-dark: rgba(255, 255, 255, 0.04);
   overflow: hidden;
-  box-shadow: 0 6px 6px rgba(0, 0, 0, 0.2), 0 0 20px rgba(0, 0, 0, 0.1);
+  background: var(--glass-surface-bg);
+  box-shadow: none;
 }
 
-.liquid-glass-effect {
+.dark .liquid-glass {
+  --glass-tint-color: rgba(255, 255, 255, 0.05);
+  --glass-shine-light: rgba(255, 255, 255, 0.015);
+  --glass-shine-dark: rgba(255, 255, 255, 0.01);
+}
+
+.liquid-glass-shell {
+  --glass-tint-color: rgba(255, 255, 255, 0.09);
+  --glass-shine-light: rgba(255, 255, 255, 0.05);
+  --glass-shine-dark: rgba(255, 255, 255, 0.03);
+  box-shadow: none;
+}
+
+.dark .liquid-glass-shell {
+  --glass-tint-color: rgba(255, 255, 255, 0.035);
+  --glass-shine-light: rgba(255, 255, 255, 0.012);
+  --glass-shine-dark: rgba(255, 255, 255, 0.008);
+}
+
+.liquid-glass.fixed {
+  position: fixed;
+}
+
+.liquid-glass:not(.fixed) {
+  position: relative;
+}
+
+.liquid-glass-effect,
+.liquid-glass-distortion,
+.liquid-glass-effect-shell,
+.liquid-glass-effect-strong {
   position: absolute;
   z-index: 0;
   inset: 0;
+  -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
-  filter: url(#glass-distortion);
   overflow: hidden;
   isolation: isolate;
+  pointer-events: none;
+}
+
+.liquid-glass-effect,
+.liquid-glass-distortion {
+  filter: url(#glass-distortion);
+}
+
+.liquid-glass-effect-shell {
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  filter: url(#glass-distortion-shell);
+}
+
+.liquid-glass-effect-strong {
+  filter: url(#glass-distortion-strong);
 }
 
 .liquid-glass-tint {
   z-index: 1;
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.dark .liquid-glass-tint {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--glass-tint-color);
+  pointer-events: none;
 }
 
 .liquid-glass-shine {
@@ -129,16 +178,26 @@
   inset: 0;
   z-index: 2;
   overflow: hidden;
-  box-shadow: inset 2px 2px 1px 0 rgba(255, 255, 255, 0.3),
-    inset -1px -1px 1px 1px rgba(255, 255, 255, 0.2);
+  pointer-events: none;
+  box-shadow: inset 0.5px 0.5px 0.5px 0 var(--glass-shine-light),
+    inset -0.5px -0.5px 0.5px 0 var(--glass-shine-dark);
 }
 
-.dark .liquid-glass-shine {
-  box-shadow: inset 2px 2px 1px 0 rgba(255, 255, 255, 0.15),
-    inset -1px -1px 1px 1px rgba(255, 255, 255, 0.1);
-}
-
-.liquid-glass > * {
+.liquid-glass > :not(.liquid-glass-effect):not(.liquid-glass-distortion):not(.liquid-glass-effect-shell):not(.liquid-glass-effect-strong):not(.liquid-glass-tint):not(.liquid-glass-shine) {
   position: relative;
   z-index: 3;
+}
+
+/* ── Fixed Background ──────────────────────────────────────────────────── */
+
+#rivr-water-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: #4e8282 url("/bg-light.jpg") center / cover no-repeat;
+}
+
+.dark #rivr-water-bg {
+  background: #1a2a2a url("/bg-dark.jpg") center / cover no-repeat;
 }
