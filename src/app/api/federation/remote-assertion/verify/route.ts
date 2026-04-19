@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { and, eq, isNull } from "drizzle-orm";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { validateFederatedAssertion } from "@/lib/federation-remote-session";
 
@@ -46,9 +49,17 @@ export async function POST(request: Request) {
       );
     }
 
+    const actor = await db.query.agents.findFirst({
+      where: and(eq(agents.id, body.actorId), isNull(agents.deletedAt)),
+      columns: {
+        email: true,
+      },
+    });
+
     return NextResponse.json({
       valid: true,
       displayName: validation.payload.displayName ?? null,
+      email: actor?.email ?? null,
       manifestUrl: validation.payload.manifestUrl ?? null,
       persona: validation.payload.persona ?? null,
       scope: validation.payload.scope,

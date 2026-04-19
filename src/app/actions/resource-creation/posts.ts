@@ -903,9 +903,19 @@ export async function createPostCommerceResource(input: {
       void queueEntityExportEvents({
         originNodeId: federationNode.id,
         resourceIds,
-      }).catch((error) => {
-        console.error("[federation] createPostCommerceResource queue failed:", error);
-      });
+      })
+        .then((outcome) => {
+          console.log(
+            `[federation] createPostCommerceResource queued ${outcome.queued} export event(s) ` +
+              `for resources=[${resourceIds.join(",")}] originNode=${federationNode.id}`,
+          );
+        })
+        .catch((error) => {
+          console.error(
+            `[federation] createPostCommerceResource queue failed for resources=[${resourceIds.join(",")}] originNode=${federationNode.id}:`,
+            error,
+          );
+        });
     }
 
     return {

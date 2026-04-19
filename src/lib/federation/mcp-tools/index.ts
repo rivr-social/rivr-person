@@ -7,6 +7,8 @@ import { sendThanksTokensAction } from "@/app/actions/interactions/thanks-tokens
 import { toggleJoinGroup } from "@/app/actions/interactions/social";
 import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
+import { createEventResource } from "@/app/actions/resource-creation/events";
+import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import {
   fetchMarketplaceListings,
   fetchMyReceipts,
@@ -67,6 +69,22 @@ function getStringArray(value: unknown): string[] {
 
 function getBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function getRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function getRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => Boolean(getRecord(entry)))
+    : [];
 }
 
 function getLocation(value: unknown): { lat: number; lng: number } | null {
@@ -234,7 +252,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.posts.create",
-    description: "Create a post as the active actor or into a group where the actor has write access.",
+    description: "Create a post as the active actor or into a group where the actor has write access. When isGlobal is true (default), the post is also federated to the configured registry so it surfaces on the global instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -247,6 +265,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         localeId: { type: "string" },
         imageUrl: { type: "string" },
         isGlobal: { type: "boolean" },
+        federate: { type: "boolean" },
       },
     },
     enabledFor: ["session", "token"],
@@ -256,6 +275,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         throw new Error("content is required.");
       }
 
+      const isGlobal = getBoolean(args.isGlobal, true);
+
       return createPostResource({
         title: getString(args.title) ?? undefined,
         content,
@@ -263,7 +284,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         groupId: getString(args.groupId) ?? undefined,
         localeId: getString(args.localeId) ?? undefined,
         imageUrl: getString(args.imageUrl),
-        isGlobal: getBoolean(args.isGlobal, true),
+        isGlobal,
+        federate: getBoolean(args.federate, isGlobal),
       });
     },
   },
@@ -315,6 +337,165 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         scopedLocaleIds: getStringArray(args.scopedLocaleIds),
         scopedGroupIds: getStringArray(args.scopedGroupIds),
         scopedUserIds: getStringArray(args.scopedUserIds),
+      });
+    },
+  },
+  {
+    name: "rivr.events.create",
+    description: "Create an event as the active actor, or in a target group/locale. If the group is homed on another Rivr instance, route the write to that instance.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "description", "date", "time", "location"],
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        date: { type: "string", description: "Event date, preferably YYYY-MM-DD." },
+        time: { type: "string", description: "Event start time as display text or HH:mm." },
+        location: { type: "string" },
+        eventType: { type: "string", enum: ["in-person", "online"] },
+        price: { type: "number" },
+        imageUrl: { type: "string" },
+        ownerId: { type: "string", description: "Optional owning agent/group. Defaults to actor or groupId." },
+        groupId: { type: "string", description: "Optional group/ring id; remote groups route to their home instance." },
+        projectId: { type: "string" },
+        venueId: { type: "string" },
+        localeId: { type: "string" },
+        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        scopedGroupIds: { type: "array", items: { type: "string" } },
+        scopedUserIds: { type: "array", items: { type: "string" } },
+        isGlobal: { type: "boolean", description: "Defaults true; false creates a scoped/private event." },
+        ticketTypes: { type: "array", items: { type: "object" } },
+        hosts: { type: "array", items: { type: "object" } },
+        sessions: { type: "array", items: { type: "object" } },
+        workItems: { type: "array", items: { type: "object" } },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const title = getString(args.title);
+      const description = getString(args.description);
+      const date = getString(args.date);
+      const time = getString(args.time);
+      const location = getString(args.location);
+      if (!title || !description || !date || !time || !location) {
+        throw new Error("title, description, date, time, and location are required.");
+      }
+
+      const eventType = getString(args.eventType);
+      return createEventResource({
+        title,
+        description,
+        date,
+        time,
+        location,
+        eventType: eventType === "online" ? "online" : "in-person",
+        price: getNumber(args.price) ?? null,
+        imageUrl: getString(args.imageUrl) ?? undefined,
+        ownerId: getString(args.ownerId),
+        groupId: getString(args.groupId),
+        projectId: getString(args.projectId),
+        venueId: getString(args.venueId),
+        localeId: getString(args.localeId),
+        scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedGroupIds: getStringArray(args.scopedGroupIds),
+        scopedUserIds: getStringArray(args.scopedUserIds),
+        isGlobal: getBoolean(args.isGlobal, true),
+        ticketTypes: getRecordArray(args.ticketTypes) as any,
+        hosts: getRecordArray(args.hosts) as any,
+        sessions: getRecordArray(args.sessions) as any,
+        workItems: getRecordArray(args.workItems) as any,
+      });
+    },
+  },
+  {
+    name: "rivr.offerings.create",
+    description: "Create an offering/listing as the active actor. Global visibility plus scoped locale/group ids makes it discoverable across Rivr; remote scoped groups receive a projection.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "description", "offeringType"],
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        offeringType: { type: "string", description: "service, product, skill, resource, data, ticket, voucher, bounty, trip, gift, etc." },
+        imageUrl: { type: "string" },
+        basePrice: { type: "number" },
+        currency: { type: "string" },
+        acceptedCurrencies: { type: "array", items: { type: "string" } },
+        quantityAvailable: { type: "number" },
+        tags: { type: "array", items: { type: "string" } },
+        targetAgentTypes: { type: "array", items: { type: "string" } },
+        ownerId: { type: "string" },
+        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        scopedGroupIds: { type: "array", items: { type: "string" } },
+        scopedUserIds: { type: "array", items: { type: "string" } },
+        postToFeed: { type: "boolean" },
+        hourlyRate: { type: "number" },
+        availability: { type: "string" },
+        category: { type: "string" },
+        condition: { type: "string" },
+        bountyReward: { type: "number" },
+        bountyCriteria: { type: "string" },
+        bountyDeadline: { type: "string" },
+        ticketEventName: { type: "string" },
+        ticketDate: { type: "string" },
+        ticketVenue: { type: "string" },
+        ticketQuantity: { type: "number" },
+        ticketPrice: { type: "number" },
+        skillArea: { type: "string" },
+        skillProficiency: { type: "string" },
+        resourceCategory: { type: "string" },
+        resourceAvailability: { type: "string" },
+        resourceCondition: { type: "string" },
+        dataFormat: { type: "string" },
+        dataSize: { type: "string" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const title = getString(args.title);
+      const description = getString(args.description);
+      const offeringType = getString(args.offeringType);
+      if (!title || !description || !offeringType) {
+        throw new Error("title, description, and offeringType are required.");
+      }
+
+      return createOfferingResource({
+        title,
+        description,
+        offeringType,
+        imageUrl: getString(args.imageUrl) ?? undefined,
+        basePrice: getNumber(args.basePrice),
+        currency: getString(args.currency) ?? undefined,
+        acceptedCurrencies: getStringArray(args.acceptedCurrencies),
+        quantityAvailable: getNumber(args.quantityAvailable),
+        tags: getStringArray(args.tags),
+        targetAgentTypes: getStringArray(args.targetAgentTypes),
+        ownerId: getString(args.ownerId) ?? undefined,
+        scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedGroupIds: getStringArray(args.scopedGroupIds),
+        scopedUserIds: getStringArray(args.scopedUserIds),
+        postToFeed: getBoolean(args.postToFeed, true),
+        hourlyRate: getNumber(args.hourlyRate),
+        availability: getString(args.availability) ?? undefined,
+        category: getString(args.category) ?? undefined,
+        condition: getString(args.condition) ?? undefined,
+        bountyReward: getNumber(args.bountyReward),
+        bountyCriteria: getString(args.bountyCriteria) ?? undefined,
+        bountyDeadline: getString(args.bountyDeadline) ?? undefined,
+        ticketEventName: getString(args.ticketEventName) ?? undefined,
+        ticketDate: getString(args.ticketDate) ?? undefined,
+        ticketVenue: getString(args.ticketVenue) ?? undefined,
+        ticketQuantity: getNumber(args.ticketQuantity),
+        ticketPrice: getNumber(args.ticketPrice),
+        skillArea: getString(args.skillArea) ?? undefined,
+        skillProficiency: getString(args.skillProficiency) ?? undefined,
+        resourceCategory: getString(args.resourceCategory) ?? undefined,
+        resourceAvailability: getString(args.resourceAvailability) ?? undefined,
+        resourceCondition: getString(args.resourceCondition) ?? undefined,
+        dataFormat: getString(args.dataFormat) ?? undefined,
+        dataSize: getString(args.dataSize) ?? undefined,
       });
     },
   },

@@ -318,9 +318,20 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
       void queueEntityExportEvents({
         originNodeId: federationNode.id,
         resourceIds: [result.id],
-      }).catch((error) => {
-        console.error("[federation] createResourceWithLedger queue failed:", error);
-      });
+      })
+        .then((outcome) => {
+          // Visible success path so the operator can confirm federation queued in prod logs.
+          console.log(
+            `[federation] createResourceWithLedger queued ${outcome.queued} export event(s) ` +
+              `for resource=${result.id} originNode=${federationNode.id}`,
+          );
+        })
+        .catch((error) => {
+          console.error(
+            `[federation] createResourceWithLedger queue failed for resource=${result.id} originNode=${federationNode.id}:`,
+            error,
+          );
+        });
     }
 
     return {
