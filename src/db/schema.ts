@@ -212,6 +212,43 @@ export const federationEventStatusEnum = pgEnum('federation_event_status', [
   'failed',
 ]);
 
+/**
+ * MFA channel used when challenging a user before revealing or rotating
+ * their recovery seed phrase.
+ *
+ * - `email` : reuses the existing SMTP transport (`src/lib/email.ts`).
+ * - `sms`   : currently a stubbed provider (`src/lib/recovery-seed-mfa.ts`)
+ *             that throws until an external SMS provider is wired; the
+ *             enum value exists so the data model does not need a second
+ *             migration when SMS becomes available.
+ *
+ * Referenced by migration 0039_recovery_seed_ui.
+ */
+export const recoverySeedMethodEnum = pgEnum('recovery_seed_method', [
+  'email',
+  'sms',
+]);
+
+/**
+ * Lifecycle stages written to `recovery_seed_audit_log`.
+ *
+ * - `challenge_issued`   : a fresh email/SMS code was generated and sent.
+ * - `challenge_verified` : the user supplied a correct, in-window code.
+ * - `challenge_failed`   : wrong code, expired code, or rate-limit hit.
+ * - `reveal_succeeded`   : the client surfaced the mnemonic to the user.
+ * - `rotate_succeeded`   : a new recovery key pair was registered and the
+ *                          old one was moved into `retired_recovery_keys`.
+ *
+ * Referenced by migration 0039_recovery_seed_ui.
+ */
+export const recoverySeedEventKindEnum = pgEnum('recovery_seed_event_kind', [
+  'challenge_issued',
+  'challenge_verified',
+  'challenge_failed',
+  'reveal_succeeded',
+  'rotate_succeeded',
+]);
+
 export const agentTypeEnum = pgEnum('agent_type', [
   'person',
   'organization',
@@ -1730,3 +1767,97 @@ export const builderDataSources = pgTable(
 
 export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
 export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;
+
+// =============================================================================
+// Recovery seed audit + retired keys
+// -----------------------------------------------------------------------------
+// Implements the Security-tab reveal/rotate flows for sovereign agents.
+// See migration 0039_recovery_seed_ui.sql and GitHub issues
+// rivr-social/rivr-person#12 #13 #14.
+// =============================================================================
+
+/**
+ * Append-only audit of recovery-seed reveal/rotate activity.
+ *
+ * Every meaningful lifecycle transition is recorded here so the user's
+ * Security settings view can surface recent reveal attempts, MFA failures,
+ * and rotations. Rows are never updated or deleted except via normal agent
+ * soft-delete cascade.
+ *
+ * Written by:
+ * - `src/app/api/recovery/challenge/route.ts` (`challenge_issued`)
+ * - `src/app/api/recovery/verify-challenge/route.ts` (`challenge_verified` / `challenge_failed`)
+ * - `src/app/api/recovery/rotate/route.ts` (`rotate_succeeded`)
+ * - Client-side `reveal_succeeded` is posted via
+ *   `src/app/api/recovery/audit-reveal/route.ts`.
+ */
+export const recoverySeedAuditLog = pgTable(
+  'recovery_seed_audit_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    eventKind: recoverySeedEventKindEnum('event_kind').notNull(),
+    /** NULL for rotate events that reuse an already-verified challenge. */
+    method: recoverySeedMethodEnum('method'),
+    /** Short human-readable outcome ("success", "code_expired", ...). */
+    outcome: text('outcome'),
+    /** Best-effort client IP at the time of the event. */
+    ipAddress: text('ip_address'),
+    /** Best-effort user-agent string at the time of the event. */
+    userAgent: text('user_agent'),
+    /** Optional structured context: fingerprint, remainingAttempts, etc. */
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('recovery_seed_audit_log_agent_id_idx').on(table.agentId),
+    index('recovery_seed_audit_log_created_at_idx').on(table.createdAt),
+    index('recovery_seed_audit_log_agent_created_idx').on(
+      table.agentId,
+      table.createdAt,
+    ),
+  ]
+);
+
+export type RecoverySeedAuditLogRecord = typeof recoverySeedAuditLog.$inferSelect;
+export type NewRecoverySeedAuditLogRecord = typeof recoverySeedAuditLog.$inferInsert;
+export type RecoverySeedMethod = typeof recoverySeedMethodEnum.enumValues[number];
+export type RecoverySeedEventKind = typeof recoverySeedEventKindEnum.enumValues[number];
+
+/**
+ * History of previously-active recovery public keys.
+ *
+ * When a user rotates their seed phrase (#14) the old public key is copied
+ * here with a `retired_at` timestamp and a free-form `retirement_reason`.
+ * Retention is lifetime-of-agent so federation peers can still verify
+ * recovery events signed by the old key after the agent's active key has
+ * changed.
+ *
+ * Plaintext seed material is never stored — only the public half.
+ */
+export const retiredRecoveryKeys = pgTable(
+  'retired_recovery_keys',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /** Public key (same encoding as `agents.recovery_public_key`). */
+    publicKey: text('public_key').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    /** Timestamp at which the key was first created (copied from agents). */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    retiredAt: timestamp('retired_at', { withTimezone: true }).defaultNow().notNull(),
+    /** rotated | revoked | compromised | ... (free-form). */
+    retirementReason: text('retirement_reason').notNull().default('rotated'),
+  },
+  (table) => [
+    index('retired_recovery_keys_agent_id_idx').on(table.agentId),
+    index('retired_recovery_keys_fingerprint_idx').on(table.fingerprint),
+  ]
+);
+
+export type RetiredRecoveryKeyRecord = typeof retiredRecoveryKeys.$inferSelect;
+export type NewRetiredRecoveryKeyRecord = typeof retiredRecoveryKeys.$inferInsert;

@@ -162,6 +162,13 @@
       "when": 1776600000000,
       "tag": "0037_federation_auth_foundations",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1776772800000,
+      "tag": "0039_recovery_seed_ui",
+      "breakpoints": true
     }
   ]
 }
