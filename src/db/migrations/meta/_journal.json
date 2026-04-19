@@ -169,6 +169,13 @@
       "when": 1776686400000,
       "tag": "0038_credential_sync_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1776772800000,
+      "tag": "0039_recovery_seed_ui",
+      "breakpoints": true
     }
   ]
 }

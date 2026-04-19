@@ -36,6 +36,7 @@ import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { DomainSettings } from "@/components/domain-settings";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
 import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
+import { RecoverySeedPanel } from "@/components/recovery-seed-panel";
 
 export type SettingsInitialData = {
   name: string;
@@ -69,7 +70,8 @@ type SettingsTab =
   | "agent-hq"
   | "connections"
   | "seller"
-  | "federation";
+  | "federation"
+  | "security";
 
 const SETTINGS_TAB_VALUES: SettingsTab[] = [
   "account",
@@ -80,6 +82,7 @@ const SETTINGS_TAB_VALUES: SettingsTab[] = [
   "connections",
   "seller",
   "federation",
+  "security",
 ];
 
 /** Visibility scope for individual privacy controls. */
@@ -702,7 +705,7 @@ export function SettingsForm({
       </Card>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SettingsTab)} className="space-y-4">
-        <TabsList className="grid grid-cols-4 md:grid-cols-8">
+        <TabsList className="grid grid-cols-4 md:grid-cols-9">
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="privacy">Privacy</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
@@ -711,6 +714,7 @@ export function SettingsForm({
           <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="seller">Seller</TabsTrigger>
           <TabsTrigger value="federation">Federation</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
         </TabsList>
 
         <TabsContent value="account" className="space-y-4">
@@ -2129,6 +2133,15 @@ export function SettingsForm({
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="security" className="space-y-4">
+          {/*
+           * Security tab: sovereign-only surfaces rendered here. The panel
+           * self-gates on /api/recovery/status → sovereignMode so
+           * hosted-federated deployments collapse it to null.
+           */}
+          <RecoverySeedPanel />
         </TabsContent>
       </Tabs>
     </div>
