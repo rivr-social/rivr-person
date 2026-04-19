@@ -63,10 +63,33 @@ export default function LoginPage() {
         return;
       }
 
+      // On sovereign instances a user who has not yet registered a recovery
+      // seed must be routed to the recovery-seed step before the app. This
+      // keeps sovereign signup complete (seed generated + acknowledged +
+      // fingerprint registered) even when email verification arrives on a
+      // different device than signup. Hosted-federated instances skip this
+      // entirely because /api/recovery/status returns sovereignMode=false.
+      let nextUrl = callbackUrl;
+      try {
+        const statusRes = await fetch("/api/recovery/status", { cache: "no-store" });
+        if (statusRes.ok) {
+          const status = (await statusRes.json()) as {
+            sovereignMode?: boolean;
+            registered?: boolean;
+          };
+          if (status.sovereignMode && !status.registered) {
+            nextUrl = "/auth/signup/recovery";
+          }
+        }
+      } catch {
+        // Best-effort: if recovery status is unreachable fall back to the
+        // caller-supplied callback URL rather than blocking login.
+      }
+
       // Full page reload ensures the root layout re-runs auth() server-side,
       // passing the fresh session to SessionProvider so avatar/user state
       // is immediately available without a second refresh.
-      window.location.href = callbackUrl;
+      window.location.href = nextUrl;
     } catch {
       setError("An unexpected error occurred. Please try again.");
     } finally {
