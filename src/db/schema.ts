@@ -2029,3 +2029,61 @@ export type CredentialAuthorityAuditRecord =
   typeof credentialAuthorityAudit.$inferSelect;
 export type NewCredentialAuthorityAuditRecord =
   typeof credentialAuthorityAudit.$inferInsert;
+
+
+// ---------------------------------------------------------------------------
+// Recovery assertion nonces — home-side replay protection
+// ---------------------------------------------------------------------------
+
+/**
+ * Single-use nonce record for global-issued recovery assertions consumed by
+ * this home instance (migration 0041_recovery_assertion_nonces).
+ *
+ * Purpose:
+ *   When a sovereign user forgets their home-instance password, global verifies
+ *   their seed-phrase signature and issues a signed `recovery.assertion` with a
+ *   nonce. The home endpoint `/api/recovery/accept-reset` must enforce
+ *   single-use semantics — a replayed assertion MUST be rejected even if its
+ *   signature is still valid.
+ *
+ * The unique index on `nonce` is the replay guarantee: a duplicate INSERT
+ * raises a unique-violation which the route handler maps to a 409 Conflict.
+ *
+ * Related:
+ *   - rivr-social/rivr-person#17 — API: /api/recovery/accept-reset.
+ *   - HANDOFF 2026-04-19 "Recovery Plan" section 2.
+ *   - src/lib/recovery/assertion.ts — verification + replay check.
+ *   - src/app/api/recovery/accept-reset/route.ts — home acceptance endpoint.
+ */
+export const recoveryAssertionNonces = pgTable(
+  'recovery_assertion_nonces',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** Opaque, random string from the recovery assertion. Unique table-wide. */
+    nonce: text('nonce').notNull(),
+    /** Agent the assertion authorizes. */
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /** Base URL of the global instance that issued the assertion. */
+    issuerBaseUrl: text('issuer_base_url').notNull(),
+    /** Intent string from the assertion (currently only `reset-password`). */
+    intent: text('intent').notNull(),
+    /** Server timestamp when the assertion was first successfully consumed. */
+    consumedAt: timestamp('consumed_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    /** Mirror of the assertion `exp` — used by the prune worker to remove stale rows. */
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('recovery_assertion_nonces_nonce_idx').on(table.nonce),
+    index('recovery_assertion_nonces_agent_id_idx').on(table.agentId),
+    index('recovery_assertion_nonces_expires_at_idx').on(table.expiresAt),
+  ]
+);
+
+export type RecoveryAssertionNonceRecord =
+  typeof recoveryAssertionNonces.$inferSelect;
+export type NewRecoveryAssertionNonceRecord =
+  typeof recoveryAssertionNonces.$inferInsert;

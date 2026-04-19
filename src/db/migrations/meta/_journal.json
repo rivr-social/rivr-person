@@ -166,6 +166,7 @@
     {
       "idx": 23,
       "version": "7",
+<<<<<<< HEAD
       "when": 1776686400000,
       "tag": "0038_credential_sync_queue",
       "breakpoints": true
@@ -182,6 +183,13 @@
       "version": "7",
       "when": 1776859200000,
       "tag": "0040_credential_tempwrite_accept",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1776945600000,
+      "tag": "0041_recovery_assertion_nonces",
       "breakpoints": true
     }
   ]
