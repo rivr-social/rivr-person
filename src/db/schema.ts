@@ -212,6 +212,24 @@ export const federationEventStatusEnum = pgEnum('federation_event_status', [
   'failed',
 ]);
 
+/**
+ * Lifecycle marker for rows in the `credential_sync_queue` table.
+ *
+ * - `pending`  : awaiting (or retrying) delivery to global. Picked up by
+ *                the drain worker once `last_attempt_at` is stale enough.
+ * - `synced`   : terminal success. Row is kept for audit/history.
+ * - `failed`   : terminal dead-letter after exceeding
+ *                `MAX_CREDENTIAL_SYNC_ATTEMPTS`. Requires operator action.
+ *
+ * Referenced by migration 0038_credential_sync_queue and
+ * `src/lib/federation/credential-sync.ts`.
+ */
+export const credentialSyncStatusEnum = pgEnum('credential_sync_status', [
+  'pending',
+  'synced',
+  'failed',
+]);
+
 export const agentTypeEnum = pgEnum('agent_type', [
   'person',
   'organization',
@@ -1730,3 +1748,54 @@ export const builderDataSources = pgTable(
 
 export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
 export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Credential sync queue (federation-auth #15)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dead-letter / retry queue for `credential.updated` federation events that
+ * the home instance could not immediately deliver to global (network error,
+ * 5xx, 404 while the receiver is still pending on global).
+ *
+ * Written to by `src/lib/federation/credential-sync.ts` when a POST to
+ * `${GLOBAL_BASE_URL}/api/federation/events/import` fails. Drained by
+ * `src/app/api/admin/federation/drain-credential-sync-queue/route.ts` (or
+ * anything else that calls `drainCredentialSyncQueue()`).
+ *
+ * Rows are kept for audit/history after reaching a terminal status.
+ * Created by migration 0038_credential_sync_queue.
+ */
+export const credentialSyncQueue = pgTable(
+  'credential_sync_queue',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /**
+     * Full signed `credential.updated` event: `{ type, agentId,
+     * credentialVersion, updatedAt, signature, nonce, signingNodeSlug }`.
+     * Persisted verbatim so retries re-deliver the exact original event.
+     */
+    eventPayload: jsonb('event_payload').$type<Record<string, unknown>>().notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    status: credentialSyncStatusEnum('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('credential_sync_queue_status_idx').on(table.status),
+    index('credential_sync_queue_agent_id_idx').on(table.agentId),
+    // Drain worker filters by status + last_attempt_at. Compound index keeps
+    // the backlog scan index-only as the table grows.
+    index('credential_sync_queue_status_last_attempt_idx')
+      .on(table.status, table.lastAttemptAt),
+  ]
+);
+
+export type CredentialSyncQueueRecord = typeof credentialSyncQueue.$inferSelect;
+export type NewCredentialSyncQueueRecord = typeof credentialSyncQueue.$inferInsert;
+export type CredentialSyncStatus = typeof credentialSyncStatusEnum.enumValues[number];
