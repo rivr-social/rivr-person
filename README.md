@@ -134,7 +134,20 @@ NEXTAUTH_URL=https://rivr.<your-domain>
 NEXT_PUBLIC_BASE_URL=https://rivr.<your-domain>
 DATABASE_URL=postgres://...
 AUTH_SECRET=<real-secret>
+
+# Federation-auth operating mode (see src/lib/instance-mode.ts).
+# sovereign          — home-server deployments (e.g. rivr.camalot.me);
+#                      enables seed-phrase / recovery-key UI.
+# hosted-federated   — shared hosted deployments where global holds
+#                      credentials; seed-phrase UI is suppressed.
+# Defaults to `sovereign` when unset, matching the canonical Camalot deploy.
+RIVR_INSTANCE_MODE=sovereign
 ```
+
+The Camalot deploy (`rivr.camalot.me`, host `5.161.46.237`, container
+`pmdl_rivr_person`) sets `RIVR_INSTANCE_MODE=sovereign` via its compose
+env file under `/opt/pm-core`. A hosted rivr-person behind a global
+shell should override this to `hosted-federated`.
 
 ### 4. Bind your existing Rivr agent
 

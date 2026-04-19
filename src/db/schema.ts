@@ -33,7 +33,7 @@ import {
   uuid,
   customType,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 
 /**
  * Custom tsvector type for full-text search columns.
@@ -180,6 +180,25 @@ export const nodeMembershipStatusEnum = pgEnum('node_membership_status', [
 
 export const instanceTypeEnum = pgEnum("instance_type", [
   "global", "person", "group", "locale", "region",
+]);
+
+/**
+ * Instance operating mode for an individual agent record.
+ *
+ * - `sovereign`: the agent lives on a home-server sovereign deployment
+ *   (e.g. `rivr.camalot.me`). Seed phrase / recovery key material is
+ *   generated client-side and only its public half is stored here.
+ * - `hosted-federated`: the agent lives on a shared hosted global
+ *   deployment. Global is the credential authority. No seed phrase UI
+ *   or recovery key material is issued for this class.
+ *
+ * Federation-auth MVP (#11 / #18) — see `getInstanceMode()` in
+ * `@/lib/instance-mode` for the server-side helper that reads
+ * `RIVR_INSTANCE_MODE` and determines the default for new signups.
+ */
+export const instanceModeEnum = pgEnum('instance_mode', [
+  'hosted-federated',
+  'sovereign',
 ]);
 
 export const migrationStatusEnum = pgEnum("migration_status", [
@@ -384,6 +403,29 @@ export const agents = pgTable(
     totpEnabled: boolean('totp_enabled').notNull().default(false),
     totpRecoveryCodes: jsonb('totp_recovery_codes'),
 
+    // Federation-auth foundations (migration 0037_federation_auth_foundations)
+    // See `/api/instance/mode`, `getInstanceMode()`, and handoff 2026-04-19
+    // "Cameron's Clarifications" #3/#5 for the two-user-class model.
+    //
+    // instanceMode determines whether seed-phrase/recovery UI is offered to
+    // this agent. Defaulted from env `RIVR_INSTANCE_MODE` at signup time;
+    // stored per-row so rivr-person can host both classes simultaneously if
+    // needed. `null` means the row predates this migration and has not yet
+    // been classified — treat such rows as hosted-federated for safety.
+    instanceMode: instanceModeEnum('instance_mode'),
+
+    // Public half of the recovery (seed-phrase-derived) keypair.
+    // Plaintext seed is NEVER stored server-side — only the public key.
+    recoveryPublicKey: text('recovery_public_key'),
+    recoveryKeyFingerprint: text('recovery_key_fingerprint'),
+    recoveryKeyCreatedAt: timestamp('recovery_key_created_at', { withTimezone: true }),
+    recoveryKeyRotatedAt: timestamp('recovery_key_rotated_at', { withTimezone: true }),
+
+    // Monotonic counter bumped on every credential change (password, recovery
+    // key rotation). Mirrors the counter held by global in `identity_authority`
+    // so the two authorities can detect drift during credential sync.
+    credentialVersion: integer('credential_version').notNull().default(1),
+
     // Legacy tsvector — app uses pgvector embeddings instead
     searchVector: tsvector('search_vector'),
 
@@ -414,6 +456,14 @@ export const agents = pgTable(
 
     // Persona parent lookup
     index('agents_parent_agent_id_idx').on(table.parentAgentId),
+
+    // Federation-auth: segmenting agents by instance operating mode
+    index('agents_instance_mode_idx').on(table.instanceMode),
+
+    // Federation-auth: recovery key fingerprint lookup (null-partial)
+    uniqueIndex('agents_recovery_key_fingerprint_idx')
+      .on(table.recoveryKeyFingerprint)
+      .where(sql`${table.recoveryKeyFingerprint} IS NOT NULL`),
 
     // Soft delete queries
     index('agents_deleted_at_idx').on(table.deletedAt),

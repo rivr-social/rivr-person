@@ -155,6 +155,13 @@
       "when": 1775692800000,
       "tag": "0035_persona_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1776600000000,
+      "tag": "0037_federation_auth_foundations",
+      "breakpoints": true
     }
   ]
 }
