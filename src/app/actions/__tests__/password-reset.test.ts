@@ -57,8 +57,46 @@ vi.mock("@/lib/rate-limit", () => ({
   },
 }));
 
+// Federation-auth #15: stub the credential-sync helpers so password-reset
+// tests remain hermetic and do not depend on a running global instance.
+vi.mock("@/lib/federation", () => ({
+  ensureLocalNode: vi.fn().mockResolvedValue({
+    id: "node-1",
+    slug: "home-test",
+    privateKey: "PEM-PLACEHOLDER",
+    publicKey: "PEM-PLACEHOLDER",
+  }),
+}));
+
+vi.mock("@/lib/federation/credential-sync", () => ({
+  buildCredentialUpdatedEvent: vi.fn((params: {
+    agentId: string;
+    credentialVersion: number;
+    signingNodeSlug: string;
+    updatedAt?: Date;
+    nonce?: string;
+  }) => ({
+    type: "credential.updated",
+    agentId: params.agentId,
+    credentialVersion: params.credentialVersion,
+    updatedAt: (params.updatedAt ?? new Date()).toISOString(),
+    nonce: params.nonce ?? "fixed-nonce",
+    signingNodeSlug: params.signingNodeSlug,
+  })),
+  signCredentialUpdatedEvent: vi.fn(async (event) => ({
+    event,
+    signature: "MOCK_SIGNATURE",
+  })),
+  syncCredentialToGlobal: vi.fn().mockResolvedValue({ synced: true }),
+}));
+
 import { rateLimit } from "@/lib/rate-limit";
 import { sendEmail } from "@/lib/email";
+import {
+  buildCredentialUpdatedEvent,
+  signCredentialUpdatedEvent,
+  syncCredentialToGlobal,
+} from "@/lib/federation/credential-sync";
 import {
   requestPasswordResetAction,
   resetPasswordAction,
@@ -318,6 +356,105 @@ describe("password-reset actions", () => {
         // Verify the new password hash is valid
         const isValid = await verify(NEW_PASSWORD, updatedAgent.passwordHash!);
         expect(isValid).toBe(true);
+      }));
+
+    it("increments credentialVersion and dispatches credential.updated to global (#15)", () =>
+      withTestTransaction(async (db) => {
+        const agent = await createTestAgent(db);
+        const validExpiry = new Date(Date.now() + 60 * 60 * 1000);
+        const token = await createTestVerificationToken(db, agent.id, {
+          tokenType: "password_reset",
+          expiresAt: validExpiry,
+        });
+
+        const result = await resetPasswordAction(token.token, NEW_PASSWORD);
+        expect(result.success).toBe(true);
+
+        // agents.credentialVersion must bump monotonically so global can
+        // detect drift between home and its cached verifier.
+        const [updatedAgent] = await db
+          .select({ credentialVersion: agents.credentialVersion })
+          .from(agents)
+          .where(eq(agents.id, agent.id));
+        expect(updatedAgent.credentialVersion).toBe(
+          (agent.credentialVersion ?? 1) + 1
+        );
+
+        // Sync path: home must build, sign, and attempt delivery of the
+        // credential.updated event. Actual network I/O is stubbed by the
+        // module mock above.
+        expect(buildCredentialUpdatedEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agentId: agent.id,
+            credentialVersion: updatedAgent.credentialVersion,
+            signingNodeSlug: "home-test",
+          })
+        );
+        expect(signCredentialUpdatedEvent).toHaveBeenCalledOnce();
+        expect(syncCredentialToGlobal).toHaveBeenCalledWith(
+          agent.id,
+          updatedAgent.credentialVersion,
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: "credential.updated",
+              agentId: agent.id,
+            }),
+            signature: "MOCK_SIGNATURE",
+          })
+        );
+      }));
+
+    it("still succeeds when credential sync to global fails (#15)", () =>
+      withTestTransaction(async (db) => {
+        const agent = await createTestAgent(db);
+        const validExpiry = new Date(Date.now() + 60 * 60 * 1000);
+        const token = await createTestVerificationToken(db, agent.id, {
+          tokenType: "password_reset",
+          expiresAt: validExpiry,
+        });
+
+        // Simulate global being offline / returning 5xx. Home must still
+        // complete the reset — the queue entry is the safety net.
+        vi.mocked(syncCredentialToGlobal).mockResolvedValueOnce({
+          synced: false,
+          reason: "HTTP 503",
+          queueId: "queued-row-id",
+        });
+
+        const result = await resetPasswordAction(token.token, NEW_PASSWORD);
+        expect(result.success).toBe(true);
+
+        const [updatedAgent] = await db
+          .select({
+            credentialVersion: agents.credentialVersion,
+            passwordHash: agents.passwordHash,
+          })
+          .from(agents)
+          .where(eq(agents.id, agent.id));
+
+        // Version still bumps even though sync is queued.
+        expect(updatedAgent.credentialVersion).toBe(
+          (agent.credentialVersion ?? 1) + 1
+        );
+        expect(updatedAgent.passwordHash).not.toBe(agent.passwordHash);
+      }));
+
+    it("still succeeds when credential sync throws unexpectedly (#15)", () =>
+      withTestTransaction(async (db) => {
+        const agent = await createTestAgent(db);
+        const validExpiry = new Date(Date.now() + 60 * 60 * 1000);
+        const token = await createTestVerificationToken(db, agent.id, {
+          tokenType: "password_reset",
+          expiresAt: validExpiry,
+        });
+
+        vi.mocked(syncCredentialToGlobal).mockRejectedValueOnce(
+          new Error("signing key missing")
+        );
+
+        const result = await resetPasswordAction(token.token, NEW_PASSWORD);
+        // Reset MUST NOT regress just because federation plumbing is broken.
+        expect(result.success).toBe(true);
       }));
 
     it("prevents reuse of the same token", () =>
