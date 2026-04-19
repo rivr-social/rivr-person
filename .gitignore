@@ -5,3 +5,6 @@ node_modules
 dist
 coverage
 tmp
+
+# build artifact — local typecheck output
+tsconfig.tsbuildinfo
