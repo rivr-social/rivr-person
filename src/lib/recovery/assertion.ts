@@ -1,0 +1,552 @@
+/**
+ * Recovery-assertion verification helper.
+ *
+ * Purpose:
+ *   Home-instance verifier for the signed `recovery.assertion` that global
+ *   issues after a successful seed-phrase proof. The home instance consumes
+ *   the assertion at POST /api/recovery/accept-reset (#17) as authorization
+ *   to reset a password without an email token.
+ *
+ * Verification pipeline (each step is a named helper so callers / tests can
+ * reason about exactly which check fired):
+ *   1. Structural validation of the assertion object (all required fields,
+ *      correct types, URL shape, ISO-timestamp sanity).
+ *   2. Intent check — only `reset-password` is accepted today.
+ *   3. Target check — `homeBaseUrl` must equal this deployment's base URL.
+ *   4. Timing check — `iat` must not be absurdly in the future and the
+ *      assertion must not be expired. `exp - iat` MUST be <=
+ *      {@link MAX_ASSERTION_LIFETIME_MS} to enforce the handoff's "<=10 min"
+ *      rule regardless of what the issuer set.
+ *   5. Signature check — Ed25519 over the canonical JSON of the payload
+ *      (without the `signature` field) against the registered global
+ *      public key (env `GLOBAL_INSTANCE_PUBLIC_KEY` or `nodes` row with
+ *      role='global').
+ *   6. Agent check — `agentId` exists, is not soft-deleted, and (when the
+ *      column is populated) has `instanceMode='sovereign'`.
+ *
+ * Replay protection lives in the route handler (it needs transactional
+ * coupling with the password update), but the helper surface exposes the
+ * assertion payload + nonce so callers can INSERT the nonce row and catch
+ * the unique-violation as a replay signal.
+ *
+ * Key exports:
+ *   - {@link RecoveryAssertion}                    — strict payload type.
+ *   - {@link SignedRecoveryAssertion}              — with `signature`.
+ *   - {@link verifyRecoveryAssertion}              — primary entry point.
+ *   - {@link RecoveryAssertionVerificationError}   — typed error with `code`.
+ *   - {@link MAX_ASSERTION_LIFETIME_MS}            — 10 min ceiling.
+ *   - {@link MAX_FUTURE_SKEW_MS}                   — 60 s clock-skew allowance.
+ *   - {@link RECOVERY_ASSERTION_INTENT_RESET}      — single accepted intent.
+ *   - {@link resolveGlobalPublicKey}               — env-or-DB public-key lookup.
+ *   - {@link resolveHomeBaseUrl}                   — env-driven home URL helper.
+ *   - {@link assertionSignaturePayload}            — canonical signature input.
+ *
+ * Dependencies:
+ *   - `@/db` + `agents`, `nodes` tables for agent/global lookups.
+ *   - `@/lib/federation-crypto` for canonicalize + verify helpers.
+ *
+ * References:
+ *   - rivr-social/rivr-person#17.
+ *   - HANDOFF_2026-04-19_PRISM_RIVR_MCP_CONNECT.md — "Recovery Plan" section 2.
+ */
+
+import { and, eq, isNull } from "drizzle-orm";
+import { db } from "@/db";
+import { agents, nodes } from "@/db/schema";
+import {
+  canonicalize,
+  verifyPayloadSignature,
+} from "@/lib/federation-crypto";
+import {
+  INSTANCE_MODE_SOVEREIGN,
+  type InstanceMode,
+} from "@/lib/instance-mode";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** The only accepted intent for #17. Future flows (revoke, bootstrap) can add
+ * their own intents without forcing a schema change on the nonces table. */
+export const RECOVERY_ASSERTION_INTENT_RESET = "reset-password" as const;
+
+/** Hard ceiling on assertion lifetime (exp - iat). Matches handoff "<=10 min". */
+export const MAX_ASSERTION_LIFETIME_MS = 10 * 60 * 1000;
+
+/** Clock-skew allowance for `iat` being slightly ahead of this server. */
+export const MAX_FUTURE_SKEW_MS = 60 * 1000;
+
+/** Env var holding the PEM-encoded Ed25519 public key of the global issuer. */
+export const GLOBAL_PUBLIC_KEY_ENV = "GLOBAL_INSTANCE_PUBLIC_KEY" as const;
+
+/** Env vars consulted (in order) to determine this home instance's base URL. */
+export const HOME_BASE_URL_ENV_VARS = [
+  "NEXT_PUBLIC_BASE_URL",
+  "BASE_URL",
+  "NEXT_PUBLIC_APP_URL",
+] as const;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Canonical recovery-assertion payload (pre-signature). Ordering here does
+ * not matter — the signature input is produced by canonicalize() which sorts
+ * keys recursively. */
+export interface RecoveryAssertion {
+  /** Target agent this assertion authorizes. */
+  agentId: string;
+  /** Base URL of THIS home instance, per global's registry. */
+  homeBaseUrl: string;
+  /** Base URL of the global instance that issued the assertion. */
+  globalIssuerBaseUrl: string;
+  /** What the assertion permits. Only `reset-password` is accepted today. */
+  intent: typeof RECOVERY_ASSERTION_INTENT_RESET;
+  /** Expiration timestamp, epoch milliseconds. */
+  exp: number;
+  /** Issuance timestamp, epoch milliseconds. */
+  iat: number;
+  /** Opaque single-use nonce generated by global. */
+  nonce: string;
+}
+
+/** Same as {@link RecoveryAssertion} plus the Ed25519 signature over the
+ * canonical JSON of the payload (without the `signature` field). */
+export interface SignedRecoveryAssertion extends RecoveryAssertion {
+  /** Base64-encoded Ed25519 signature produced by global. */
+  signature: string;
+}
+
+/**
+ * Machine-readable codes for every verification failure path. The route
+ * handler maps these 1:1 to HTTP status codes so tests can assert the
+ * precise failure mode without string-matching user-facing copy.
+ */
+export type RecoveryAssertionErrorCode =
+  | "invalid_payload"
+  | "invalid_intent"
+  | "wrong_target"
+  | "expired"
+  | "lifetime_too_long"
+  | "issued_in_future"
+  | "missing_public_key"
+  | "invalid_signature"
+  | "agent_not_found"
+  | "agent_not_sovereign";
+
+/** Typed error raised by {@link verifyRecoveryAssertion}. */
+export class RecoveryAssertionVerificationError extends Error {
+  public readonly code: RecoveryAssertionErrorCode;
+  /** Optional context (e.g. expected vs actual values) for audit logging. */
+  public readonly detail?: Record<string, unknown>;
+
+  constructor(
+    code: RecoveryAssertionErrorCode,
+    message: string,
+    detail?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "RecoveryAssertionVerificationError";
+    this.code = code;
+    if (detail) this.detail = detail;
+  }
+}
+
+/** Result returned by {@link verifyRecoveryAssertion} on success. Callers
+ * use the `nonce` + `agentId` to INSERT the replay-protection row. */
+export interface VerifiedRecoveryAssertion {
+  assertion: SignedRecoveryAssertion;
+  /** The agent row fetched during verification — avoids a re-select in the
+   * route handler. Only the columns we actually need are hydrated. */
+  agent: {
+    id: string;
+    email: string | null;
+    name: string;
+    credentialVersion: number;
+    sessionVersion: number;
+    instanceMode: InstanceMode | null;
+    metadata: Record<string, unknown>;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Structural validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Narrow an untrusted value into a {@link SignedRecoveryAssertion} or throw.
+ *
+ * Every field is checked for type AND semantic shape. This is intentionally
+ * strict: a malformed assertion should fail closed at the outermost edge so
+ * that the signature verifier never sees obviously-wrong input.
+ */
+export function parseSignedRecoveryAssertion(
+  raw: unknown
+): SignedRecoveryAssertion {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "Recovery assertion must be a JSON object."
+    );
+  }
+  const o = raw as Record<string, unknown>;
+
+  if (typeof o.agentId !== "string" || o.agentId.length === 0) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "assertion.agentId must be a non-empty string."
+    );
+  }
+  assertUrl(o.homeBaseUrl, "homeBaseUrl");
+  assertUrl(o.globalIssuerBaseUrl, "globalIssuerBaseUrl");
+  if (typeof o.intent !== "string" || o.intent.length === 0) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "assertion.intent must be a non-empty string."
+    );
+  }
+  if (typeof o.exp !== "number" || !Number.isFinite(o.exp)) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "assertion.exp must be a finite number (epoch ms)."
+    );
+  }
+  if (typeof o.iat !== "number" || !Number.isFinite(o.iat)) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "assertion.iat must be a finite number (epoch ms)."
+    );
+  }
+  if (typeof o.nonce !== "string" || o.nonce.length < 8) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "assertion.nonce must be a string of at least 8 characters."
+    );
+  }
+  if (typeof o.signature !== "string" || o.signature.length === 0) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      "assertion.signature must be a non-empty base64 string."
+    );
+  }
+
+  return {
+    agentId: o.agentId,
+    homeBaseUrl: o.homeBaseUrl as string,
+    globalIssuerBaseUrl: o.globalIssuerBaseUrl as string,
+    // Narrowed to the only accepted intent by verifyIntent(); the cast
+    // here just widens the structural result so the intent check can run
+    // with a clear error path.
+    intent: o.intent as typeof RECOVERY_ASSERTION_INTENT_RESET,
+    exp: o.exp as number,
+    iat: o.iat as number,
+    nonce: o.nonce as string,
+    signature: o.signature as string,
+  };
+}
+
+function assertUrl(value: unknown, fieldName: string): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      `assertion.${fieldName} must be a non-empty URL string.`
+    );
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("non-http");
+    }
+  } catch {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_payload",
+      `assertion.${fieldName} must be a valid http(s) URL.`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Intent / target / timing checks
+// ---------------------------------------------------------------------------
+
+/** Enforce the intent allowlist. */
+export function verifyIntent(assertion: SignedRecoveryAssertion): void {
+  if (assertion.intent !== RECOVERY_ASSERTION_INTENT_RESET) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_intent",
+      `Recovery assertion intent must be "${RECOVERY_ASSERTION_INTENT_RESET}".`,
+      { received: assertion.intent }
+    );
+  }
+}
+
+/** Enforce that the assertion addresses THIS deployment. */
+export function verifyTarget(
+  assertion: SignedRecoveryAssertion,
+  expectedHomeBaseUrl: string
+): void {
+  const received = normalizeBaseUrl(assertion.homeBaseUrl);
+  const expected = normalizeBaseUrl(expectedHomeBaseUrl);
+  if (received !== expected) {
+    throw new RecoveryAssertionVerificationError(
+      "wrong_target",
+      "Recovery assertion homeBaseUrl does not match this instance.",
+      { received: assertion.homeBaseUrl, expected: expectedHomeBaseUrl }
+    );
+  }
+}
+
+/**
+ * Enforce:
+ *   - exp > now (not expired)
+ *   - iat <= now + MAX_FUTURE_SKEW_MS (not absurdly in the future)
+ *   - exp - iat <= MAX_ASSERTION_LIFETIME_MS (<= 10 minutes)
+ *
+ * These checks MUST run after intent / target so that a perfectly valid
+ * replay-window assertion produces a precise `expired` code rather than a
+ * generic "invalid".
+ */
+export function verifyTiming(
+  assertion: SignedRecoveryAssertion,
+  nowMs: number = Date.now()
+): void {
+  if (assertion.iat - nowMs > MAX_FUTURE_SKEW_MS) {
+    throw new RecoveryAssertionVerificationError(
+      "issued_in_future",
+      "Recovery assertion iat is too far in the future.",
+      { iat: assertion.iat, nowMs }
+    );
+  }
+  if (assertion.exp - assertion.iat > MAX_ASSERTION_LIFETIME_MS) {
+    throw new RecoveryAssertionVerificationError(
+      "lifetime_too_long",
+      "Recovery assertion lifetime exceeds the 10-minute ceiling.",
+      { iat: assertion.iat, exp: assertion.exp }
+    );
+  }
+  if (assertion.exp <= nowMs) {
+    throw new RecoveryAssertionVerificationError(
+      "expired",
+      "Recovery assertion has expired.",
+      { exp: assertion.exp, nowMs }
+    );
+  }
+}
+
+function normalizeBaseUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    // Lowercase host, drop trailing slashes, drop any path, so
+    // https://Rivr.Camalot.Me/ and https://rivr.camalot.me normalize equal.
+    return `${u.protocol}//${u.host.toLowerCase()}`;
+  } catch {
+    return url.replace(/\/+$/, "").toLowerCase();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public-key resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the PEM-encoded Ed25519 public key of the global issuer.
+ *
+ * Resolution order (first non-empty wins):
+ *   1. `GLOBAL_INSTANCE_PUBLIC_KEY` env var (explicit, preferred for dev +
+ *      air-gapped sovereign deploys that do not peer with global).
+ *   2. `nodes` table row where role='global' — populated during peer
+ *      registration. If multiple global rows exist we pick the most-recently
+ *      updated one that has a publicKey.
+ *
+ * Returns null when neither source provides a key so callers can translate
+ * that into a `missing_public_key` error code instead of a generic failure.
+ */
+export async function resolveGlobalPublicKey(): Promise<string | null> {
+  const envKey = process.env[GLOBAL_PUBLIC_KEY_ENV]?.trim();
+  if (envKey) return envKey;
+
+  // Fall back to the peer registry. Uses the existing `nodes` table so we
+  // reuse the peer-registration flow rather than adding a parallel store.
+  const rows = await db
+    .select({ publicKey: nodes.publicKey, updatedAt: nodes.updatedAt })
+    .from(nodes)
+    .where(eq(nodes.role, "global"));
+
+  const withKeys = rows
+    .filter((r) => typeof r.publicKey === "string" && r.publicKey.length > 0)
+    .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0));
+
+  return withKeys[0]?.publicKey ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Home base URL resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve THIS deployment's canonical base URL. Only used for the `target`
+ * check — global must address us by one of our configured base URLs.
+ *
+ * Explicit argument (from the request handler) wins, so tests and
+ * multi-tenant shells can override without mutating process.env.
+ */
+export function resolveHomeBaseUrl(override?: string): string {
+  if (override && override.length > 0) return override;
+  for (const envName of HOME_BASE_URL_ENV_VARS) {
+    const v = process.env[envName]?.trim();
+    if (v) return v;
+  }
+  // No hard-fail here: the target check will produce an `invalid_payload`
+  // when the configured and received values differ. An empty expected value
+  // still forces a visible mismatch because normalizeBaseUrl('') === ''.
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Signature check
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce the canonical JSON string that global signed. This is the entire
+ * assertion payload minus the `signature` field.
+ *
+ * Centralized so the issuer (rivr-app #85) and the verifier here agree on
+ * the exact bytes hashed. Kept tiny / pure for fuzz testing.
+ */
+export function assertionSignaturePayload(
+  assertion: SignedRecoveryAssertion
+): string {
+  // Strip signature without mutating the caller's object.
+  const { signature: _signature, ...payload } = assertion;
+  return canonicalize(payload);
+}
+
+/**
+ * Verify the Ed25519 signature of a parsed assertion against `publicKeyPem`.
+ * Throws with `invalid_signature` on any failure (crypto error, bad key, or
+ * correct-format-but-wrong-key).
+ */
+export function verifySignature(
+  assertion: SignedRecoveryAssertion,
+  publicKeyPem: string
+): void {
+  const { signature: _signature, ...payload } = assertion;
+  const ok = verifyPayloadSignature(
+    payload as unknown as Record<string, unknown>,
+    assertion.signature,
+    publicKeyPem
+  );
+  if (!ok) {
+    throw new RecoveryAssertionVerificationError(
+      "invalid_signature",
+      "Recovery assertion signature did not verify against the registered global public key."
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agent lookup
+// ---------------------------------------------------------------------------
+
+async function lookupVerifiableAgent(
+  agentId: string
+): Promise<VerifiedRecoveryAssertion["agent"]> {
+  const [row] = await db
+    .select({
+      id: agents.id,
+      email: agents.email,
+      name: agents.name,
+      credentialVersion: agents.credentialVersion,
+      sessionVersion: agents.sessionVersion,
+      instanceMode: agents.instanceMode,
+      metadata: agents.metadata,
+      deletedAt: agents.deletedAt,
+    })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+    .limit(1);
+
+  if (!row) {
+    throw new RecoveryAssertionVerificationError(
+      "agent_not_found",
+      "Recovery assertion targets an unknown or deleted agent.",
+      { agentId }
+    );
+  }
+
+  // `instanceMode` being null means the row predates the federation-auth
+  // migration; treat it as non-sovereign since there can be no seed phrase
+  // on file and this flow is seed-phrase-authorized only. See #11.
+  if (row.instanceMode !== INSTANCE_MODE_SOVEREIGN) {
+    throw new RecoveryAssertionVerificationError(
+      "agent_not_sovereign",
+      "Seed-phrase recovery is only accepted for sovereign-mode agents.",
+      { agentId, instanceMode: row.instanceMode }
+    );
+  }
+
+  const metadata =
+    row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+      ? (row.metadata as Record<string, unknown>)
+      : {};
+
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    credentialVersion: row.credentialVersion,
+    sessionVersion: row.sessionVersion,
+    instanceMode: row.instanceMode,
+    metadata,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Primary verification entry point used by POST /api/recovery/accept-reset.
+ *
+ * Runs the full verification pipeline (structural → intent → target →
+ * timing → signature → agent). On success returns the parsed assertion
+ * plus a hydrated agent snapshot so the route handler can proceed to the
+ * password update and nonce-insert within a single transaction.
+ *
+ * Replay protection is NOT run here — the route handler inserts the
+ * nonce row inside the same transaction as the password update and
+ * translates a unique-violation into a 409. That coupling cannot live
+ * in this helper because it would force a db transaction boundary on a
+ * module many tests mock out.
+ *
+ * @throws {RecoveryAssertionVerificationError}
+ */
+export async function verifyRecoveryAssertion(params: {
+  raw: unknown;
+  expectedHomeBaseUrl?: string;
+  nowMs?: number;
+  /** Optional override so tests can inject a fixed public key without
+   * touching `process.env` or seeding the `nodes` table. */
+  publicKeyOverride?: string;
+}): Promise<VerifiedRecoveryAssertion> {
+  const { raw, expectedHomeBaseUrl, nowMs, publicKeyOverride } = params;
+
+  const assertion = parseSignedRecoveryAssertion(raw);
+  verifyIntent(assertion);
+  verifyTarget(assertion, resolveHomeBaseUrl(expectedHomeBaseUrl));
+  verifyTiming(assertion, nowMs ?? Date.now());
+
+  const publicKey =
+    publicKeyOverride ?? (await resolveGlobalPublicKey());
+  if (!publicKey) {
+    throw new RecoveryAssertionVerificationError(
+      "missing_public_key",
+      `Global public key is not configured: set ${GLOBAL_PUBLIC_KEY_ENV} or register a node with role='global'.`
+    );
+  }
+  verifySignature(assertion, publicKey);
+
+  const agent = await lookupVerifiableAgent(assertion.agentId);
+
+  return { assertion, agent };
+}

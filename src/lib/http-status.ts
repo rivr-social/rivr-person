@@ -31,6 +31,8 @@ export const STATUS_UNAUTHORIZED = 401;
 export const STATUS_FORBIDDEN = 403;
 /** Requested resource does not exist or is not visible to the caller. */
 export const STATUS_NOT_FOUND = 404;
+/** Request conflicts with current server state (e.g. replayed nonce, stale version). */
+export const STATUS_CONFLICT = 409;
 /** Resource previously existed but has been permanently removed. */
 export const STATUS_GONE = 410;
 /** Request body exceeds configured upload or payload limits. */
