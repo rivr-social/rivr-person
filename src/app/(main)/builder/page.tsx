@@ -2533,7 +2533,7 @@ export default function BuilderPage() {
                   {profileSummary ? (
                     <div className="space-y-3">
                       {/* Profile card */}
-                      <Card glass>
+                      <Card>
                         <CardContent className="py-3 space-y-2">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-medium">Profile</span>
@@ -2569,7 +2569,7 @@ export default function BuilderPage() {
                       </Card>
 
                       {/* Content counts */}
-                      <Card glass>
+                      <Card>
                         <CardContent className="py-3">
                           <button
                             onClick={() => setDataExpanded(!dataExpanded)}
@@ -2637,7 +2637,7 @@ export default function BuilderPage() {
                                     : FileCode2;
 
                             return (
-                              <Card glass key={meta.kind}>
+                              <Card key={meta.kind}>
                                 <CardContent className="py-2 space-y-2">
                                   <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2">
@@ -2802,7 +2802,6 @@ export default function BuilderPage() {
                     <div className="space-y-2">
                       {versions.map((version) => (
                         <Card
-                          glass
                           key={version.id}
                           className={`transition-colors ${
                             previewingVersionId === version.id

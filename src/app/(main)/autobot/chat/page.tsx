@@ -658,7 +658,7 @@ function ToolPreviewCard({
   const isCancelled = status.state === "cancelled";
 
   return (
-    <Card glass className={cn(
+    <Card className={cn(
       "my-2 overflow-hidden border",
       isSuccess && "border-emerald-500/30",
       isError && "border-destructive/30",
@@ -2600,7 +2600,7 @@ export default function AutobotChatPage() {
 
             <div className="grid gap-2">
               {digitalTwin.assets.slice(0, 4).map((asset) => (
-                <Card glass key={asset.id} className="bg-muted/30">
+                <Card key={asset.id} className="bg-muted/30">
                   <CardContent className="px-3 py-2 text-[10px]">
                     <div className="font-medium">{asset.fileName}</div>
                     <div className="text-muted-foreground">

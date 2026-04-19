@@ -1103,7 +1103,7 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
 
       {open ? (
         <div className="fixed inset-0 z-50 sm:inset-x-auto sm:bottom-24 sm:right-6 sm:top-auto sm:w-[28rem] sm:max-h-[calc(100dvh-8rem)] overflow-y-auto overscroll-contain bg-background/80 backdrop-blur-sm sm:bg-transparent sm:backdrop-blur-0">
-          <Card glass className="min-h-dvh rounded-none border-0 shadow-none sm:min-h-0 sm:overflow-hidden sm:border sm:shadow-2xl sm:rounded-xl">
+          <Card className="min-h-dvh rounded-none border-0 shadow-none sm:min-h-0 sm:overflow-hidden sm:border sm:shadow-2xl sm:rounded-xl">
             <CardHeader className="sticky top-0 z-10 flex flex-row items-start justify-between gap-4 border-b bg-muted/95 backdrop-blur px-5 py-3">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
