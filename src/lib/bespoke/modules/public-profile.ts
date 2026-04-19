@@ -59,6 +59,8 @@ export function getPublicProfileModuleManifest(username: string): BespokeModuleM
       { id: "about", label: "About", dataPath: "agent", defaultComponentId: "profile-header-card", hideable: true, themeable: true },
       { id: "persona-insights", label: "Persona Insights", dataPath: "agent.metadata", defaultComponentId: "profile-header-card", hideable: true, themeable: true },
       { id: "posts", label: "Posts", dataPath: "posts.posts", defaultComponentId: "post-feed", hideable: true, themeable: true },
+      { id: "docs", label: "Documents", dataPath: "documents", defaultComponentId: "profile-header-card", hideable: true, themeable: true },
+      { id: "media", label: "Media", dataPath: "profile.resources", defaultComponentId: "profile-header-card", hideable: true, themeable: true },
       { id: "events", label: "Events", dataPath: "events", defaultComponentId: "event-feed", hideable: true, themeable: true },
       { id: "groups", label: "Groups", dataPath: "groups", defaultComponentId: "profile-group-feed", hideable: true, themeable: true },
       { id: "photos", label: "Photos", dataPath: "profile.resources", defaultComponentId: "profile-header-card", hideable: true, themeable: true },

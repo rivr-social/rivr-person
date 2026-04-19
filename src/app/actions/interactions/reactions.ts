@@ -6,7 +6,8 @@ import { db } from "@/db";
 import { ledger } from "@/db/schema";
 import type { NewLedgerEntry } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
-import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { federatedWrite } from "@/lib/federation/remote-write";
 import {
   getCurrentUserId,
   toggleLedgerInteraction,
@@ -45,7 +46,7 @@ export async function toggleLikeOnTarget(
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ targetId: string; targetType: TargetType }, ActionResult>(
     {
       type: 'toggleLikeOnTarget',
       actorId: userId,
@@ -59,8 +60,8 @@ export async function toggleLikeOnTarget(
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to toggle like." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to toggle like." };
   }
 
   emitDomainEvent({
@@ -71,7 +72,7 @@ export async function toggleLikeOnTarget(
     payload: { reactionType: 'like' },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: "like toggled" };
+  return writeResult.data ?? { success: true, message: "like toggled" };
 }
 
 export async function setReactionOnTarget(
@@ -85,7 +86,7 @@ export async function setReactionOnTarget(
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const facadeResult = await updateFacade.execute(
+  const facadeResult = await federatedWrite<{ targetId: string; targetType: TargetType; reactionType: ReactionType }, ActionResult>(
     {
       type: 'setReactionOnTarget',
       actorId: userId,
@@ -232,7 +233,7 @@ export async function toggleThankOnTarget(
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ targetId: string; targetType: TargetType }, ActionResult>(
     {
       type: 'toggleThankOnTarget',
       actorId: userId,
@@ -244,8 +245,8 @@ export async function toggleThankOnTarget(
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to toggle thank." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to toggle thank." };
   }
 
   emitDomainEvent({
@@ -256,5 +257,5 @@ export async function toggleThankOnTarget(
     payload: { reactionType: 'thank' },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: "thank toggled" };
+  return writeResult.data ?? { success: true, message: "thank toggled" };
 }

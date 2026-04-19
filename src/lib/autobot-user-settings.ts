@@ -1,6 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
+import {
+  sanitizeAutobotConnections,
+  type AutobotConnection,
+} from "@/lib/autobot-connectors";
 
 export type VoiceMode = "browser" | "clone";
 export type GpuProvider = "vast" | "local" | "custom";
@@ -44,6 +48,10 @@ export type DigitalTwinJob = {
   sourceType: "script" | "transcript";
   sourceText: string;
   status: DigitalTwinJobStatus;
+  workerJobId?: string;
+  videoUrl?: string;
+  outputPath?: string;
+  errorDetail?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -68,19 +76,25 @@ export type AutobotUserSettings = {
   gpuProviderEndpoint: string;
   voiceSample: VoiceSample | null;
   digitalTwin: DigitalTwinProfile;
+  connections: AutobotConnection[];
+  customSoulMd: string;
+  includedPersonaKgIds: string[];
   updatedAt?: string;
 };
 
 const SETTINGS_KEY = "autobotSettings";
 
 const DEFAULT_SETTINGS: AutobotUserSettings = {
-  selectedModel: "openai/gpt-4o-mini",
+  selectedModel: "anthropic/claude-sonnet-4-6",
   ttsEnabled: false,
   voiceMode: "browser",
   gpuProvider: "vast",
   gpuProviderApiKey: "",
   gpuProviderEndpoint: "",
   voiceSample: null,
+  connections: [],
+  customSoulMd: "",
+  includedPersonaKgIds: [],
   digitalTwin: {
     pipeline: "retalk",
     model: "edityourself",
@@ -197,7 +211,23 @@ function sanitizeDigitalTwinJob(input: unknown): DigitalTwinJob | null {
   if (!id || !mode || !sourceType || !sourceText || !status || !createdAt || !updatedAt) {
     return null;
   }
-  return { id, mode, sourceType, sourceText, status, createdAt, updatedAt };
+  const workerJobId =
+    typeof input.workerJobId === "string" && input.workerJobId.trim()
+      ? input.workerJobId.trim()
+      : undefined;
+  const videoUrl =
+    typeof input.videoUrl === "string" && input.videoUrl.trim()
+      ? input.videoUrl.trim()
+      : undefined;
+  const outputPath =
+    typeof input.outputPath === "string" && input.outputPath.trim()
+      ? input.outputPath.trim()
+      : undefined;
+  const errorDetail =
+    typeof input.errorDetail === "string" && input.errorDetail.trim()
+      ? input.errorDetail.trim()
+      : undefined;
+  return { id, mode, sourceType, sourceText, status, createdAt, updatedAt, workerJobId, videoUrl, outputPath, errorDetail };
 }
 
 function sanitizeDigitalTwinProfile(input: unknown): DigitalTwinProfile {
@@ -252,6 +282,14 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
       ? record.gpuProviderEndpoint.trim()
       : "";
   const voiceSample = sanitizeVoiceSample(record.voiceSample);
+  const connections = sanitizeAutobotConnections(record.connections);
+  const customSoulMd =
+    typeof record.customSoulMd === "string" ? record.customSoulMd.trim() : "";
+  const includedPersonaKgIds = Array.isArray(record.includedPersonaKgIds)
+    ? record.includedPersonaKgIds
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim())
+    : [];
   const digitalTwin = sanitizeDigitalTwinProfile(record.digitalTwin);
   const updatedAt =
     typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : undefined;
@@ -264,6 +302,9 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
     gpuProviderApiKey,
     gpuProviderEndpoint,
     voiceSample,
+    connections,
+    customSoulMd,
+    includedPersonaKgIds,
     digitalTwin,
     updatedAt,
   };

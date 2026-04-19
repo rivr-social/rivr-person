@@ -1455,3 +1455,228 @@ export type NewGroupMatrixRoom = typeof groupMatrixRooms.$inferInsert;
 
 export type ContractRule = typeof contractRules.$inferSelect;
 export type NewContractRule = typeof contractRules.$inferInsert;
+
+/**
+ * Site versions — version history for the bespoke site builder.
+ * Each row captures a complete snapshot of all site files at a point in time,
+ * enabling lossless rollback to any previous version.
+ * Created by migration 0033_site_versions.
+ */
+export const siteVersions = pgTable(
+  'site_versions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull(),
+    versionNumber: integer('version_number').notNull(),
+    commitMessage: text('commit_message'),
+    /** Full snapshot of all site files as { filename: content } */
+    filesSnapshot: jsonb('files_snapshot').$type<Record<string, string>>().notNull(),
+    /** What triggered this version: 'deploy', 'save', 'manual' */
+    trigger: text('trigger').notNull().default('manual'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('site_versions_agent_id_idx').on(table.agentId),
+    index('site_versions_agent_version_idx').on(table.agentId, table.versionNumber),
+    index('site_versions_created_at_idx').on(table.createdAt),
+  ]
+);
+
+export type SiteVersionRecord = typeof siteVersions.$inferSelect;
+export type NewSiteVersionRecord = typeof siteVersions.$inferInsert;
+
+/**
+ * Domain verification status enum for custom domain configuration.
+ * Tracks the lifecycle of a custom domain from initial setup to active use.
+ */
+export const domainVerificationStatusEnum = pgEnum('domain_verification_status', [
+  'pending',   // DNS records not yet verified
+  'verified',  // DNS ownership confirmed via TXT record
+  'active',    // DNS pointing correctly and domain is serving traffic
+]);
+
+/**
+ * Domain configurations table - stores custom domain settings for sovereign instances.
+ * Each agent (instance owner) may have at most one custom domain configured.
+ *
+ * Integration note: This table manages the application-level domain lifecycle.
+ * Actual Traefik router/certificate configuration must be applied separately
+ * on the host (e.g., via deploy agent, SSH, or Traefik dynamic config file).
+ */
+export const domainConfigs = pgTable(
+  'domain_configs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+    customDomain: text('custom_domain').notNull(),
+    verificationToken: text('verification_token').notNull(),
+    verificationStatus: domainVerificationStatusEnum('verification_status').default('pending').notNull(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    traefikConfig: text('traefik_config'),
+    traefikConfigGeneratedAt: timestamp('traefik_config_generated_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('domain_configs_agent_id_idx').on(table.agentId),
+    uniqueIndex('domain_configs_custom_domain_idx').on(table.customDomain),
+    index('domain_configs_verification_status_idx').on(table.verificationStatus),
+  ]
+);
+
+export type DomainConfigRecord = typeof domainConfigs.$inferSelect;
+export type NewDomainConfigRecord = typeof domainConfigs.$inferInsert;
+export type DomainVerificationStatus = typeof domainVerificationStatusEnum.enumValues[number];
+
+// ---------------------------------------------------------------------------
+// Persona approval / audit enums and tables
+// ---------------------------------------------------------------------------
+
+export const approvalStatusEnum = pgEnum('approval_status', [
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+]);
+
+export const auditDecisionEnum = pgEnum('audit_decision', [
+  'auto_allowed',
+  'approved',
+  'rejected',
+  'expired',
+]);
+
+export const actionRiskLevelEnum = pgEnum('action_risk_level', [
+  'low',
+  'medium',
+  'high',
+]);
+
+/**
+ * Persona action approvals — queue of pending/resolved action approvals.
+ * Created by migration 0035_persona_approvals.
+ */
+export const personaActionApprovals = pgTable(
+  'persona_action_approvals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personaId: uuid('persona_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+    actionType: text('action_type').notNull(),
+    actionPayload: jsonb('action_payload').$type<Record<string, unknown>>().default({}).notNull(),
+    riskLevel: actionRiskLevelEnum('risk_level').notNull().default('medium'),
+    status: approvalStatusEnum('status').notNull().default('pending'),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolvedBy: uuid('resolved_by').references(() => agents.id, { onDelete: 'set null' }),
+    resolutionNote: text('resolution_note'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('paa_persona_id_idx').on(table.personaId),
+    index('paa_status_idx').on(table.status),
+    index('paa_risk_level_idx').on(table.riskLevel),
+    index('paa_requested_at_idx').on(table.requestedAt),
+    index('paa_expires_at_idx').on(table.expiresAt),
+    index('paa_persona_status_idx').on(table.personaId, table.status),
+  ]
+);
+
+export const personaActionApprovalsRelations = relations(personaActionApprovals, ({ one }) => ({
+  persona: one(agents, {
+    fields: [personaActionApprovals.personaId],
+    references: [agents.id],
+    relationName: 'persona_approvals',
+  }),
+  resolver: one(agents, {
+    fields: [personaActionApprovals.resolvedBy],
+    references: [agents.id],
+    relationName: 'approval_resolver',
+  }),
+}));
+
+/**
+ * Persona audit log — append-only log of all persona action decisions.
+ * Created by migration 0035_persona_approvals.
+ */
+export const personaAuditLog = pgTable(
+  'persona_audit_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personaId: uuid('persona_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+    actionType: text('action_type').notNull(),
+    riskLevel: actionRiskLevelEnum('risk_level').notNull().default('medium'),
+    decision: auditDecisionEnum('decision').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+    actorId: uuid('actor_id').references(() => agents.id, { onDelete: 'set null' }),
+    approvalId: uuid('approval_id').references(() => personaActionApprovals.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('pal_persona_id_idx').on(table.personaId),
+    index('pal_action_type_idx').on(table.actionType),
+    index('pal_decision_idx').on(table.decision),
+    index('pal_created_at_idx').on(table.createdAt),
+    index('pal_persona_created_idx').on(table.personaId, table.createdAt),
+  ]
+);
+
+export const personaAuditLogRelations = relations(personaAuditLog, ({ one }) => ({
+  persona: one(agents, {
+    fields: [personaAuditLog.personaId],
+    references: [agents.id],
+    relationName: 'persona_audit_entries',
+  }),
+  actor: one(agents, {
+    fields: [personaAuditLog.actorId],
+    references: [agents.id],
+    relationName: 'audit_actor',
+  }),
+  approval: one(personaActionApprovals, {
+    fields: [personaAuditLog.approvalId],
+    references: [personaActionApprovals.id],
+  }),
+}));
+
+export type PersonaActionApprovalRecord = typeof personaActionApprovals.$inferSelect;
+export type NewPersonaActionApprovalRecord = typeof personaActionApprovals.$inferInsert;
+export type ApprovalStatus = typeof approvalStatusEnum.enumValues[number];
+export type ActionRiskLevel = typeof actionRiskLevelEnum.enumValues[number];
+
+export type PersonaAuditLogRecord = typeof personaAuditLog.$inferSelect;
+export type NewPersonaAuditLogRecord = typeof personaAuditLog.$inferInsert;
+export type AuditDecision = typeof auditDecisionEnum.enumValues[number];
+
+// ---------------------------------------------------------------------------
+// Builder data-source bindings
+// ---------------------------------------------------------------------------
+
+/**
+ * Builder data sources — persisted registry of public data sources the
+ * site builder can bind to when generating a live site / workspace.
+ * Each row represents one enabled (or disabled) data-source binding for
+ * a given agent (user).  The `config` JSONB column carries source-specific
+ * parameters (e.g. Solid Pod WebID, public-profile username).
+ * Created by migration 0036_builder_data_sources.
+ */
+export const builderDataSources = pgTable(
+  'builder_data_sources',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull(),
+    /** myprofile | public-profile | solid-pod | universal-manifest */
+    kind: text('kind').notNull(),
+    label: text('label').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Source-specific config: { username?, webId?, umKind?, umId? } */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('bds_agent_id_idx').on(table.agentId),
+    index('bds_agent_kind_idx').on(table.agentId, table.kind),
+  ]
+);
+
+export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
+export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;

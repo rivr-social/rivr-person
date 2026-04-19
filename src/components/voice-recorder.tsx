@@ -18,9 +18,14 @@ const RECORDING_MIME_TYPES = [
 
 type RecordingState = "idle" | "recording" | "processing";
 
+export type VoiceRecorderError = {
+  message: string;
+  type: "permission-denied" | "not-supported" | "recording" | "transcription";
+};
+
 interface VoiceRecorderProps {
   onTranscription: (text: string) => void;
-  onError?: (error: string) => void;
+  onError?: (error: VoiceRecorderError) => void;
   disabled?: boolean;
   className?: string;
 }
@@ -88,7 +93,7 @@ export function VoiceRecorder({
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Transcription failed.";
-        onError?.(message);
+        onError?.({ message, type: "transcription" });
       } finally {
         setState("idle");
       }
@@ -98,7 +103,10 @@ export function VoiceRecorder({
 
   const startRecording = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices) {
-      onError?.("Microphone access is not available in this browser.");
+      onError?.({
+        message: "Microphone access is not available in this browser.",
+        type: "not-supported",
+      });
       return;
     }
 
@@ -137,18 +145,24 @@ export function VoiceRecorder({
       recorder.onerror = () => {
         stopMediaStream();
         setState("idle");
-        onError?.("Recording failed.");
+        onError?.({ message: "Recording failed.", type: "recording" });
       };
 
       recorder.start();
       setState("recording");
     } catch (error) {
       stopMediaStream();
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Failed to start recording.";
-      onError?.(message);
+      const isDenied =
+        error instanceof DOMException &&
+        (error.name === "NotAllowedError" || error.name === "PermissionDeniedError");
+      onError?.({
+        message: isDenied
+          ? "Microphone access was denied. Please allow microphone access and try again."
+          : error instanceof Error
+            ? error.message
+            : "Failed to start recording.",
+        type: isDenied ? "permission-denied" : "recording",
+      });
     }
   }, [getSupportedMimeType, stopMediaStream, transcribeAudio, onError]);
 

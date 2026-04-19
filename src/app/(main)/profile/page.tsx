@@ -10,7 +10,7 @@ import { ResponsiveTabsList } from "@/components/responsive-tabs-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowUpRight, Award, Bot, Calendar, Camera, Clock, CreditCard, Globe, Hammer, History, MapPin, MessageCircle, MessageSquare, Receipt, Send, Store, Users } from "lucide-react";
+import { ArrowUpRight, Award, Bot, Calendar, Camera, Clock, CreditCard, Globe, Hammer, History, MapPin, MessageCircle, MessageSquare, Mic, Receipt, Send, Store, Users } from "lucide-react";
 import { getSocialIcon, getSocialHref, getSocialDisplayLabel } from "@/lib/social-platform-icon";
 import { useToast } from "@/components/ui/use-toast";
 import { MetaMaskConnectButton } from "@/components/metamask-connect-button";
@@ -35,11 +35,14 @@ import {
   resourceToPost,
 } from "@/lib/graph-adapters";
 import { PostFeed } from "@/components/post-feed";
+import { CommentActivityFeed } from "@/components/comment-activity-feed";
 import { EventFeed } from "@/components/event-feed";
 import { ProfileGroupFeed } from "@/components/profile-group-feed";
 import { ProfileCalendar } from "@/components/profile-calendar";
 import { OfferingsTab } from "@/components/offerings-tab";
 import { PersonaManager } from "@/components/persona-manager";
+import { DocumentsTab } from "@/components/documents-tab";
+import { ProfileMediaTab } from "@/components/profile-media-tab";
 import { AgentGraph } from "@/components/agent-graph";
 import { UserConnections } from "@/components/user-connections";
 import { ReceiptCard } from "@/components/receipt-card";
@@ -47,13 +50,29 @@ import WalletDepositDialog from "@/components/wallet-deposit-dialog";
 import WalletHistory from "@/components/wallet-history";
 import SendMoneyDialog from "@/components/send-money-dialog";
 import EthAddressForm from "@/components/eth-address-form";
+import { BankAccountsCard } from "@/components/bank-accounts-card";
 import { setEventRsvp, toggleJoinGroup, toggleLikeOnTarget, toggleSaveListing } from "@/app/actions/interactions";
 import { updateProfileImageAction } from "@/app/actions/settings";
+import {
+  fetchMyCommentsAction,
+  fetchMyMentionsAction,
+  type MyCommentEntry,
+  type MentionPostSerialized,
+} from "@/app/actions/resource-creation/profile-feeds";
 import type { Event, Group, MarketplaceListing, Post, User } from "@/lib/types";
+import type { Document } from "@/types/domain";
 import { OfferingType, PostType } from "@/lib/types";
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 type GraphEvent = ReturnType<typeof agentToEvent>;
+
+const POSTS_SUB_FILTERS = ["posts", "comments", "mentions"] as const;
+type PostsSubFilter = (typeof POSTS_SUB_FILTERS)[number];
+const POSTS_SUB_FILTER_LABELS: Record<PostsSubFilter, string> = {
+  posts: "Posts",
+  comments: "Comments",
+  mentions: "Mentions",
+};
 
 function getStableTimestamp(...values: Array<string | null | undefined>): string {
   for (const value of values) {
@@ -286,6 +305,8 @@ function ConnectBalanceSection() {
 
 const PROFILE_TABS = [
   "about",
+  "docs",
+  "media",
   "posts",
   "events",
   "groups",
@@ -310,6 +331,8 @@ const PROFILE_TAB_SECTIONS: Record<ProfileTab, string> = {
   offerings: "offerings",
   calendar: "calendar",
   wallet: "wallet",
+  docs: "docs",
+  media: "media",
   personas: "personas",
   saved: "saved",
   activity: "activity",
@@ -325,6 +348,8 @@ const DEFAULT_VISIBLE_PROFILE_SECTIONS = [
   "offerings",
   "calendar",
   "wallet",
+  "docs",
+  "media",
   "personas",
   "saved",
   "activity",
@@ -542,6 +567,18 @@ export default function ProfilePage() {
     }>
   >([]);
   const [savedListingIds, setSavedListingIds] = useState<string[]>([]);
+
+  // Posts sub-filter state (lazy-loaded)
+  const [postsSubFilter, setPostsSubFilter] = useState<PostsSubFilter>("posts");
+  const [myComments, setMyComments] = useState<MyCommentEntry[]>([]);
+  const [myCommentsLoading, setMyCommentsLoading] = useState(false);
+  const [myCommentsError, setMyCommentsError] = useState<string | null>(null);
+  const [myCommentsLoaded, setMyCommentsLoaded] = useState(false);
+  const [mentionPosts, setMentionPosts] = useState<Post[]>([]);
+  const [mentionsLoading, setMentionsLoading] = useState(false);
+  const [mentionsError, setMentionsError] = useState<string | null>(null);
+  const [mentionsLoaded, setMentionsLoaded] = useState(false);
+
   const [walletSummary, setWalletSummary] = useState<{
     personalBalanceDollars: number;
     walletCount: number;
@@ -606,6 +643,7 @@ export default function ProfilePage() {
       seller: { id: string; name: string; username: string | null; image: string | null } | null;
     }>
   >([]);
+  const [personalDocuments, setPersonalDocuments] = useState<Document[]>([]);
   const [activeTab, setActiveTab] = useState<ProfileTab>("about");
   const [activeWalletTab, setActiveWalletTab] = useState<WalletViewTab>("transactions");
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -690,13 +728,6 @@ export default function ProfilePage() {
   const { data: localesData } = useLocalesAndBasins();
 
   useEffect(() => {
-    const tab = searchParams.get("tab");
-    if (isProfileTab(tab) && tab !== activeTab) {
-      setActiveTab(tab);
-    }
-  }, [activeTab, searchParams]);
-
-  useEffect(() => {
     const walletTab = searchParams.get("walletTab");
     if (isWalletViewTab(walletTab) && walletTab !== activeWalletTab) {
       setActiveWalletTab(walletTab);
@@ -708,11 +739,26 @@ export default function ProfilePage() {
     [myProfileManifest]
   );
   const visibleTabs = useMemo(
-    () => PROFILE_TABS.filter((tab) => visibleSectionIds.has(PROFILE_TAB_SECTIONS[tab])),
-    [visibleSectionIds]
+    () => {
+      const allowedTabs = new Set(
+        PROFILE_TABS.filter((tab) => visibleSectionIds.has(PROFILE_TAB_SECTIONS[tab]))
+      );
+      if (status === "authenticated") {
+        allowedTabs.add("docs");
+      }
+      return PROFILE_TABS.filter((tab) => allowedTabs.has(tab));
+    },
+    [status, visibleSectionIds]
   );
   const showPersonaInsights = visibleSectionIds.has("persona-insights");
   const showConnections = visibleSectionIds.has("connections");
+
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (isProfileTab(tab) && visibleTabs.includes(tab) && tab !== activeTab) {
+      setActiveTab(tab);
+    }
+  }, [activeTab, searchParams, visibleTabs]);
 
   useEffect(() => {
     if (visibleTabs.length === 0) return;
@@ -723,7 +769,7 @@ export default function ProfilePage() {
 
   const setTab = (tab: string) => {
     if (!isProfileTab(tab)) return;
-    if (!visibleSectionIds.has(PROFILE_TAB_SECTIONS[tab])) return;
+    if (!visibleTabs.includes(tab)) return;
     setActiveTab(tab);
     const query = new URLSearchParams(searchParams.toString());
     query.set("tab", tab);
@@ -779,6 +825,7 @@ export default function ProfilePage() {
       (myProfileBundle.marketplaceListings as Array<SerializedResource & { ownerName?: string; ownerImage?: string }>) ?? [];
     const reactionCountsResult = (myProfileBundle.reactionCounts as ReactionCountsMap) ?? {};
     const connectionAgents = (myProfileBundle.connections as SerializedAgent[]) ?? [];
+    const personalDocumentsResult = (myProfileBundle.documents as Document[]) ?? [];
     const myWallet = (myProfileBundle.wallet as { success?: boolean; wallet?: Record<string, unknown> }) ?? {};
     const myWallets = (myProfileBundle.wallets as { success?: boolean; wallets?: unknown[] }) ?? {};
     const txHistory = (myProfileBundle.transactions as { success?: boolean; transactions?: Array<Record<string, unknown>> }) ?? {};
@@ -811,6 +858,7 @@ export default function ProfilePage() {
     );
 
     setProfileResources((profile?.resources as SerializedResource[]) ?? []);
+    setPersonalDocuments(personalDocumentsResult);
     setProfileActivity(
       ((profile?.recentActivity as Array<{
         id: string;
@@ -834,6 +882,7 @@ export default function ProfilePage() {
       }))
     );
     setSavedListingIds(myProfileBundle.savedListingIds ?? []);
+
     const walletData = (myWallet.success ? myWallet.wallet : null) as Record<string, unknown> | null;
     const personalBal = typeof walletData?.balanceDollars === "number" ? walletData.balanceDollars : 0;
     const connectAvail = typeof walletData?.connectAvailableCents === "number" ? walletData.connectAvailableCents : 0;
@@ -884,6 +933,74 @@ export default function ProfilePage() {
     );
     setReceipts(receiptsResult.receipts ?? []);
   }, [myProfileBundle, status]);
+
+  // Lazy-load comments when the sub-filter is selected
+  useEffect(() => {
+    if (postsSubFilter !== "comments" || myCommentsLoaded) return;
+    let cancelled = false;
+    setMyCommentsLoading(true);
+    setMyCommentsError(null);
+    fetchMyCommentsAction().then((result) => {
+      if (cancelled) return;
+      if (result.success) {
+        setMyComments(result.comments);
+        setMyCommentsLoaded(true);
+      } else {
+        setMyCommentsError(result.error);
+      }
+      setMyCommentsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [postsSubFilter, myCommentsLoaded]);
+
+  // Lazy-load mentions when the sub-filter is selected
+  useEffect(() => {
+    if (postsSubFilter !== "mentions" || mentionsLoaded) return;
+    let cancelled = false;
+    setMentionsLoading(true);
+    setMentionsError(null);
+    fetchMyMentionsAction().then((result) => {
+      if (cancelled) return;
+      if (result.success) {
+        const posts: Post[] = result.mentions.map((m) => resourceToPost(
+          {
+            id: m.id,
+            name: m.name,
+            type: m.type,
+            description: m.description,
+            content: m.content,
+            ownerId: m.ownerId,
+            tags: m.tags,
+            metadata: m.metadata,
+            createdAt: m.createdAt,
+            updatedAt: m.updatedAt,
+            isPublic: true,
+            visibility: "public",
+            url: null,
+          } as SerializedResource,
+          {
+            id: m.ownerId,
+            name: m.ownerName ?? "Unknown",
+            type: "person",
+            description: null,
+            image: m.ownerImage,
+            email: null,
+            metadata: {},
+            parentId: null,
+            depth: 0,
+            createdAt: m.createdAt,
+            updatedAt: m.updatedAt,
+          } as SerializedAgent,
+        )) as Post[];
+        setMentionPosts(posts);
+        setMentionsLoaded(true);
+      } else {
+        setMentionsError(result.error);
+      }
+      setMentionsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [postsSubFilter, mentionsLoaded]);
 
   const metadata = (agent?.metadata ?? {}) as Record<string, unknown>;
   const socialLinks = asRecord(metadata.socialLinks ?? metadata.social_links);
@@ -1218,7 +1335,10 @@ export default function ProfilePage() {
   return (
     <div className="pb-20">
       <div className="container max-w-6xl mx-auto py-4 space-y-6">
-        <div className="rounded-xl border overflow-hidden bg-card">
+        <div className="liquid-glass rounded-xl border overflow-hidden bg-card">
+          <div className="liquid-glass-effect rounded-xl" />
+          <div className="liquid-glass-tint rounded-xl" />
+          <div className="liquid-glass-shine rounded-xl" />
           <button
             type="button"
             className="relative h-40 md:h-52 bg-cover bg-center w-full group cursor-pointer"
@@ -1325,7 +1445,7 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Control Plane — Builder, Autobot, Autobot Chat (authenticated user only) */}
+        {/* Control Plane — Builder, Autobot, Session Record (authenticated user only) */}
         {session && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Link href="/builder" className="group">
@@ -1341,7 +1461,7 @@ export default function ProfilePage() {
                 </CardContent>
               </Card>
             </Link>
-            <Link href="/autobot" className="group">
+            <Link href="/autobot/chat" className="group">
               <Card className="transition-colors hover:border-primary/50">
                 <CardContent className="flex items-center gap-3 py-4">
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/20 transition-colors">
@@ -1349,20 +1469,20 @@ export default function ProfilePage() {
                   </div>
                   <div>
                     <p className="font-medium text-sm">Autobot</p>
-                    <p className="text-xs text-muted-foreground">Manage automations</p>
+                    <p className="text-xs text-muted-foreground">Talk to your agent</p>
                   </div>
                 </CardContent>
               </Card>
             </Link>
-            <Link href="/autobot/chat" className="group">
+            <Link href="/session-record" className="group">
               <Card className="transition-colors hover:border-primary/50">
                 <CardContent className="flex items-center gap-3 py-4">
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/20 transition-colors">
-                    <MessageCircle className="h-5 w-5" />
+                    <Mic className="h-5 w-5" />
                   </div>
                   <div>
-                    <p className="font-medium text-sm">Autobot Chat</p>
-                    <p className="text-xs text-muted-foreground">Talk to your agent</p>
+                    <p className="font-medium text-sm">Session Record</p>
+                    <p className="text-xs text-muted-foreground">Record a voice session</p>
                   </div>
                 </CardContent>
               </Card>
@@ -1380,6 +1500,8 @@ export default function ProfilePage() {
             {visibleTabs.includes("offerings") ? <TabsTrigger value="offerings">Offerings</TabsTrigger> : null}
             {visibleTabs.includes("calendar") ? <TabsTrigger value="calendar">Calendar</TabsTrigger> : null}
             {visibleTabs.includes("wallet") ? <TabsTrigger value="wallet">Wallet</TabsTrigger> : null}
+            {visibleTabs.includes("docs") ? <TabsTrigger value="docs">Docs</TabsTrigger> : null}
+            {visibleTabs.includes("media") ? <TabsTrigger value="media">Media</TabsTrigger> : null}
             {visibleTabs.includes("personas") ? <TabsTrigger value="personas">Personas</TabsTrigger> : null}
             {visibleTabs.includes("saved") ? <TabsTrigger value="saved">Saved</TabsTrigger> : null}
             {visibleTabs.includes("activity") ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
@@ -1549,16 +1671,76 @@ export default function ProfilePage() {
 
           {visibleTabs.includes("posts") ? (
           <TabsContent value="posts" className="mt-4">
-            <PostFeed
-              posts={userPosts}
-              getUser={getUser}
-              getGroup={getGroup}
-              onLike={handleLike}
-              onComment={() => {}}
-              onShare={(postId) => void handleSharePost(postId)}
-              onThank={() => {}}
-              includeAllTypes={false}
-            />
+            {/* Sub-filter pill tabs */}
+            <div className="mb-4 flex gap-1.5">
+              {POSTS_SUB_FILTERS.map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setPostsSubFilter(filter)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    postsSubFilter === filter
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  {POSTS_SUB_FILTER_LABELS[filter]}
+                </button>
+              ))}
+            </div>
+
+            {/* Posts sub-filter */}
+            {postsSubFilter === "posts" ? (
+              <PostFeed
+                posts={userPosts}
+                getUser={getUser}
+                getGroup={getGroup}
+                onLike={handleLike}
+                onComment={() => {}}
+                onShare={(postId) => void handleSharePost(postId)}
+                onThank={() => {}}
+                includeAllTypes={false}
+              />
+            ) : null}
+
+            {/* Comments sub-filter */}
+            {postsSubFilter === "comments" ? (
+              <CommentActivityFeed
+                comments={myComments}
+                loading={myCommentsLoading}
+                error={myCommentsError}
+              />
+            ) : null}
+
+            {/* Mentions sub-filter */}
+            {postsSubFilter === "mentions" ? (
+              mentionsLoading ? (
+                <div className="flex items-center justify-center py-12 text-muted-foreground">
+                  Loading mentions...
+                </div>
+              ) : mentionsError ? (
+                <div className="flex items-center justify-center py-12 text-destructive">
+                  {mentionsError}
+                </div>
+              ) : mentionPosts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                  <MessageCircle className="mb-2 h-8 w-8" />
+                  <p className="text-sm">No mentions yet.</p>
+                  <p className="text-xs">Posts where you are tagged will appear here.</p>
+                </div>
+              ) : (
+                <PostFeed
+                  posts={mentionPosts}
+                  getUser={getUser}
+                  getGroup={getGroup}
+                  onLike={handleLike}
+                  onComment={() => {}}
+                  onShare={(postId) => void handleSharePost(postId)}
+                  onThank={() => {}}
+                  includeAllTypes={false}
+                />
+              )
+            ) : null}
           </TabsContent>
           ) : null}
 
@@ -1726,6 +1908,7 @@ export default function ProfilePage() {
                 </CardContent>
               </Card>
             </div>
+            <BankAccountsCard />
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium">Crypto Wallet</CardTitle>
@@ -1855,6 +2038,26 @@ export default function ProfilePage() {
                 )}
               </TabsContent>
             </Tabs>
+          </TabsContent>
+          ) : null}
+
+          {visibleTabs.includes("docs") ? (
+          <TabsContent value="docs" className="mt-4">
+            <DocumentsTab
+              ownerId={session?.user?.id}
+              documents={personalDocuments}
+              docsPath="/profile"
+            />
+          </TabsContent>
+          ) : null}
+
+          {visibleTabs.includes("media") ? (
+          <TabsContent value="media" className="mt-4">
+            <ProfileMediaTab
+              profileResources={profileResources}
+              isOwner={true}
+              ownerId={userId}
+            />
           </TabsContent>
           ) : null}
 

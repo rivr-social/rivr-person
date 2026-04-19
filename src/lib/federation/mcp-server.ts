@@ -1,13 +1,19 @@
 import { auth } from "@/auth";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { verifyPackedPayload } from "@/lib/federation-remote-session";
 import { isPersonaOf } from "@/lib/persona";
-import { runWithMcpExecutionContext } from "@/lib/federation/execution-context";
+import { runWithMcpExecutionContext, type PersonaContext } from "@/lib/federation/execution-context";
 import {
   getMcpToolDefinition,
   listMcpToolsForMode,
   type McpToolCallContext,
 } from "@/lib/federation/mcp-tools";
 import { logMcpProvenance } from "@/lib/federation/mcp-provenance";
+import { withApprovalCheck } from "@/lib/autobot/with-approval-check";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { eq, and, isNull } from "drizzle-orm";
+import * as kg from "@/lib/kg/autobot-kg-client";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
@@ -21,6 +27,18 @@ type JsonRpcRequest = {
 };
 
 type McpAuthContext = McpToolCallContext;
+
+type ScopedMcpTokenPayload = {
+  type: "rivr_mcp_token";
+  actorId: string;
+  controllerId: string;
+  actorType: "human" | "persona";
+  issuer: string;
+  audience: string;
+  issuedAt: string;
+  expiresAt: string;
+  scopes: string[];
+};
 
 function errorResponse(id: JsonRpcId, code: number, message: string, data?: unknown) {
   return {
@@ -52,6 +70,63 @@ function getBearerToken(request: Request): string | null {
 function getQueryToken(request: Request): string | null {
   const token = new URL(request.url).searchParams.get("token")?.trim();
   return token ? token : null;
+}
+
+function validateScopedMcpToken(token: string): ScopedMcpTokenPayload | null {
+  const payload = verifyPackedPayload<ScopedMcpTokenPayload>(token);
+  if (!payload || payload.type !== "rivr_mcp_token") return null;
+
+  const now = Date.now();
+  const issuedAt = Date.parse(payload.issuedAt);
+  const expiresAt = Date.parse(payload.expiresAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)) return null;
+  if (issuedAt > now + 60_000 || expiresAt <= now) return null;
+
+  const config = getInstanceConfig();
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  if (payload.issuer !== baseUrl || payload.audience !== baseUrl) return null;
+  if (!payload.scopes.includes("mcp:tools")) return null;
+
+  return payload;
+}
+
+/**
+ * Fetch full persona context from the DB for a given persona agent ID.
+ * Returns null if the agent is not found or is deleted.
+ */
+async function fetchPersonaContext(personaId: string): Promise<PersonaContext | null> {
+  const [row] = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      description: agents.description,
+      metadata: agents.metadata,
+    })
+    .from(agents)
+    .where(and(eq(agents.id, personaId), isNull(agents.deletedAt)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  const bio = typeof meta.bio === "string" ? meta.bio : row.description ?? undefined;
+
+  // Gather KG doc references for this persona scope
+  let kgRefs: string[] = [];
+  try {
+    const docs = await kg.listDocs("persona", personaId);
+    kgRefs = docs.map((d) => String(d.id));
+  } catch {
+    // KG unavailable — proceed without refs
+  }
+
+  return {
+    personaId: row.id,
+    name: row.name,
+    bio,
+    kgRefs: kgRefs.length > 0 ? kgRefs : undefined,
+    metadata: Object.keys(meta).length > 0 ? meta : undefined,
+  };
 }
 
 async function authorizeMcpRequest(
@@ -86,6 +161,33 @@ async function authorizeMcpRequest(
 
   const configuredToken = process.env.AIAGENT_MCP_TOKEN?.trim() || "";
   const providedToken = getBearerToken(request) ?? getQueryToken(request);
+
+  if (providedToken) {
+    const scopedToken = validateScopedMcpToken(providedToken);
+    if (scopedToken) {
+      if (!requestedActorId || requestedActorId === scopedToken.actorId) {
+        return {
+          actorId: scopedToken.actorId,
+          controllerId: scopedToken.controllerId,
+          actorType: scopedToken.actorType,
+          authMode: "token",
+        };
+      }
+
+      const ownedPersona = await isPersonaOf(requestedActorId, scopedToken.controllerId);
+      if (ownedPersona) {
+        return {
+          actorId: requestedActorId,
+          controllerId: scopedToken.controllerId,
+          actorType: "persona",
+          authMode: "token",
+        };
+      }
+
+      return null;
+    }
+  }
+
   if (!configuredToken || !providedToken || providedToken !== configuredToken) {
     return null;
   }
@@ -155,6 +257,30 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
     return errorResponse(id, -32001, "Unauthorized", "Valid session or AIAGENT_MCP_TOKEN required.");
   }
 
+  // Resolve persona context when the actor is a persona, or when a remote
+  // agent asserts a persona via the X-Persona-Id header.
+  let personaContext: PersonaContext | null = null;
+  const headerPersonaId = request.headers.get("x-persona-id")?.trim() || null;
+
+  if (authContext.actorType === "persona") {
+    // Auth already resolved to a persona — fetch its full context
+    personaContext = await fetchPersonaContext(authContext.actorId).catch(() => null);
+  } else if (headerPersonaId) {
+    // Remote agent assertion via header — validate ownership before accepting
+    const controllerId = authContext.controllerId ?? authContext.actorId;
+    const owned = await isPersonaOf(headerPersonaId, controllerId).catch(() => false);
+    if (owned) {
+      personaContext = await fetchPersonaContext(headerPersonaId).catch(() => null);
+      // Upgrade the auth context to reflect persona acting mode
+      authContext.actorType = "persona";
+      authContext.actorId = headerPersonaId;
+    }
+  }
+
+  if (personaContext) {
+    authContext.personaContext = personaContext;
+  }
+
   if (method === "initialize") {
     const config = getInstanceConfig();
     return successResponse(id, {
@@ -191,25 +317,32 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
 
     const startTime = Date.now();
     try {
-      const result = await runWithMcpExecutionContext(
-        {
-          actorId: authContext.actorId,
-          controllerId: authContext.controllerId,
-          actorType: authContext.actorType,
-        },
-        async () => tool.handler(toolArgs, authContext),
-      );
+      const approvalResult = await withApprovalCheck({
+        toolName,
+        toolArgs,
+        context: authContext,
+        handler: () =>
+          runWithMcpExecutionContext(
+            {
+              actorId: authContext.actorId,
+              controllerId: authContext.controllerId,
+              actorType: authContext.actorType,
+              personaContext: authContext.personaContext,
+            },
+            async () => tool.handler(toolArgs, authContext),
+          ),
+      });
 
       const durationMs = Date.now() - startTime;
       logMcpProvenance({
         toolName,
         context: authContext,
         args: toolArgs,
-        resultStatus: "success",
+        resultStatus: approvalResult.executed ? "success" : "success",
         durationMs,
       }).catch(() => {});
 
-      return successResponse(id, toToolContent(result));
+      return successResponse(id, toToolContent(approvalResult.result));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Tool execution failed.";
       const durationMs = Date.now() - startTime;
@@ -240,6 +373,8 @@ export function getMcpServerMetadata() {
       session: true,
       bearerToken: Boolean(process.env.AIAGENT_MCP_TOKEN?.trim()),
       bearerTokenEnv: "AIAGENT_MCP_TOKEN",
+      scopedBearerToken: true,
+      scopedBearerTokenEndpoint: "/api/mcp/token",
       queryToken: Boolean(process.env.AIAGENT_MCP_TOKEN?.trim()),
     },
     instance: {

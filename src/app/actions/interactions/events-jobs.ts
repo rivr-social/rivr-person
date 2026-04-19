@@ -6,7 +6,8 @@ import { db } from "@/db";
 import { agents, ledger, resources } from "@/db/schema";
 import type { NewLedgerEntry } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
-import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { federatedWrite } from "@/lib/federation/remote-write";
 import {
   getCurrentUserId,
   resolveInteractionTargetAgentId,
@@ -179,7 +180,7 @@ export async function setEventRsvp(
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
   const targetAgentId = await resolveInteractionTargetAgentId(eventId, "event", userId);
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ eventId: string; status: string }, ActionResult>(
     {
       type: 'setEventRsvp',
       actorId: userId,
@@ -229,8 +230,8 @@ export async function setEventRsvp(
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to set RSVP." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to set RSVP." };
   }
 
   emitDomainEvent({
@@ -241,7 +242,7 @@ export async function setEventRsvp(
     payload: { status },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: `RSVP set to ${status}` };
+  return writeResult.data ?? { success: true, message: `RSVP set to ${status}` };
 }
 
 /**
@@ -264,7 +265,7 @@ export async function applyToJob(jobId: string): Promise<ActionResult> {
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
   const targetAgentId = await resolveInteractionTargetAgentId(jobId, "resource", userId);
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ jobId: string }, ActionResult>(
     {
       type: 'applyToJob',
       actorId: userId,
@@ -276,8 +277,8 @@ export async function applyToJob(jobId: string): Promise<ActionResult> {
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to apply to job." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to apply to job." };
   }
 
   emitDomainEvent({
@@ -288,7 +289,7 @@ export async function applyToJob(jobId: string): Promise<ActionResult> {
     payload: { action: 'job_application' },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: "Applied to job." };
+  return writeResult.data ?? { success: true, message: "Applied to job." };
 }
 
 /**
@@ -526,7 +527,7 @@ export async function cancelEventAction(eventId: string): Promise<ActionResult> 
     return { success: false, message: "You do not have permission to cancel this event." };
   }
 
-  const facadeResult = await updateFacade.execute(
+  const writeResult = await federatedWrite<{ eventId: string }, ActionResult>(
     {
       type: 'cancelEventAction',
       actorId: userId,
@@ -562,8 +563,8 @@ export async function cancelEventAction(eventId: string): Promise<ActionResult> 
     },
   );
 
-  if (!facadeResult.success) {
-    return { success: false, message: facadeResult.error ?? "Failed to cancel event." };
+  if (!writeResult.success) {
+    return { success: false, message: writeResult.error ?? "Failed to cancel event." };
   }
 
   emitDomainEvent({
@@ -574,5 +575,5 @@ export async function cancelEventAction(eventId: string): Promise<ActionResult> 
     payload: { eventId },
   }).catch(() => {});
 
-  return facadeResult.data ?? { success: true, message: "Event cancelled successfully." };
+  return writeResult.data ?? { success: true, message: "Event cancelled successfully." };
 }

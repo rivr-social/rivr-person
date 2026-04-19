@@ -5,6 +5,7 @@ import { agentToEvent, agentToGroup, agentToUser, resourceToMarketplaceListing, 
 import { serializeAgent, serializeResource } from "@/lib/graph-serializers"
 import { absoluteUrl } from "@/lib/structured-data"
 import { canPublishEntity, inferGroupPublicationKind } from "@/lib/publication-policy"
+import * as kg from "@/lib/kg/autobot-kg-client"
 
 type UniversalManifestKind = "person" | "organization" | "project" | "offer" | "event" | "post"
 
@@ -181,6 +182,39 @@ async function ownerPublishingEnabled(ownerId: string): Promise<boolean> {
   return manifestOptIn((creator?.metadata ?? {}) as Record<string, unknown>)
 }
 
+async function buildKgSummaryShard(scopeType: string, scopeId: string): Promise<ManifestShard | null> {
+  try {
+    const [docs, entities] = await Promise.all([
+      kg.listDocs(scopeType, scopeId).catch(() => []),
+      kg.listEntities(scopeType, scopeId).catch(() => []),
+    ])
+    if (docs.length === 0 && entities.length === 0) return null
+
+    const completeDocs = docs.filter((d) => d.status === "complete")
+    const totalTriples = completeDocs.reduce((sum, d) => sum + (d.triple_count || 0), 0)
+
+    return {
+      name: "knowledgeGraphSummary",
+      value: {
+        scopeType,
+        scopeId,
+        docCount: docs.length,
+        completeDocCount: completeDocs.length,
+        entityCount: entities.length,
+        tripleCount: totalTriples,
+        topEntities: entities.slice(0, 10).map((e) => ({
+          name: e.name,
+          type: e.entity_type,
+        })),
+        queryEndpoint: absoluteUrl("/api/kg/graph"),
+        chatEndpoint: absoluteUrl("/api/kg/chat"),
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function buildPersonUniversalManifest(id: string) {
   const agent = await db.query.agents.findFirst({
     where: and(eq(agents.id, id), isNull(agents.deletedAt)),
@@ -193,6 +227,24 @@ export async function buildPersonUniversalManifest(id: string) {
 
   const user = agentToUser(serializeAgent(agent))
   const canonicalUrl = absoluteUrl(`/profile/${user.username || user.id}`)
+
+  const shards: ManifestShard[] = [
+    {
+      name: "publicProfile",
+      value: {
+        name: user.name,
+        username: user.username,
+        bio: user.bio || undefined,
+        avatar: user.avatar || undefined,
+        chapterTags: user.chapterTags ?? [],
+        skills: user.skills ?? [],
+      },
+    },
+  ]
+
+  const kgShard = await buildKgSummaryShard("person", id)
+  if (kgShard) shards.push(kgShard)
+
   return buildBaseManifest(
     id,
     canonicalUrl,
@@ -208,19 +260,7 @@ export async function buildPersonUniversalManifest(id: string) {
       ...identityClaimsFromAgent(agent),
     ],
     baseConsents(),
-    [
-      {
-        name: "publicProfile",
-        value: {
-          name: user.name,
-          username: user.username,
-          bio: user.bio || undefined,
-          avatar: user.avatar || undefined,
-          chapterTags: user.chapterTags ?? [],
-          skills: user.skills ?? [],
-        },
-      },
-    ],
+    shards,
   )
 }
 

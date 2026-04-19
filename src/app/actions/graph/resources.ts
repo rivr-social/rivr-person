@@ -17,6 +17,7 @@ import {
   getAllResources,
   getMarketplaceListings as queryMarketplaceListings,
   getResource,
+  getDocumentsForUser,
 } from "@/lib/queries/resources";
 import {
   requireActorId,
@@ -343,4 +344,28 @@ export async function fetchEventDetail(eventId: string): Promise<SerializedAgent
     createdAt: toISOString(eventResource.createdAt),
     updatedAt: toISOString(eventResource.updatedAt),
   };
+}
+
+/**
+ * Retrieves personal documents for the authenticated user.
+ *
+ * @returns The user's personal documents mapped to domain Document type.
+ * @throws {Error} Throws `"Unauthorized"` when no authenticated user is present.
+ */
+export async function fetchPersonalDocumentsAction(): Promise<{
+  success: boolean;
+  documents: import("@/types/domain").Document[];
+  error?: string;
+}> {
+  const actorId = await tryActorId();
+  if (!actorId) {
+    return { success: false, documents: [], error: "Unauthenticated" };
+  }
+  try {
+    const documents = await getDocumentsForUser(actorId);
+    return { success: true, documents };
+  } catch (error) {
+    console.error("[fetchPersonalDocumentsAction] failed:", error);
+    return { success: false, documents: [], error: "Failed to fetch personal documents" };
+  }
 }

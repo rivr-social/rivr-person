@@ -30,6 +30,19 @@ interface EventDetailTabsProps {
   attendees: EventAttendee[]
   /** Owner/creator id for admin-gated features (e.g. Announcements tab). */
   ownerId?: string
+  sessionCount?: number
+  hostCount?: number
+  projectId?: string | null
+  revenueCents?: number
+  payoutTotalCents?: number
+  remainingCents?: number
+}
+
+function formatCurrency(cents: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(cents / 100)
 }
 
 /**
@@ -42,7 +55,19 @@ interface EventDetailTabsProps {
  * @param props - Tab configuration with event context data.
  * @returns Four-panel tab interface for the event detail page.
  */
-export function EventDetailTabs({ eventId, description, rsvpCount, attendees, ownerId }: EventDetailTabsProps) {
+export function EventDetailTabs({
+  eventId,
+  description,
+  rsvpCount,
+  attendees,
+  ownerId,
+  sessionCount = 0,
+  hostCount = 0,
+  projectId = null,
+  revenueCents = 0,
+  payoutTotalCents = 0,
+  remainingCents = 0,
+}: EventDetailTabsProps) {
   const [activeTab, setActiveTab] = useState("about")
   const [eventAnnouncements, setEventAnnouncements] = useState<unknown[]>([])
   const { data: session } = useSession()
@@ -56,7 +81,7 @@ export function EventDetailTabs({ eventId, description, rsvpCount, attendees, ow
   return (
     <div className="bg-background rounded-lg border overflow-hidden">
       <Tabs defaultValue="about" className="w-full" onValueChange={setActiveTab} value={activeTab}>
-        <TabsList className="grid grid-cols-4 w-full rounded-none h-12">
+        <TabsList className="grid grid-cols-5 w-full rounded-none h-12">
           <TabsTrigger
             value="about"
             className="data-[state=active]:bg-transparent data-[state=active]:shadow-none rounded-none"
@@ -81,6 +106,12 @@ export function EventDetailTabs({ eventId, description, rsvpCount, attendees, ow
           >
             Announcements
           </TabsTrigger>
+          <TabsTrigger
+            value="financials"
+            className="data-[state=active]:bg-transparent data-[state=active]:shadow-none rounded-none"
+          >
+            Financials
+          </TabsTrigger>
         </TabsList>
 
         <div className="p-6">
@@ -88,6 +119,26 @@ export function EventDetailTabs({ eventId, description, rsvpCount, attendees, ow
             <h2 className="text-2xl font-semibold mb-4">About Event</h2>
             <div className="prose max-w-none">
               <p className="whitespace-pre-wrap">{description}</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3 mt-6">
+              <div className="rounded-md border p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Sessions</p>
+                <p className="text-lg font-semibold">{sessionCount}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Hosts</p>
+                <p className="text-lg font-semibold">{hostCount}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Project</p>
+                {projectId ? (
+                  <Link href={`/projects/${projectId}`} className="text-sm font-medium hover:underline">
+                    Open linked project
+                  </Link>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No linked project</p>
+                )}
+              </div>
             </div>
           </TabsContent>
 
@@ -145,6 +196,32 @@ export function EventDetailTabs({ eventId, description, rsvpCount, attendees, ow
                 Only event organizers can post announcements.
               </p>
             )}
+          </TabsContent>
+
+          <TabsContent value="financials" className="mt-0">
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div>
+                <h2 className="text-xl font-semibold">Financials</h2>
+                <p className="text-sm text-muted-foreground">Payouts, revenue, and remaining balance for this event.</p>
+              </div>
+              <Link href={`/events/${eventId}/financials`} className="text-sm font-medium hover:underline">
+                Open financials
+              </Link>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-md border p-4">
+                <p className="text-sm text-muted-foreground">Revenue</p>
+                <p className="text-xl font-semibold">{formatCurrency(revenueCents)}</p>
+              </div>
+              <div className="rounded-md border p-4">
+                <p className="text-sm text-muted-foreground">Payouts</p>
+                <p className="text-xl font-semibold">{formatCurrency(payoutTotalCents)}</p>
+              </div>
+              <div className="rounded-md border p-4">
+                <p className="text-sm text-muted-foreground">Remaining</p>
+                <p className="text-xl font-semibold">{formatCurrency(remainingCents)}</p>
+              </div>
+            </div>
           </TabsContent>
         </div>
       </Tabs>

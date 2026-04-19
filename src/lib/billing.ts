@@ -19,7 +19,7 @@ import Stripe from 'stripe';
 import { db } from '@/db';
 import { agents, subscriptions, type MembershipTier } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
-import { getStripeSecretKey, STRIPE_API_VERSION } from '@/lib/integrations/stripe';
+import { getStripeSecretKey, STRIPE_API_VERSION, isStripeConfigured } from '@/lib/integrations/stripe';
 import { getMembershipConnectSurchargeCents } from '@/lib/membership-pricing';
 
 /**
@@ -41,6 +41,11 @@ let _stripe: Stripe | null = null;
  */
 export function getStripe(): Stripe {
   if (!_stripe) {
+    if (!isStripeConfigured()) {
+      throw new Error(
+        'Stripe is not configured. Set STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY to enable billing features.',
+      );
+    }
     _stripe = new Stripe(getStripeSecretKey(), {
       apiVersion: STRIPE_API_VERSION as Stripe.LatestApiVersion,
       typescript: true,

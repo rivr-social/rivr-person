@@ -7,7 +7,8 @@ import { agents, ledger, resources } from "@/db/schema";
 import type { NewLedgerEntry, NewResource } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { consumeBookingSlot, hasBookableSchedule, isBookingSlotAvailable, type BookingSelection } from "@/lib/booking-slots";
-import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { federatedWrite } from "@/lib/federation/remote-write";
 import {
   getCurrentUserId,
 } from "./helpers";
@@ -134,7 +135,7 @@ export async function sendVoucherAction(
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const result = await updateFacade.execute(
+  const result = await federatedWrite<{ voucherId: string; recipientId: string; message?: string; contextId?: string }, ActionResult>(
     {
       type: 'sendVoucherAction',
       actorId: userId,
@@ -329,7 +330,7 @@ export async function createVoucherAction(input: {
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const result = await updateFacade.execute(
+  const result = await federatedWrite<typeof input, ActionResult>(
     {
       type: 'createVoucherAction',
       actorId: userId,
@@ -435,7 +436,7 @@ export async function claimVoucherAction(voucherId: string): Promise<ActionResul
   const check = await rateLimit(`social:${userId}`, RATE_LIMITS.SOCIAL.limit, RATE_LIMITS.SOCIAL.windowMs);
   if (!check.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
 
-  const result = await updateFacade.execute(
+  const result = await federatedWrite<{ voucherId: string }, ActionResult>(
     {
       type: 'claimVoucherAction',
       actorId: userId,
@@ -690,7 +691,7 @@ export async function redeemVoucherAction(voucherId: string): Promise<ActionResu
   const redeemedAt = new Date().toISOString();
   const thanksTokenCount = getVoucherThanksTokenCount(meta);
 
-  const result = await updateFacade.execute(
+  const result = await federatedWrite<{ voucherId: string }, ActionResult>(
     {
       type: 'redeemVoucherAction',
       actorId: userId,

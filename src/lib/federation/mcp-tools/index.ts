@@ -7,6 +7,8 @@ import { sendThanksTokensAction } from "@/app/actions/interactions/thanks-tokens
 import { toggleJoinGroup } from "@/app/actions/interactions/social";
 import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
+import { createEventResource } from "@/app/actions/resource-creation/events";
+import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import {
   fetchMarketplaceListings,
   fetchMyReceipts,
@@ -25,19 +27,24 @@ import {
   getTransactionHistoryAction,
 } from "@/app/actions/wallet";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, resources } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
+import * as kg from "@/lib/kg/autobot-kg-client";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import { getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
 import { getProvenanceLog } from "@/lib/federation/mcp-provenance";
 import { serializeAgent } from "@/lib/graph-serializers";
 import { and, eq, isNull } from "drizzle-orm";
+import { getDeployCapability, type InstanceDeployCapability } from "@/lib/deploy/capability";
+import { getAutobotSandbox, getSandboxSummary, isOperationAllowed } from "@/lib/autobot/isolation";
+import type { PersonaContext } from "@/lib/federation/execution-context";
 
 export type McpToolCallContext = {
   actorId: string;
   controllerId?: string;
   actorType: "human" | "persona" | "autobot";
   authMode: "session" | "token";
+  personaContext?: PersonaContext;
 };
 
 export type McpToolResult = unknown;
@@ -62,6 +69,22 @@ function getStringArray(value: unknown): string[] {
 
 function getBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function getRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function getRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => Boolean(getRecord(entry)))
+    : [];
 }
 
 function getLocation(value: unknown): { lat: number; lng: number } | null {
@@ -229,7 +252,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.posts.create",
-    description: "Create a post as the active actor or into a group where the actor has write access.",
+    description: "Create a post as the active actor or into a group where the actor has write access. When isGlobal is true (default), the post is also federated to the configured registry so it surfaces on the global instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -242,6 +265,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         localeId: { type: "string" },
         imageUrl: { type: "string" },
         isGlobal: { type: "boolean" },
+        federate: { type: "boolean" },
       },
     },
     enabledFor: ["session", "token"],
@@ -251,6 +275,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         throw new Error("content is required.");
       }
 
+      const isGlobal = getBoolean(args.isGlobal, true);
+
       return createPostResource({
         title: getString(args.title) ?? undefined,
         content,
@@ -258,7 +284,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         groupId: getString(args.groupId) ?? undefined,
         localeId: getString(args.localeId) ?? undefined,
         imageUrl: getString(args.imageUrl),
-        isGlobal: getBoolean(args.isGlobal, true),
+        isGlobal,
+        federate: getBoolean(args.federate, isGlobal),
       });
     },
   },
@@ -310,6 +337,165 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         scopedLocaleIds: getStringArray(args.scopedLocaleIds),
         scopedGroupIds: getStringArray(args.scopedGroupIds),
         scopedUserIds: getStringArray(args.scopedUserIds),
+      });
+    },
+  },
+  {
+    name: "rivr.events.create",
+    description: "Create an event as the active actor, or in a target group/locale. If the group is homed on another Rivr instance, route the write to that instance.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "description", "date", "time", "location"],
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        date: { type: "string", description: "Event date, preferably YYYY-MM-DD." },
+        time: { type: "string", description: "Event start time as display text or HH:mm." },
+        location: { type: "string" },
+        eventType: { type: "string", enum: ["in-person", "online"] },
+        price: { type: "number" },
+        imageUrl: { type: "string" },
+        ownerId: { type: "string", description: "Optional owning agent/group. Defaults to actor or groupId." },
+        groupId: { type: "string", description: "Optional group/ring id; remote groups route to their home instance." },
+        projectId: { type: "string" },
+        venueId: { type: "string" },
+        localeId: { type: "string" },
+        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        scopedGroupIds: { type: "array", items: { type: "string" } },
+        scopedUserIds: { type: "array", items: { type: "string" } },
+        isGlobal: { type: "boolean", description: "Defaults true; false creates a scoped/private event." },
+        ticketTypes: { type: "array", items: { type: "object" } },
+        hosts: { type: "array", items: { type: "object" } },
+        sessions: { type: "array", items: { type: "object" } },
+        workItems: { type: "array", items: { type: "object" } },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const title = getString(args.title);
+      const description = getString(args.description);
+      const date = getString(args.date);
+      const time = getString(args.time);
+      const location = getString(args.location);
+      if (!title || !description || !date || !time || !location) {
+        throw new Error("title, description, date, time, and location are required.");
+      }
+
+      const eventType = getString(args.eventType);
+      return createEventResource({
+        title,
+        description,
+        date,
+        time,
+        location,
+        eventType: eventType === "online" ? "online" : "in-person",
+        price: getNumber(args.price) ?? null,
+        imageUrl: getString(args.imageUrl) ?? undefined,
+        ownerId: getString(args.ownerId),
+        groupId: getString(args.groupId),
+        projectId: getString(args.projectId),
+        venueId: getString(args.venueId),
+        localeId: getString(args.localeId),
+        scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedGroupIds: getStringArray(args.scopedGroupIds),
+        scopedUserIds: getStringArray(args.scopedUserIds),
+        isGlobal: getBoolean(args.isGlobal, true),
+        ticketTypes: getRecordArray(args.ticketTypes) as any,
+        hosts: getRecordArray(args.hosts) as any,
+        sessions: getRecordArray(args.sessions) as any,
+        workItems: getRecordArray(args.workItems) as any,
+      });
+    },
+  },
+  {
+    name: "rivr.offerings.create",
+    description: "Create an offering/listing as the active actor. Global visibility plus scoped locale/group ids makes it discoverable across Rivr; remote scoped groups receive a projection.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "description", "offeringType"],
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        offeringType: { type: "string", description: "service, product, skill, resource, data, ticket, voucher, bounty, trip, gift, etc." },
+        imageUrl: { type: "string" },
+        basePrice: { type: "number" },
+        currency: { type: "string" },
+        acceptedCurrencies: { type: "array", items: { type: "string" } },
+        quantityAvailable: { type: "number" },
+        tags: { type: "array", items: { type: "string" } },
+        targetAgentTypes: { type: "array", items: { type: "string" } },
+        ownerId: { type: "string" },
+        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        scopedGroupIds: { type: "array", items: { type: "string" } },
+        scopedUserIds: { type: "array", items: { type: "string" } },
+        postToFeed: { type: "boolean" },
+        hourlyRate: { type: "number" },
+        availability: { type: "string" },
+        category: { type: "string" },
+        condition: { type: "string" },
+        bountyReward: { type: "number" },
+        bountyCriteria: { type: "string" },
+        bountyDeadline: { type: "string" },
+        ticketEventName: { type: "string" },
+        ticketDate: { type: "string" },
+        ticketVenue: { type: "string" },
+        ticketQuantity: { type: "number" },
+        ticketPrice: { type: "number" },
+        skillArea: { type: "string" },
+        skillProficiency: { type: "string" },
+        resourceCategory: { type: "string" },
+        resourceAvailability: { type: "string" },
+        resourceCondition: { type: "string" },
+        dataFormat: { type: "string" },
+        dataSize: { type: "string" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const title = getString(args.title);
+      const description = getString(args.description);
+      const offeringType = getString(args.offeringType);
+      if (!title || !description || !offeringType) {
+        throw new Error("title, description, and offeringType are required.");
+      }
+
+      return createOfferingResource({
+        title,
+        description,
+        offeringType,
+        imageUrl: getString(args.imageUrl) ?? undefined,
+        basePrice: getNumber(args.basePrice),
+        currency: getString(args.currency) ?? undefined,
+        acceptedCurrencies: getStringArray(args.acceptedCurrencies),
+        quantityAvailable: getNumber(args.quantityAvailable),
+        tags: getStringArray(args.tags),
+        targetAgentTypes: getStringArray(args.targetAgentTypes),
+        ownerId: getString(args.ownerId) ?? undefined,
+        scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedGroupIds: getStringArray(args.scopedGroupIds),
+        scopedUserIds: getStringArray(args.scopedUserIds),
+        postToFeed: getBoolean(args.postToFeed, true),
+        hourlyRate: getNumber(args.hourlyRate),
+        availability: getString(args.availability) ?? undefined,
+        category: getString(args.category) ?? undefined,
+        condition: getString(args.condition) ?? undefined,
+        bountyReward: getNumber(args.bountyReward),
+        bountyCriteria: getString(args.bountyCriteria) ?? undefined,
+        bountyDeadline: getString(args.bountyDeadline) ?? undefined,
+        ticketEventName: getString(args.ticketEventName) ?? undefined,
+        ticketDate: getString(args.ticketDate) ?? undefined,
+        ticketVenue: getString(args.ticketVenue) ?? undefined,
+        ticketQuantity: getNumber(args.ticketQuantity),
+        ticketPrice: getNumber(args.ticketPrice),
+        skillArea: getString(args.skillArea) ?? undefined,
+        skillProficiency: getString(args.skillProficiency) ?? undefined,
+        resourceCategory: getString(args.resourceCategory) ?? undefined,
+        resourceAvailability: getString(args.resourceAvailability) ?? undefined,
+        resourceCondition: getString(args.resourceCondition) ?? undefined,
+        dataFormat: getString(args.dataFormat) ?? undefined,
+        dataSize: getString(args.dataSize) ?? undefined,
       });
     },
   },
@@ -426,6 +612,160 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     },
   },
   {
+    name: "rivr.kg.list_docs",
+    description: "List knowledge graph documents for a scope. Defaults to the actor's scope (persona scope when acting as a persona).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        scope_type: { type: "string", description: "Scope type (person, persona, group, event, project). Default: inferred from actor type" },
+        scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
+        status: { type: "string", description: "Filter by doc status (pending, ingesting, complete, failed)" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
+      const scopeId = getString(args.scope_id) ?? context.actorId;
+      const status = getString(args.status) ?? undefined;
+      const docs = await kg.listDocs(scopeType, scopeId, status);
+      return { success: true, docs, count: docs.length };
+    },
+  },
+  {
+    name: "rivr.kg.push_doc",
+    description: "Push a Rivr resource into the knowledge graph for extraction. Creates a doc record and ingests its content.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["resourceId"],
+      properties: {
+        resourceId: { type: "string", description: "ID of the Rivr resource to push" },
+        scope_type: { type: "string", description: "Scope type. Default: inferred from actor type" },
+        scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
+        title: { type: "string", description: "Override title for the doc" },
+        doc_type: { type: "string", description: "Doc type classification" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const resourceId = getString(args.resourceId);
+      if (!resourceId) throw new Error("resourceId is required.");
+
+      const resource = await db.query.resources.findFirst({
+        where: eq(resources.id, resourceId),
+      });
+      if (!resource) throw new Error("Resource not found.");
+      // For persona actors, check ownership against the controller (parent account)
+      const ownerId = context.controllerId ?? context.actorId;
+      if (resource.ownerId !== ownerId) throw new Error("Not your resource.");
+
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
+      const scopeId = getString(args.scope_id) ?? context.actorId;
+
+      const doc = await kg.createDoc({
+        title: getString(args.title) ?? resource.name ?? "Untitled",
+        doc_type: getString(args.doc_type) ?? resource.type ?? "resource",
+        scope_type: scopeType,
+        scope_id: scopeId,
+        source_uri: `rivr://person/resources/${resource.id}`,
+      });
+
+      const content = resource.content || "";
+      if (!content) {
+        return { success: true, doc, ingested: false, reason: "Resource has no content to ingest" };
+      }
+
+      const result = await kg.ingestDoc(doc.id, content, undefined, doc.title);
+      return { success: true, doc, ingested: true, ingestResult: result };
+    },
+  },
+  {
+    name: "rivr.kg.query",
+    description: "Query the scoped knowledge graph subgraph. Returns triples (subject-predicate-object facts) from the KG.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        scope_type: { type: "string", description: "Scope type. Default: inferred from actor type" },
+        scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
+        entity: { type: "string", description: "Filter triples by entity name" },
+        predicate: { type: "string", description: "Filter triples by predicate type" },
+        max_results: { type: "number", description: "Maximum number of triples to return" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
+      const scopeId = getString(args.scope_id) ?? context.actorId;
+      const result = await kg.queryScope(scopeType, scopeId, {
+        entity: getString(args.entity) ?? undefined,
+        predicate: getString(args.predicate) ?? undefined,
+        max_results: typeof args.max_results === "number" ? args.max_results : undefined,
+      });
+      return { success: true, ...result };
+    },
+  },
+  {
+    name: "rivr.kg.chat",
+    description: "Chat with knowledge graph context. Fetches relevant KG facts for the scope and uses them to inform the response.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["message"],
+      properties: {
+        message: { type: "string", description: "The user's message/question" },
+        scope_type: { type: "string", description: "Scope type. Default: inferred from actor type" },
+        scope_id: { type: "string", description: "Scope ID. Default: current actor ID" },
+        max_context_chars: { type: "number", description: "Max chars of KG context to inject. Default: 3000" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const message = getString(args.message);
+      if (!message) throw new Error("message is required.");
+
+      const defaultScopeType = context.actorType === "persona" ? "persona" : "person";
+      const scopeType = getString(args.scope_type) ?? defaultScopeType;
+      const scopeId = getString(args.scope_id) ?? context.actorId;
+      const maxChars = typeof args.max_context_chars === "number" ? args.max_context_chars : 3000;
+
+      const { context: kgContext } = await kg.buildContext(scopeType, scopeId, maxChars);
+
+      const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
+      const kgSystemPrompt = kgContext
+        ? `You have access to a knowledge graph for this ${scopeType}. Use these facts to inform your answers:\n\n${kgContext}\n\n`
+        : "";
+
+      const openclawRes = await fetch(`${OPENCLAW_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: context.actorId,
+          message: `${kgSystemPrompt}User question: ${message}`,
+          history: [],
+          channel: `kg-chat:${scopeType}:${scopeId}`,
+        }),
+      });
+
+      if (!openclawRes.ok) {
+        const errText = await openclawRes.text();
+        throw new Error(`OpenClaw error: ${openclawRes.status} — ${errText}`);
+      }
+
+      const data = await openclawRes.json();
+      return {
+        success: true,
+        ...data,
+        kg_context_length: kgContext.length,
+        scope: { type: scopeType, id: scopeId },
+      };
+    },
+  },
+  {
     name: "rivr.audit.recent",
     description: "Return recent MCP provenance log entries. Useful for reviewing autobot activity and debugging.",
     inputSchema: {
@@ -447,6 +787,203 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         limit: typeof args.limit === "number" ? args.limit : undefined,
       });
       return { success: true, entries, count: entries.length };
+    },
+  },
+
+  // =========================================================================
+  // Deploy / Isolation boundary tools
+  // =========================================================================
+
+  {
+    name: "rivr.deploy.get_capability",
+    description: "Return the deploy capability and isolation tier for this instance. Shows what operations are allowed (self-deploy, Docker, host access, etc.).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    enabledFor: ["session", "token"],
+    handler: async () => {
+      const cap = getDeployCapability();
+      const sandbox = getSandboxSummary();
+      return { success: true, capability: cap, sandbox };
+    },
+  },
+  {
+    name: "rivr.deploy.self_deploy",
+    description: "Trigger a self-deploy (git pull + rebuild) on sovereign instances. Denied on shared instances.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        branch: { type: "string", description: "Git branch to deploy. Default: current branch." },
+      },
+    },
+    enabledFor: ["session"],
+    handler: async (args) => {
+      const cap = getDeployCapability();
+      if (!cap.canSelfDeploy) {
+        return {
+          success: false,
+          error: `Self-deploy is not available on ${cap.isolationTier} instances. This operation requires a sovereign instance.`,
+          isolationTier: cap.isolationTier,
+        };
+      }
+
+      if (!isOperationAllowed("self_deploy")) {
+        return {
+          success: false,
+          error: "self_deploy operation is denied by the current sandbox configuration.",
+        };
+      }
+
+      const branch = getString(args.branch) ?? "main";
+      // On sovereign instances, trigger the deploy script
+      const { execSync } = await import("child_process");
+      try {
+        const output = execSync(
+          `cd ${process.cwd()} && git fetch origin && git checkout ${branch} && git pull origin ${branch}`,
+          { timeout: 30000, encoding: "utf-8" },
+        );
+        return { success: true, branch, output: output.slice(0, 2000) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Deploy script failed";
+        return { success: false, error: message };
+      }
+    },
+  },
+  {
+    name: "rivr.deploy.restart_autobot",
+    description: "Restart the autobot/OpenClaw sidecar on sovereign instances. Denied on shared instances.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    enabledFor: ["session"],
+    handler: async () => {
+      const cap = getDeployCapability();
+      if (!cap.canDeployAutobot) {
+        return {
+          success: false,
+          error: `Autobot restart is not available on ${cap.isolationTier} instances. Autobots on shared servers are containerized and cannot be restarted by agents.`,
+          isolationTier: cap.isolationTier,
+        };
+      }
+
+      if (!isOperationAllowed("autobot_deploy")) {
+        return {
+          success: false,
+          error: "autobot_deploy operation is denied by the current sandbox configuration.",
+        };
+      }
+
+      const { execSync } = await import("child_process");
+      try {
+        const output = execSync(
+          "docker compose restart openclaw 2>&1 || systemctl restart openclaw 2>&1",
+          { timeout: 30000, encoding: "utf-8" },
+        );
+        return { success: true, output: output.slice(0, 2000) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Autobot restart failed";
+        return { success: false, error: message };
+      }
+    },
+  },
+  {
+    name: "rivr.deploy.docker_rebuild",
+    description: "Trigger a Docker rebuild on sovereign instances. Denied on shared instances.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        service: { type: "string", description: "Docker compose service name to rebuild. Default: app." },
+      },
+    },
+    enabledFor: ["session"],
+    handler: async (args) => {
+      const cap = getDeployCapability();
+      if (!cap.canBuildDocker) {
+        return {
+          success: false,
+          error: `Docker operations are not available on ${cap.isolationTier} instances. Agents on shared infrastructure cannot alter Docker containers.`,
+          isolationTier: cap.isolationTier,
+        };
+      }
+
+      if (!isOperationAllowed("docker_build")) {
+        return {
+          success: false,
+          error: "docker_build operation is denied by the current sandbox configuration.",
+        };
+      }
+
+      const service = getString(args.service) ?? "app";
+      // Sanitize service name to prevent injection
+      const sanitized = service.replace(/[^a-zA-Z0-9_-]/g, "");
+      if (sanitized !== service) {
+        return { success: false, error: "Invalid service name." };
+      }
+
+      const { execSync } = await import("child_process");
+      try {
+        const output = execSync(
+          `cd ${process.cwd()} && docker compose build ${sanitized} && docker compose up -d ${sanitized}`,
+          { timeout: 300000, encoding: "utf-8" },
+        );
+        return { success: true, service: sanitized, output: output.slice(0, 2000) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Docker rebuild failed";
+        return { success: false, error: message };
+      }
+    },
+  },
+  {
+    name: "rivr.sandbox.status",
+    description: "Return the current autobot sandbox configuration — what operations are allowed, resource limits, and network restrictions.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    enabledFor: ["session", "token"],
+    handler: async () => {
+      const sandbox = getAutobotSandbox();
+      const summary = getSandboxSummary();
+      return { success: true, sandbox: summary, deniedOperations: [...sandbox.deniedOperations] };
+    },
+  },
+  {
+    name: "rivr.sandbox.check_operation",
+    description: "Check whether a specific operation is allowed in the current sandbox.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["operation"],
+      properties: {
+        operation: {
+          type: "string",
+          description: "Operation name to check (e.g., ssh, docker, fs_write_host, self_deploy, autobot_deploy).",
+        },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const operation = getString(args.operation);
+      if (!operation) throw new Error("operation is required.");
+
+      const allowed = isOperationAllowed(operation);
+      const cap = getDeployCapability();
+      return {
+        success: true,
+        operation,
+        allowed,
+        isolationTier: cap.isolationTier,
+        reason: allowed
+          ? `Operation "${operation}" is permitted on ${cap.isolationTier} instances.`
+          : `Operation "${operation}" is denied on ${cap.isolationTier} instances.`,
+      };
     },
   },
 ];

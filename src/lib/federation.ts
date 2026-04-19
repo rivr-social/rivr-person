@@ -145,11 +145,34 @@ export async function ensureLocalNode(ownerAgentId?: string) {
  * Returns the hosted local node owned by a specific local agent, if one exists.
  * This is the safe preflight for user-initiated federation actions; unlike
  * `ensureLocalNode`, it will not create or reassign a node implicitly.
+ *
+ * Side effect: if the node exists but has no signing key material, backfill
+ * a freshly generated Ed25519 keypair. Without a private key, export-event
+ * signing would throw inside `queuePreparedExportEvents`, and because those
+ * callers are typically fire-and-forget, the failure would be invisible.
  */
 export async function getHostedNodeForOwner(ownerAgentId: string) {
-  return db.query.nodes.findFirst({
+  const existing = await db.query.nodes.findFirst({
     where: and(eq(nodes.ownerAgentId, ownerAgentId), eq(nodes.isHosted, true)),
   });
+
+  if (!existing) return null;
+
+  if (!existing.privateKey || !existing.publicKey) {
+    const keyPair = generateNodeKeyPair();
+    const [updated] = await db
+      .update(nodes)
+      .set({
+        publicKey: keyPair.publicKey,
+        privateKey: keyPair.privateKey,
+        updatedAt: new Date(),
+      })
+      .where(eq(nodes.id, existing.id))
+      .returning();
+    return updated ?? existing;
+  }
+
+  return existing;
 }
 
 /**
@@ -381,13 +404,38 @@ async function queuePreparedExportEvents(params: {
   candidateResources: typeof resources.$inferSelect[];
 }) {
   // Exported payloads must be signed to allow remote authenticity verification.
-  const originNode = await db.query.nodes.findFirst({
+  // Backfill a keypair on-demand so that legacy hosted nodes that pre-date the
+  // signing flow can still federate. Callers have historically invoked this
+  // function fire-and-forget, so a hard throw here would be invisible.
+  let originNode = await db.query.nodes.findFirst({
     where: eq(nodes.id, params.originNodeId),
   });
-  if (!originNode?.privateKey) {
-    throw new Error("Origin node is missing a private key; cannot sign federation events");
+  if (!originNode) {
+    throw new Error(`Origin node ${params.originNodeId} not found; cannot queue federation events`);
+  }
+  if (!originNode.privateKey || !originNode.publicKey) {
+    const keyPair = generateNodeKeyPair();
+    const [updated] = await db
+      .update(nodes)
+      .set({
+        publicKey: keyPair.publicKey,
+        privateKey: keyPair.privateKey,
+        updatedAt: new Date(),
+      })
+      .where(eq(nodes.id, originNode.id))
+      .returning();
+    if (updated) originNode = updated;
+    await logFederationAudit({
+      eventType: "node_key_backfill",
+      nodeId: originNode.id,
+      status: "success",
+      detail: { reason: "missing private/public key at export time" },
+    });
   }
   const nodePrivateKey = originNode.privateKey;
+  if (!nodePrivateKey) {
+    throw new Error("Origin node still missing private key after backfill; cannot sign federation events");
+  }
 
   const allEntityIds = [
     ...params.candidateAgents.map((agent) => agent.id),
@@ -537,6 +585,69 @@ export async function queueEntityExportEvents(params: {
         ),
       })
     : [];
+
+  // Visibility-based silent drops are the single most common reason a federate
+  // call appears to succeed yet produces no export event. Surface the skip
+  // reason explicitly so it is debuggable from server logs and audit trail.
+  if (resourceIds.length > 0 && candidateResources.length < resourceIds.length) {
+    const foundIds = new Set(candidateResources.map((r) => r.id));
+    const missingIds = resourceIds.filter((id) => !foundIds.has(id));
+    for (const missingId of missingIds) {
+      // Lookup the row without the visibility gate to report the real reason.
+      const row = await db.query.resources.findFirst({
+        where: eq(resources.id, missingId),
+        columns: { id: true, visibility: true, deletedAt: true },
+      });
+      const reason = !row
+        ? "resource not found"
+        : row.deletedAt
+          ? "resource soft-deleted"
+          : `visibility '${row.visibility ?? "null"}' not exportable (allowed: public, locale, members)`;
+      console.warn(
+        `[federation] queueEntityExportEvents skipped resource ${missingId}: ${reason}`
+      );
+      await logFederationAudit({
+        eventType: "export_skipped",
+        nodeId: params.originNodeId,
+        peerNodeId: params.targetNodeId,
+        status: "rejected",
+        detail: {
+          reason,
+          entityType: "resource",
+          entityId: missingId,
+        },
+      });
+    }
+  }
+  if (agentIds.length > 0 && candidateAgents.length < agentIds.length) {
+    const foundIds = new Set(candidateAgents.map((a) => a.id));
+    const missingIds = agentIds.filter((id) => !foundIds.has(id));
+    for (const missingId of missingIds) {
+      const row = await db.query.agents.findFirst({
+        where: eq(agents.id, missingId),
+        columns: { id: true, visibility: true, deletedAt: true },
+      });
+      const reason = !row
+        ? "agent not found"
+        : row.deletedAt
+          ? "agent soft-deleted"
+          : `visibility '${row.visibility ?? "null"}' not exportable (allowed: public, locale, members)`;
+      console.warn(
+        `[federation] queueEntityExportEvents skipped agent ${missingId}: ${reason}`
+      );
+      await logFederationAudit({
+        eventType: "export_skipped",
+        nodeId: params.originNodeId,
+        peerNodeId: params.targetNodeId,
+        status: "rejected",
+        detail: {
+          reason,
+          entityType: "agent",
+          entityId: missingId,
+        },
+      });
+    }
+  }
 
   return queuePreparedExportEvents({
     originNodeId: params.originNodeId,

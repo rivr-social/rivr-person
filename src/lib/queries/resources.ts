@@ -429,6 +429,7 @@ export function resourceToDocument(resource: Resource, fallbackGroupId = ""): Do
     updatedAt: resource.updatedAt instanceof Date ? resource.updatedAt.toISOString() : String(resource.updatedAt),
     createdBy: (m.createdBy as string) ?? resource.ownerId,
     groupId: (m.groupId as string) ?? (m.groupDbId as string) ?? fallbackGroupId,
+    ownerId: (m.personalOwnerId as string) ?? undefined,
     tags: resource.tags ?? undefined,
     category: (m.category as string) ?? undefined,
     showOnAbout: m.showOnAbout === true,
@@ -572,6 +573,22 @@ export async function getDocumentsForGroup(groupId: string, limit = 200): Promis
   return groupResources
     .filter((r) => r.type === "document")
     .map((r) => resourceToDocument(r, groupId));
+}
+
+/**
+ * Returns personal documents owned by a user.
+ *
+ * Personal documents are identified by `metadata.personalOwnerId` matching the
+ * user's agent ID. They are stored with `ownerId` pointing to the user agent
+ * and `metadata.entityType = "document"`.
+ *
+ * @param userId User agent UUID.
+ * @param limit Max rows to return. Defaults to `200`.
+ * @returns Document array of the user's personal documents.
+ */
+export async function getDocumentsForUser(userId: string, limit = 200): Promise<Document[]> {
+  const userResources = await getResourcesByOwnerAndType(userId, "document", limit);
+  return userResources.map((r) => resourceToDocument(r));
 }
 
 /**

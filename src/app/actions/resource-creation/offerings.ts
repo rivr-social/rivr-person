@@ -23,6 +23,8 @@ import {
   createResourceWithLedger,
 } from "./helpers";
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/index";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { resolveHomeInstance } from "@/lib/federation/resolution";
 import type { ActionResult } from "./types";
 import { getAllowedTerms, deriveOfferingListingType } from "./types";
 
@@ -311,6 +313,7 @@ export async function createOfferingResource(input: {
         payload: input,
       },
       async () => {
+    let companionPostId: string | null = null;
     const result = await createResourceWithLedger({
       name: input.title.trim(),
       type: "listing",
@@ -447,7 +450,7 @@ export async function createOfferingResource(input: {
           .where(eq(agents.id, ownerId))
           .limit(1);
 
-        await createResourceWithLedger({
+        const companionPostResult = await createResourceWithLedger({
           name: input.title.trim(),
           type: "post",
           ownerId,
@@ -488,6 +491,9 @@ export async function createOfferingResource(input: {
             authorImage: authorAgent?.image ?? null,
           },
         });
+        if (companionPostResult.success && companionPostResult.resourceId) {
+          companionPostId = companionPostResult.resourceId;
+        }
       } catch (error) {
         console.error("[createOfferingResource] companion post creation failed:", error);
       }
@@ -536,6 +542,7 @@ export async function createOfferingResource(input: {
       success: true,
       message: "Offering created successfully",
       resourceId: offeringId,
+      ...(companionPostId ? { linkedDocumentId: companionPostId } : {}),
     } as ActionResult;
       },
     );
@@ -558,6 +565,105 @@ export async function createOfferingResource(input: {
         actorId: resolvedUserId,
         payload: { offeringType: input.offeringType ?? null, ownerId },
       }).catch(() => {});
+
+      const remoteGroupIds = Array.from(
+        new Set((input.scopedGroupIds ?? []).filter((value): value is string => typeof value === "string" && value.length > 0)),
+      );
+      if (remoteGroupIds.length > 0) {
+        const config = getInstanceConfig();
+        const [ownerAgent, offeringRecord, companionPost] = await Promise.all([
+          db.query.agents.findFirst({
+            where: eq(agents.id, ownerId),
+            columns: {
+              id: true,
+              name: true,
+              description: true,
+              image: true,
+              metadata: true,
+            },
+          }),
+          db.query.resources.findFirst({
+            where: eq(resources.id, offeringActionResult.resourceId),
+            columns: {
+              id: true,
+              name: true,
+              description: true,
+              content: true,
+              visibility: true,
+              tags: true,
+              metadata: true,
+            },
+          }),
+          offeringActionResult.linkedDocumentId
+            ? db.query.resources.findFirst({
+                where: eq(resources.id, offeringActionResult.linkedDocumentId),
+                columns: {
+                  id: true,
+                  name: true,
+                  description: true,
+                  content: true,
+                  visibility: true,
+                  tags: true,
+                  metadata: true,
+                },
+              })
+            : Promise.resolve(null),
+        ]);
+
+        if (ownerAgent && offeringRecord) {
+          for (const scopedGroupId of remoteGroupIds) {
+            const homeInstance = await resolveHomeInstance(scopedGroupId).catch(() => null);
+            if (!homeInstance || homeInstance.isLocal) continue;
+
+            const projectionResult = await updateFacade.execute(
+              {
+                type: "projectResourceBundle",
+                actorId: resolvedUserId,
+                targetAgentId: scopedGroupId,
+                payload: {
+                  owner: {
+                    id: ownerAgent.id,
+                    name: ownerAgent.name,
+                    description: ownerAgent.description,
+                    image: ownerAgent.image,
+                    metadata: ownerAgent.metadata ?? {},
+                    homeBaseUrl: config.baseUrl,
+                  },
+                  offering: {
+                    id: offeringRecord.id,
+                    name: offeringRecord.name,
+                    description: offeringRecord.description,
+                    content: offeringRecord.content,
+                    visibility: offeringRecord.visibility,
+                    tags: offeringRecord.tags,
+                    metadata: offeringRecord.metadata ?? {},
+                  },
+                  post: companionPost
+                    ? {
+                        id: companionPost.id,
+                        name: companionPost.name,
+                        description: companionPost.description,
+                        content: companionPost.content,
+                        visibility: companionPost.visibility,
+                        tags: companionPost.tags,
+                        metadata: companionPost.metadata ?? {},
+                      }
+                    : null,
+                },
+              },
+              async () => ({ projected: false }),
+            );
+
+            if (!projectionResult.success) {
+              console.error("[createOfferingResource] remote projection failed:", {
+                scopedGroupId,
+                error: projectionResult.error,
+                executedOn: projectionResult.executedOn,
+              });
+            }
+          }
+        }
+      }
     }
 
     return offeringActionResult;

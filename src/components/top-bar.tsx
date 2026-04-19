@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import Image from "next/image"
-import { Bell, Drama, LogIn, MessageSquare, Moon, Plus, Search, Sun, X } from "lucide-react"
+import { Bell, Drama, ExternalLink, LogIn, MessageSquare, Moon, Plus, Search, Sun, X } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { LocaleSwitcher } from "@/components/locale-switcher" // Renamed
@@ -24,6 +24,7 @@ import { useSession } from "next-auth/react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { getActivePersonaInfo } from "@/app/actions/personas"
 import type { SerializedAgent } from "@/lib/graph-serializers"
+import { getGlobalBaseUrl } from "@/lib/federation/global-url"
 
 interface TopBarProps {
   selectedLocale: string
@@ -80,11 +81,16 @@ export function TopBar({ selectedLocale, onLocaleChange }: TopBarProps) {
   const displayName = activePersona?.name || session?.user?.name || currentUser?.name
   const displayImage = activePersona?.image || session?.user?.image || currentUser?.avatar
 
+  // Resolve the global instance URL for logo navigation.
+  // On sovereign instances (person, group, etc.), the logo links to the global instance.
+  // On the global instance itself, this returns its own URL.
+  const globalBaseUrl = getGlobalBaseUrl()
+
   return (
     <header className="fixed top-0 left-0 right-0 z-50 w-full border-b bg-background">
       <div className="flex h-14 items-center px-2 sm:px-4">
         <div className="flex items-center gap-1.5 shrink-0">
-          <Link href="/" className="flex items-center gap-1.5">
+          <a href={globalBaseUrl || "/"} className="flex items-center gap-1.5">
             <Image src="/rivr-emoji.png" alt="Rivr" width={32} height={32} className="h-8 w-8" />
             <div className="hidden sm:flex flex-col items-center">
               <button
@@ -96,7 +102,7 @@ export function TopBar({ selectedLocale, onLocaleChange }: TopBarProps) {
               </button>
               <Image src="/wordmark.png" alt="RIVR Wordmark" width={80} height={24} className="h-7 w-auto" />
             </div>
-          </Link>
+          </a>
         </div>
         <div className="flex-1 ml-2 sm:ml-4 flex items-center min-w-0">
           <LocaleSwitcher selectedLocale={selectedLocale} onLocaleChange={onLocaleChange} />

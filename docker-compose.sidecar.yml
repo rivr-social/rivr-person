@@ -1,0 +1,393 @@
+# ==============================================================
+# rivr-person Sovereign Sidecar Stack
+# ==============================================================
+#
+# Full sovereign deployment of rivr-person with its autobot
+# sidecar services: OpenClaw agent gateway, token-server/web,
+# PostgreSQL (app DB + knowledge graph), WhisperX transcription,
+# and Traefik reverse proxy with automatic HTTPS.
+#
+# Usage:
+#   1. Copy .env.sidecar.example to .env
+#   2. Fill in required values (see comments in .env.sidecar.example)
+#   3. docker compose -f docker-compose.sidecar.yml up -d
+#
+# For GPU-accelerated WhisperX, uncomment the deploy section
+# under the whisperx service below.
+#
+# ==============================================================
+
+# --------------------------------------------------------------
+# Extension Fields (Reusable Configurations)
+# --------------------------------------------------------------
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+# --------------------------------------------------------------
+# SERVICES
+# --------------------------------------------------------------
+
+services:
+  # ============================================================
+  # Traefik Reverse Proxy — HTTPS termination + routing
+  # ============================================================
+  traefik:
+    image: traefik:v2.11
+    container_name: rivr_traefik
+    <<: *restart-policy
+    security_opt:
+      - no-new-privileges:true
+    command:
+      # Docker provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=rivr_proxy"
+
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+
+      # HTTP -> HTTPS redirect
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+
+      # TLS via Let's Encrypt
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+
+      # Health / ping
+      - "--ping=true"
+      - "--ping.entrypoint=web"
+
+      # Logging
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-WARN}"
+      - "--accesslog=true"
+      - "--accesslog.format=json"
+
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - rivr_traefik_acme:/acme
+    networks:
+      - proxy
+    logging: *default-logging
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "nc -z localhost 80 || exit 1"]
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ============================================================
+  # PostgreSQL — App database + Knowledge Graph
+  # ============================================================
+  # Runs both the rivr_person database (Next.js app) and the
+  # cartoon_kg database (autobot knowledge graph) in one instance.
+  # Init scripts create both databases on first start.
+  # ============================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rivr_postgres
+    <<: *restart-policy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}"
+      - "-c"
+      - "effective_cache_size=${POSTGRES_EFFECTIVE_CACHE:-768MB}"
+      - "-c"
+      - "work_mem=${POSTGRES_WORK_MEM:-4MB}"
+      - "-c"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-100}"
+    volumes:
+      - rivr_postgres_data:/var/lib/postgresql/data
+      - ./sidecar/init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - db
+    logging: *default-logging
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}"]
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY_LIMIT:-1G}
+
+  # ============================================================
+  # rivr-person — Sovereign person app (Next.js)
+  # ============================================================
+  rivr-person:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rivr:person
+    container_name: rivr_person
+    <<: *restart-policy
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: "postgresql://${RIVR_DB_USER:-rivr}:${RIVR_DB_PASSWORD}@postgres:5432/${RIVR_DB_NAME:-rivr_person}"
+      REDIS_URL: ""
+      WHISPER_TRANSCRIBE_URL: "http://whisperx:9200/"
+      AGENT_HQ_DATA_DIR: "/workspace/.agent-hq"
+      AGENT_HQ_APP_WORKSPACE_ROOT: "/workspace/apps"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - rivr_agent_hq:/workspace
+    networks:
+      - proxy
+      - db
+      - app
+    logging: *default-logging
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)throw new Error(String(r.status));}).then(()=>process.exit(0)).catch(()=>process.exit(1))\""]
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${RIVR_MEMORY_LIMIT:-1G}
+    labels:
+      - "traefik.enable=true"
+      # Main app router
+      - "traefik.http.routers.rivr-person.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.rivr-person.entrypoints=websecure"
+      - "traefik.http.routers.rivr-person.tls.certresolver=letsencrypt"
+      - "traefik.http.services.rivr-person.loadbalancer.server.port=3000"
+      # Security headers
+      - "traefik.http.routers.rivr-person.middlewares=rivr-security"
+      - "traefik.http.middlewares.rivr-security.headers.browserxssfilter=true"
+      - "traefik.http.middlewares.rivr-security.headers.contenttypenosniff=true"
+      - "traefik.http.middlewares.rivr-security.headers.frameDeny=true"
+      - "traefik.http.middlewares.rivr-security.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.rivr-security.headers.stsIncludeSubdomains=true"
+
+  # ============================================================
+  # OpenClaw Gateway — AI agent runtime
+  # ============================================================
+  # The conversational agent engine. rivr-person connects to it
+  # for autobot/chat functionality. Configured via openclaw.json
+  # mounted into the config volume.
+  # ============================================================
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: rivr_openclaw_gateway
+    <<: *restart-policy
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - rivr_openclaw_config:/home/node/.openclaw
+      - rivr_openclaw_workspace:/home/node/.openclaw/workspace
+    networks:
+      - app
+      - proxy
+    logging: *default-logging
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${OPENCLAW_MEMORY_LIMIT:-1G}
+    labels:
+      - "traefik.enable=true"
+      # OpenClaw gateway — exposed on subdomain for direct agent API access
+      - "traefik.http.routers.openclaw.rule=Host(`ai.${DOMAIN}`)"
+      - "traefik.http.routers.openclaw.entrypoints=websecure"
+      - "traefik.http.routers.openclaw.tls.certresolver=letsencrypt"
+      - "traefik.http.services.openclaw.loadbalancer.server.port=18789"
+
+  # ============================================================
+  # OpenClaw Web — Token server + chat web UI
+  # ============================================================
+  # Express proxy that serves the chat web UI and handles
+  # LiveKit token generation, OpenClaw API proxying, voice sample
+  # uploads, and digital twin job management.
+  # ============================================================
+  openclaw-web:
+    image: ${OPENCLAW_WEB_IMAGE:-openclaw-web:local}
+    build:
+      context: ${OPENCLAW_WEB_BUILD_CONTEXT:-./sidecar/openclaw-web}
+      dockerfile: Dockerfile
+    container_name: rivr_openclaw_web
+    <<: *restart-policy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PORT: "3001"
+      OPENCLAW_BASE_URL: "http://openclaw-gateway:18789"
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_MODEL: ${OPENCLAW_MODEL:-openclaw/default}
+      OPENCLAW_BACKEND_MODEL: ${OPENCLAW_BACKEND_MODEL:-anthropic/claude-sonnet-4-20250514}
+      OPENCLAW_MESSAGE_CHANNEL: "livekit-avatar"
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_WS_URL: ${LIVEKIT_WS_URL:-}
+      VOICE_SAMPLE_DIR: /data/voice-samples
+      DIGITAL_TWIN_WORKER_URL: ${DIGITAL_TWIN_WORKER_URL:-}
+      VAST_API_KEY: ${VAST_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - rivr_voice_samples:/data/voice-samples
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+    networks:
+      - app
+      - proxy
+    logging: *default-logging
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    labels:
+      - "traefik.enable=true"
+      # Web chat UI — exposed on subdomain
+      - "traefik.http.routers.openclaw-web.rule=Host(`chat.${DOMAIN}`)"
+      - "traefik.http.routers.openclaw-web.entrypoints=websecure"
+      - "traefik.http.routers.openclaw-web.tls.certresolver=letsencrypt"
+      - "traefik.http.services.openclaw-web.loadbalancer.server.port=3001"
+
+  # ============================================================
+  # WhisperX — Speech-to-text transcription
+  # ============================================================
+  # Self-hosted WhisperX service for audio transcription.
+  # Used by rivr-person for voice message and recording
+  # transcription. CPU by default; uncomment the deploy section
+  # for GPU acceleration.
+  # ============================================================
+  whisperx:
+    build:
+      context: ./docs/whisperx
+      dockerfile: Dockerfile
+    image: whisperx-service:latest
+    container_name: rivr_whisperx
+    <<: *restart-policy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      WHISPERX_MODEL: ${WHISPERX_MODEL:-base}
+      WHISPERX_DEVICE: ${WHISPERX_DEVICE:-cpu}
+      WHISPERX_COMPUTE_TYPE: ${WHISPERX_COMPUTE_TYPE:-int8}
+      WHISPERX_BATCH_SIZE: ${WHISPERX_BATCH_SIZE:-16}
+      HF_TOKEN: ${HF_TOKEN:-}
+      API_KEY: ${WHISPERX_API_KEY:-}
+    volumes:
+      - rivr_whisperx_models:/root/.cache
+    networks:
+      - app
+    logging: *default-logging
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/health')"]
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${WHISPERX_MEMORY_LIMIT:-2G}
+
+    # Uncomment below for GPU (NVIDIA) support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+# --------------------------------------------------------------
+# VOLUMES
+# --------------------------------------------------------------
+
+volumes:
+  # Traefik ACME certificates
+  rivr_traefik_acme:
+    driver: local
+
+  # PostgreSQL data (app DB + KG)
+  rivr_postgres_data:
+    driver: local
+
+  # OpenClaw configuration (openclaw.json, persona files)
+  rivr_openclaw_config:
+    driver: local
+
+  # OpenClaw agent workspace
+  rivr_openclaw_workspace:
+    driver: local
+
+  # Agent HQ state + generated app workspaces
+  rivr_agent_hq:
+    driver: local
+
+  # Voice sample uploads
+  rivr_voice_samples:
+    driver: local
+
+  # WhisperX downloaded models cache
+  rivr_whisperx_models:
+    driver: local
+
+# --------------------------------------------------------------
+# NETWORKS
+# --------------------------------------------------------------
+
+networks:
+  # Proxy network — services exposed via Traefik
+  proxy:
+    name: rivr_proxy
+
+  # Database network — only postgres and apps that need DB access
+  db:
+    internal: true
+    name: rivr_db
+
+  # App-internal network — service-to-service communication
+  app:
+    internal: true
+    name: rivr_app

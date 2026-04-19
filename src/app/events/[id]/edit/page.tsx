@@ -40,6 +40,58 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { EventHost, EventPayout, EventSession } from "@/types";
+
+type EventSessionDraft = {
+  id: string;
+  title: string;
+  description: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  location: string;
+  capacity: string;
+}
+
+type EventHostDraft = {
+  id: string;
+  agentId: string;
+  displayName: string;
+  role: string;
+  isLead: boolean;
+  payoutEligible: boolean;
+  payoutSharePercent: string;
+  payoutFixedAmount: string;
+}
+
+type EventPayoutDraft = {
+  id: string;
+  recipientAgentId: string;
+  recipientLabel: string;
+  role: string;
+  fixedAmount: string;
+  sharePercent: string;
+  status: string;
+}
+
+function createEventDraftId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function combineDateTime(date: string, time: string): string {
+  if (!date) return new Date().toISOString();
+  return new Date(`${date}T${time || "00:00"}:00`).toISOString();
+}
+
+function parseMoneyToCents(value: string): number | undefined {
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : undefined;
+}
+
+function parsePercentToBps(value: string): number | undefined {
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : undefined;
+}
 
 /**
  * Event edit page for updating an existing event.
@@ -116,6 +168,20 @@ export default function EditEventPage({ params }: { params: Promise<{ id: string
       quantity: "",
     },
   ]);
+  const [eventSessions, setEventSessions] = useState<EventSessionDraft[]>([
+    {
+      id: "session-main",
+      title: "",
+      description: "",
+      date: "",
+      startTime: "",
+      endTime: "",
+      location: "",
+      capacity: "",
+    },
+  ]);
+  const [eventHosts, setEventHosts] = useState<EventHostDraft[]>([]);
+  const [eventPayouts, setEventPayouts] = useState<EventPayoutDraft[]>([]);
 
   // Admin management state
   const [eventAdminIds, setEventAdminIds] = useState<string[]>([]);
@@ -303,6 +369,54 @@ export default function EditEventPage({ params }: { params: Promise<{ id: string
             quantity: "",
           }]);
         }
+        const rawSessions = Array.isArray(metadata.sessions) ? (metadata.sessions as Array<Record<string, unknown>>) : [];
+        setEventSessions(rawSessions.length > 0 ? rawSessions.map((session, index) => {
+          const start = typeof session.start === "string" ? new Date(session.start) : null;
+          const end = typeof session.end === "string" ? new Date(session.end) : null;
+          const locationValue = session.location && typeof session.location === "object"
+            ? String((session.location as Record<string, unknown>).address ?? (session.location as Record<string, unknown>).name ?? "")
+            : "";
+          return {
+            id: typeof session.id === "string" ? session.id : `session-${index + 1}`,
+            title: typeof session.title === "string" ? session.title : "",
+            description: typeof session.description === "string" ? session.description : "",
+            date: start ? start.toISOString().slice(0, 10) : date,
+            startTime: start ? start.toISOString().slice(11, 16) : time,
+            endTime: end ? end.toISOString().slice(11, 16) : "",
+            location: locationValue || sourceLocation,
+            capacity: typeof session.capacity === "number" ? String(session.capacity) : "",
+          };
+        }) : [{
+          id: "session-main",
+          title: event.name || "",
+          description: event.description || "",
+          date: sourceDate ? sourceDate.slice(0, 10) : "",
+          startTime: sourceTime ? sourceTime.slice(0, 5) : "",
+          endTime: "",
+          location: sourceLocation,
+          capacity: "",
+        }]);
+        const rawHosts = Array.isArray(metadata.hosts) ? (metadata.hosts as Array<Record<string, unknown>>) : [];
+        setEventHosts(rawHosts.map((host, index) => ({
+          id: `host-${index + 1}`,
+          agentId: typeof host.agentId === "string" ? host.agentId : "",
+          displayName: typeof host.displayName === "string" ? host.displayName : "",
+          role: typeof host.role === "string" ? host.role : "",
+          isLead: host.isLead === true,
+          payoutEligible: host.payoutEligible !== false,
+          payoutSharePercent: typeof host.payoutShareBps === "number" ? String(host.payoutShareBps / 100) : "",
+          payoutFixedAmount: typeof host.payoutFixedCents === "number" ? (host.payoutFixedCents / 100).toFixed(2) : "",
+        })));
+        const rawPayouts = Array.isArray(metadata.payouts) ? (metadata.payouts as Array<Record<string, unknown>>) : [];
+        setEventPayouts(rawPayouts.map((payout, index) => ({
+          id: typeof payout.id === "string" ? payout.id : `payout-${index + 1}`,
+          recipientAgentId: typeof payout.recipientAgentId === "string" ? payout.recipientAgentId : "",
+          recipientLabel: typeof payout.label === "string" ? payout.label : "",
+          role: typeof payout.role === "string" ? payout.role : "",
+          fixedAmount: typeof payout.fixedCents === "number" ? (payout.fixedCents / 100).toFixed(2) : "",
+          sharePercent: typeof payout.shareBps === "number" ? String(payout.shareBps / 100) : "",
+          status: typeof payout.status === "string" ? payout.status : "pending",
+        })));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -354,6 +468,83 @@ export default function EditEventPage({ params }: { params: Promise<{ id: string
     setEventTickets((current) => (current.length === 1 ? current : current.filter((ticket) => ticket.id !== ticketId)));
   };
 
+  const updateEventSession = (sessionId: string, field: keyof EventSessionDraft, value: string) => {
+    setEventSessions((current) =>
+      current.map((session) => (session.id === sessionId ? { ...session, [field]: value } : session))
+    );
+  };
+
+  const addEventSession = () => {
+    setEventSessions((current) => [
+      ...current,
+      {
+        id: createEventDraftId("session"),
+        title: "",
+        description: "",
+        date,
+        startTime: time,
+        endTime: "",
+        location,
+        capacity: "",
+      },
+    ]);
+  };
+
+  const removeEventSession = (sessionId: string) => {
+    setEventSessions((current) => (current.length === 1 ? current : current.filter((session) => session.id !== sessionId)));
+  };
+
+  const updateEventHost = (hostId: string, field: keyof EventHostDraft, value: string | boolean) => {
+    setEventHosts((current) =>
+      current.map((host) => (host.id === hostId ? { ...host, [field]: value } : host))
+    );
+  };
+
+  const addEventHost = () => {
+    setEventHosts((current) => [
+      ...current,
+      {
+        id: createEventDraftId("host"),
+        agentId: "",
+        displayName: "",
+        role: "",
+        isLead: current.length === 0,
+        payoutEligible: true,
+        payoutSharePercent: "",
+        payoutFixedAmount: "",
+      },
+    ]);
+  };
+
+  const removeEventHost = (hostId: string) => {
+    setEventHosts((current) => current.filter((host) => host.id !== hostId));
+  };
+
+  const updateEventPayout = (payoutId: string, field: keyof EventPayoutDraft, value: string) => {
+    setEventPayouts((current) =>
+      current.map((payout) => (payout.id === payoutId ? { ...payout, [field]: value } : payout))
+    );
+  };
+
+  const addEventPayout = () => {
+    setEventPayouts((current) => [
+      ...current,
+      {
+        id: createEventDraftId("payout"),
+        recipientAgentId: "",
+        recipientLabel: "",
+        role: "",
+        fixedAmount: "",
+        sharePercent: "",
+        status: "pending",
+      },
+    ]);
+  };
+
+  const removeEventPayout = (payoutId: string) => {
+    setEventPayouts((current) => current.filter((payout) => payout.id !== payoutId));
+  };
+
   const canSubmit = useMemo(() => {
     // Require all core fields before enabling submit.
     return name.trim().length > 0 && description.trim().length > 0 && date.length > 0 && time.length > 0 && location.trim().length > 0;
@@ -392,6 +583,49 @@ export default function EditEventPage({ params }: { params: Promise<{ id: string
         : price.trim()
           ? Number.parseFloat(price.trim())
           : null;
+    const normalizedSessions: EventSession[] = eventSessions
+      .map((session, index) => ({
+        id: session.id,
+        title: session.title.trim() || `Session ${index + 1}`,
+        description: session.description.trim() || undefined,
+        start: combineDateTime(session.date || date, session.startTime || time),
+        end: combineDateTime(session.date || date, session.endTime || session.startTime || time),
+        location: {
+          name: session.location.trim() || location.trim(),
+          address: session.location.trim() || location.trim(),
+        },
+        capacity: session.capacity.trim() ? Number.parseInt(session.capacity.trim(), 10) : undefined,
+      }))
+      .filter((session) => session.title.length > 0);
+    const normalizedHosts: EventHost[] = eventHosts
+      .map((host) => ({
+        agentId: host.agentId.trim() || host.displayName.trim(),
+        displayName: host.displayName.trim() || undefined,
+        role: host.role.trim() || undefined,
+        isLead: host.isLead,
+        payoutEligible: host.payoutEligible,
+        payoutShareBps: parsePercentToBps(host.payoutSharePercent),
+        payoutFixedCents: parseMoneyToCents(host.payoutFixedAmount),
+      }))
+      .filter((host) => host.agentId.length > 0);
+    const normalizedPayouts: EventPayout[] = eventPayouts
+      .map((payout) => ({
+        id: payout.id,
+        recipientAgentId: payout.recipientAgentId.trim() || payout.recipientLabel.trim(),
+        label: payout.recipientLabel.trim() || undefined,
+        role: payout.role.trim() || undefined,
+        fixedCents: parseMoneyToCents(payout.fixedAmount),
+        shareBps: parsePercentToBps(payout.sharePercent),
+        currency: "USD",
+        status: payout.status,
+      }))
+      .filter((payout) => payout.recipientAgentId.length > 0);
+    const revenueCents = normalizedTickets.reduce((sum, ticket) => {
+      if (!Number.isFinite(ticket.price) || ticket.price <= 0) return sum;
+      const quantity = ticket.quantity && Number.isFinite(ticket.quantity) && ticket.quantity > 0 ? ticket.quantity : 0;
+      return sum + Math.round(ticket.price * 100) * quantity;
+    }, 0);
+    const payoutsCents = normalizedPayouts.reduce((sum, payout) => sum + (payout.fixedCents ?? 0), 0);
 
     setSaving(true);
     try {
@@ -419,7 +653,29 @@ export default function EditEventPage({ params }: { params: Promise<{ id: string
           venueEndTime: venueEndTime || null,
           groupId: eventGroup !== "none" ? eventGroup : null,
           projectId: eventProject !== "none" ? eventProject : null,
+          managingProjectId: eventProject !== "none" ? eventProject : null,
           ticketTypes: normalizedTickets,
+          sessions: normalizedSessions.length > 0 ? normalizedSessions : [{
+            id: "session-main",
+            title: name.trim(),
+            description: description.trim() || undefined,
+            start: combineDateTime(date, time),
+            end: combineDateTime(date, time),
+            location: {
+              name: location.trim(),
+              address: location.trim(),
+            },
+          }],
+          hosts: normalizedHosts,
+          hostIds: normalizedHosts.map((host) => host.agentId),
+          payouts: normalizedPayouts,
+          financialSummary: {
+            revenueCents,
+            payoutsCents,
+            profitCents: revenueCents,
+            remainingCents: revenueCents - payoutsCents,
+            currency: "USD",
+          },
           scopedLocaleIds: eventVisibilityScope.localeIds.length > 0 ? eventVisibilityScope.localeIds : undefined,
           scopedGroupIds: eventVisibilityScope.groupIds.length > 0 ? eventVisibilityScope.groupIds : undefined,
           scopedUserIds: eventVisibilityScope.userIds.length > 0 ? eventVisibilityScope.userIds : undefined,
@@ -856,6 +1112,185 @@ export default function EditEventPage({ params }: { params: Promise<{ id: string
                       <div className="space-y-2">
                         <Label>Description</Label>
                         <Input value={ticket.description} onChange={(e) => updateEventTicket(ticket.id, "description", e.target.value)} placeholder="What does this ticket include?" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Sessions</Label>
+                  <p className="text-xs text-muted-foreground">Manage one or more sessions for this event.</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={addEventSession}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Session
+                </Button>
+              </div>
+              <div className="space-y-3">
+                {eventSessions.map((session, index) => (
+                  <div key={session.id} className="rounded-lg border p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">Session {index + 1}</p>
+                      {eventSessions.length > 1 ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => removeEventSession(session.id)}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      ) : null}
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Title</Label>
+                        <Input value={session.title} onChange={(e) => updateEventSession(session.id, "title", e.target.value)} placeholder="Opening circle" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Capacity</Label>
+                        <Input type="number" min="0" value={session.capacity} onChange={(e) => updateEventSession(session.id, "capacity", e.target.value)} placeholder="Optional" />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Description</Label>
+                      <Textarea value={session.description} onChange={(e) => updateEventSession(session.id, "description", e.target.value)} placeholder="What happens in this session?" />
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Date</Label>
+                        <Input type="date" value={session.date} onChange={(e) => updateEventSession(session.id, "date", e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Location</Label>
+                        <Input value={session.location} onChange={(e) => updateEventSession(session.id, "location", e.target.value)} placeholder="Room, stage, or link" />
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Start Time</Label>
+                        <Input type="time" value={session.startTime} onChange={(e) => updateEventSession(session.id, "startTime", e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>End Time</Label>
+                        <Input type="time" value={session.endTime} onChange={(e) => updateEventSession(session.id, "endTime", e.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Hosts</Label>
+                  <p className="text-xs text-muted-foreground">Manage multiple hosts and their payout settings.</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={addEventHost}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Host
+                </Button>
+              </div>
+              <div className="space-y-3">
+                {eventHosts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No hosts added yet.</p>
+                ) : eventHosts.map((host, index) => (
+                  <div key={host.id} className="rounded-lg border p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">Host {index + 1}</p>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => removeEventHost(host.id)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Display Name</Label>
+                        <Input value={host.displayName} onChange={(e) => updateEventHost(host.id, "displayName", e.target.value)} placeholder="Host name" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Agent ID or username</Label>
+                        <Input value={host.agentId} onChange={(e) => updateEventHost(host.id, "agentId", e.target.value)} placeholder="person-id" />
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="space-y-2">
+                        <Label>Role</Label>
+                        <Input value={host.role} onChange={(e) => updateEventHost(host.id, "role", e.target.value)} placeholder="Facilitator" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Payout Share %</Label>
+                        <Input value={host.payoutSharePercent} onChange={(e) => updateEventHost(host.id, "payoutSharePercent", e.target.value)} placeholder="25" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Fixed Payout</Label>
+                        <Input value={host.payoutFixedAmount} onChange={(e) => updateEventHost(host.id, "payoutFixedAmount", e.target.value)} placeholder="0.00" />
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-6">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox checked={host.isLead} onCheckedChange={(checked) => updateEventHost(host.id, "isLead", checked === true)} />
+                        <Label className="text-sm font-normal">Lead host</Label>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox checked={host.payoutEligible} onCheckedChange={(checked) => updateEventHost(host.id, "payoutEligible", checked === true)} />
+                        <Label className="text-sm font-normal">Payout eligible</Label>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Payout Plan</Label>
+                  <p className="text-xs text-muted-foreground">These entries appear in the event Financials tab.</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={addEventPayout}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Payout
+                </Button>
+              </div>
+              <div className="space-y-3">
+                {eventPayouts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No payouts scheduled yet.</p>
+                ) : eventPayouts.map((payout, index) => (
+                  <div key={payout.id} className="rounded-lg border p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">Payout {index + 1}</p>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => removeEventPayout(payout.id)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Recipient</Label>
+                        <Input value={payout.recipientLabel} onChange={(e) => updateEventPayout(payout.id, "recipientLabel", e.target.value)} placeholder="Host or vendor name" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Recipient Agent ID</Label>
+                        <Input value={payout.recipientAgentId} onChange={(e) => updateEventPayout(payout.id, "recipientAgentId", e.target.value)} placeholder="Optional" />
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="space-y-2">
+                        <Label>Role</Label>
+                        <Input value={payout.role} onChange={(e) => updateEventPayout(payout.id, "role", e.target.value)} placeholder="Lead host" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Fixed Amount</Label>
+                        <Input value={payout.fixedAmount} onChange={(e) => updateEventPayout(payout.id, "fixedAmount", e.target.value)} placeholder="0.00" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Share %</Label>
+                        <Input value={payout.sharePercent} onChange={(e) => updateEventPayout(payout.id, "sharePercent", e.target.value)} placeholder="Optional" />
                       </div>
                     </div>
                   </div>

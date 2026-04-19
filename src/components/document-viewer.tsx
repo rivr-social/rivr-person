@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useToast } from "@/components/ui/use-toast"
-import { ChevronLeft, FileText, Clock, User, Tag } from "lucide-react"
+import { ChevronLeft, FileText, Clock, User, Tag, BrainCircuit } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
@@ -32,6 +32,9 @@ interface DocumentViewerProps {
   onBack: () => void
   onDocumentUpdated?: (document: Document) => void
   members?: MemberInfo[]
+  kgScopeType?: "person" | "group" | "ring" | "family" | "persona"
+  kgScopeId?: string
+  canPushToKg?: boolean
 }
 
 /**
@@ -125,7 +128,15 @@ function renderDocumentContent(content: string): ReactNode[] {
  * @param props.onBack Callback that returns to the previous documents view.
  * @returns Document detail UI with metadata, actions, and rendered content.
  */
-export function DocumentViewer({ document, onBack, onDocumentUpdated, members = [] }: DocumentViewerProps) {
+export function DocumentViewer({
+  document,
+  onBack,
+  onDocumentUpdated,
+  members = [],
+  kgScopeType,
+  kgScopeId,
+  canPushToKg = false,
+}: DocumentViewerProps) {
   const router = useRouter()
   const { toast } = useToast()
   const [isEditing, setIsEditing] = useState(false)
@@ -136,7 +147,40 @@ export function DocumentViewer({ document, onBack, onDocumentUpdated, members = 
   const [category, setCategory] = useState(document.category ?? "")
   const [tags, setTags] = useState((document.tags ?? []).join(", "))
   const [showOnAbout, setShowOnAbout] = useState(document.showOnAbout === true)
+  const [kgDocId, setKgDocId] = useState<number | null>(null)
+  const [kgLoading, setKgLoading] = useState(false)
+  const [kgPushing, startKgPushTransition] = useTransition()
   const creator = members.find(user => user.id === document.createdBy)
+
+  useEffect(() => {
+    if (!canPushToKg || !kgScopeType || !kgScopeId) {
+      setKgDocId(null)
+      return
+    }
+
+    let cancelled = false
+    setKgLoading(true)
+    fetch(`/api/kg/docs?scope_type=${encodeURIComponent(kgScopeType)}&scope_id=${encodeURIComponent(kgScopeId)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Failed to load KG docs")
+        return response.json()
+      })
+      .then((docs: Array<{ id: number; source_uri: string | null }>) => {
+        if (cancelled) return
+        const matchingDoc = docs.find((entry) => entry.source_uri?.endsWith(`/resources/${document.id}`))
+        setKgDocId(matchingDoc?.id ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setKgDocId(null)
+      })
+      .finally(() => {
+        if (!cancelled) setKgLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [canPushToKg, document.id, kgScopeId, kgScopeType])
 
   useEffect(() => {
     setTitle(document.title)
@@ -194,6 +238,62 @@ export function DocumentViewer({ document, onBack, onDocumentUpdated, members = 
     })
   }
 
+  const handlePushToKg = () => {
+    if (!canPushToKg || !kgScopeType || !kgScopeId) return
+
+    startKgPushTransition(async () => {
+      try {
+        let targetKgDocId = kgDocId
+
+        if (!targetKgDocId) {
+          const createResponse = await fetch("/api/kg/docs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              resourceId: document.id,
+              scope_type: kgScopeType,
+              scope_id: kgScopeId,
+              title: document.title,
+              doc_type: "document",
+            }),
+          })
+
+          if (!createResponse.ok) {
+            const json = await createResponse.json().catch(() => null)
+            throw new Error(json?.error || "Failed to create KG document")
+          }
+
+          const createdDoc = await createResponse.json()
+          targetKgDocId = createdDoc.id
+          setKgDocId(createdDoc.id)
+        }
+
+        const pushResponse = await fetch(`/api/kg/docs/${targetKgDocId}/push`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: content || document.content || "",
+            title: title || document.title,
+            format: "markdown",
+          }),
+        })
+
+        if (!pushResponse.ok) {
+          const json = await pushResponse.json().catch(() => null)
+          throw new Error(json?.error || "Failed to ingest document into knowledge graph")
+        }
+
+        toast({ title: "Added to knowledge graph" })
+      } catch (error) {
+        toast({
+          title: "Knowledge graph push failed",
+          description: error instanceof Error ? error.message : "Failed to add document to knowledge graph",
+          variant: "destructive",
+        })
+      }
+    })
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -203,6 +303,17 @@ export function DocumentViewer({ document, onBack, onDocumentUpdated, members = 
           <span>Back to Documents</span>
         </Button>
         <div className="flex items-center space-x-2">
+          {canPushToKg ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePushToKg}
+              disabled={kgLoading || kgPushing || !kgScopeType || !kgScopeId}
+            >
+              <BrainCircuit className="h-4 w-4 mr-2" />
+              {kgPushing ? "Adding..." : kgDocId ? "Re-index in KG" : "Add to KG"}
+            </Button>
+          ) : null}
           {isEditing ? (
             <>
               <Button variant="outline" size="sm" onClick={() => setIsEditing(false)} disabled={isPending}>

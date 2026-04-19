@@ -52,6 +52,9 @@ export async function GET(request: Request) {
         payload: e.payload,
         signature: e.signature,
         nonce: e.nonce,
+        // eventVersion must be exposed so pulling peers can enforce the
+        // monotonic version check in `importFederationEvents`.
+        eventVersion: e.eventVersion,
         createdAt: e.createdAt?.toISOString(),
       })),
       cursor: highWaterMark,

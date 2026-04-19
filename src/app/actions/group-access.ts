@@ -116,7 +116,7 @@ export async function challengeGroupAccess(
       type: "challengeGroupAccess",
       actorId,
       targetAgentId: groupId,
-      payload: {},
+      payload: { password },
     },
     async () => {
   // Throttle brute-force attempts by combining network and account identity in the key.
@@ -258,7 +258,7 @@ export async function revokeGroupMembership(
       type: "revokeGroupMembership",
       actorId,
       targetAgentId: groupId,
-      payload: {},
+      payload: { memberId },
     },
     async () => {
   // Only the member themselves or an admin of the group can revoke
@@ -348,7 +348,7 @@ export async function renewGroupMembership(
       type: "renewGroupMembership",
       actorId,
       targetAgentId: groupId,
-      payload: {},
+      payload: { groupId },
     },
     async () => {
   // Renewal is only allowed if a password challenge succeeded at least once historically.
@@ -529,7 +529,7 @@ export async function requestGroupMembership(
       type: "requestGroupMembership",
       actorId,
       targetAgentId: groupId,
-      payload: {},
+      payload: { options },
     },
     async () => {
   const [group] = await db
@@ -778,7 +778,7 @@ export async function reviewGroupJoinRequest(
       type: "reviewGroupJoinRequest",
       actorId,
       targetAgentId: groupId,
-      payload: {},
+      payload: { requestId, decision, adminNotes },
     },
     async () => {
   const isAdmin = await isGroupAdmin(actorId, groupId);

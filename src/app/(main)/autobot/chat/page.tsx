@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -39,8 +40,10 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { VoiceRecorder } from "@/components/voice-recorder";
+// VoiceRecorder is available for event/vidchat transcription via WhisperX
+// Chat input uses native SpeechRecognition for low-latency voice input
 import { VoiceCloneUpload } from "@/components/voice-clone-upload";
+import { DigitalTwinPreview } from "@/components/digital-twin-preview";
 import Link from "next/link";
 import type {
   DigitalTwinAssetKind,
@@ -49,18 +52,74 @@ import type {
   VoiceSample,
 } from "@/lib/autobot-user-settings";
 
+type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
+type SpeechRecognitionResultList = ArrayLike<SpeechRecognitionResult> & { length: number };
+
 type BrowserSpeechRecognition = {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onresult: ((event: { results: SpeechRecognitionResultList; resultIndex: number }) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
+  abort: () => void;
 };
 
 type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
+
+type SettingsSubject = {
+  actorId: string;
+  ownerId: string;
+  scopeType: "person" | "persona";
+  scopeLabel: string;
+  personaName?: string;
+};
+
+type ContextInventory = {
+  subject: SettingsSubject;
+  soul: {
+    source: "custom" | "instance" | "fallback";
+    length: number;
+    content: string;
+    preview: string;
+    hasCustom: boolean;
+  };
+  runtime: {
+    selectedModel: string;
+    ttsEnabled: boolean;
+    voiceMode: string;
+    gpuProvider: string;
+  };
+  connections: Array<{
+    provider: string;
+    status: string;
+    syncDirection: string;
+    lastSyncedAt: string | null;
+  }>;
+  kg: {
+    person: {
+      docCount: number;
+      entityCount: number;
+      tripleCount: number;
+    };
+    includedPersonaKgIds: string[];
+    personas: Array<{
+      id: string;
+      name: string;
+      stats: {
+        docCount: number;
+        entityCount: number;
+        tripleCount: number;
+      };
+    }>;
+  };
+  tools: Array<{
+    name: string;
+    description: string;
+  }>;
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,6 +129,7 @@ const CHAT_API_ENDPOINT = "/api/autobot/chat";
 const TTS_API_ENDPOINT = "/api/autobot/tts";
 const GPU_API_ENDPOINT = "/api/autobot/gpu";
 const SETTINGS_API_ENDPOINT = "/api/autobot/settings";
+const CONTEXT_API_ENDPOINT = "/api/autobot/context";
 const DIGITAL_TWIN_API_ENDPOINT = "/api/autobot/digital-twin";
 const DIGITAL_TWIN_UPLOAD_ENDPOINT = "/api/autobot/digital-twin/upload";
 const DIGITAL_TWIN_JOBS_ENDPOINT = "/api/autobot/digital-twin/jobs";
@@ -247,13 +307,24 @@ function getParamLabel(toolName: string, paramKey: string): string {
 }
 
 const MODEL_OPTIONS = [
+  { value: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet", provider: "Anthropic" },
   { value: "openai/gpt-4o-mini", label: "GPT-4o Mini", provider: "OpenAI" },
   { value: "openai/gpt-4o", label: "GPT-4o", provider: "OpenAI" },
-  { value: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet", provider: "Anthropic" },
-  { value: "local/ollama", label: "Ollama (Local)", provider: "Local" },
+  { value: "gemini/gemini-2.0-flash", label: "Gemini 2.0 Flash", provider: "Google" },
+  { value: "gemini/gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "Google" },
+  { value: "local/ollama", label: "Ollama (Default)", provider: "Local" },
+  { value: "local/llama3.2", label: "Llama 3.2", provider: "Local" },
+  { value: "local/mistral", label: "Mistral", provider: "Local" },
+  { value: "local/codellama", label: "Code Llama", provider: "Local" },
 ] as const;
 
-const DEFAULT_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
+
+const VALID_MODEL_VALUES: Set<string> = new Set(MODEL_OPTIONS.map((m) => m.value));
+
+function isValidModel(value: unknown): value is string {
+  return typeof value === "string" && VALID_MODEL_VALUES.has(value);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -283,7 +354,7 @@ interface Thread {
 }
 
 type ProcessingState = "idle" | "sending" | "responding";
-type GpuStatus = "stopped" | "running" | "provisioning" | "gpu_starting" | "no_gpu" | "unknown";
+type GpuStatus = "stopped" | "stopping" | "running" | "provisioning" | "gpu_starting" | "no_gpu" | "unknown";
 type VoiceMode = "browser" | "clone";
 type GpuProvider = "vast" | "local" | "custom";
 
@@ -379,6 +450,50 @@ function chunkTextForSpeech(text: string, maxChars = 220): string[] {
   return chunks;
 }
 
+function messageLooksLikeContinuation(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return [
+    "continue",
+    "resume",
+    "pick up",
+    "carry on",
+    "where we left off",
+    "handover",
+    "previous work",
+    "keep working",
+    "last task",
+  ].some((phrase) => normalized.includes(phrase));
+}
+
+function buildContinuationHistory(
+  threads: Thread[],
+  activeThreadId: string,
+  draftMessage: string,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const activeThread = threads.find((thread) => thread.id === activeThreadId);
+  if (!activeThread || activeThread.messages.length > 0) return [];
+  if (!messageLooksLikeContinuation(draftMessage)) return [];
+
+  const previousThread = [...threads]
+    .filter((thread) => thread.id !== activeThreadId && thread.messages.length > 0)
+    .sort((a, b) => {
+      const aTime = new Date(a.updatedAt).getTime();
+      const bTime = new Date(b.updatedAt).getTime();
+      return bTime - aTime;
+    })[0];
+
+  if (!previousThread) return [];
+
+  return previousThread.messages
+    .slice(-MAX_DISPLAY_HISTORY)
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: message.content,
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // LocalStorage thread persistence
 // ---------------------------------------------------------------------------
@@ -419,7 +534,8 @@ function saveActiveThreadId(id: string) {
 
 function loadStoredModel(): string {
   try {
-    return localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL;
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
+    return isValidModel(stored) ? stored : DEFAULT_MODEL;
   } catch {
     return DEFAULT_MODEL;
   }
@@ -852,32 +968,93 @@ function ThreadItem({
 }
 
 // ---------------------------------------------------------------------------
-// GPU Status Indicator
+// GPU Status Indicator (inline, used in settings panel)
 // ---------------------------------------------------------------------------
 
-function GpuStatusBadge({ status }: { status: GpuStatus }) {
+function InlineGpuStatus({
+  status,
+  onStart,
+  onStop,
+  actionInProgress,
+}: {
+  status: GpuStatus;
+  onStart: () => void;
+  onStop: () => void;
+  actionInProgress: string | null;
+}) {
   const colorMap: Record<GpuStatus, string> = {
     running: "bg-emerald-500",
     provisioning: "bg-yellow-500 animate-pulse",
     gpu_starting: "bg-yellow-500 animate-pulse",
     stopped: "bg-zinc-500",
-    no_gpu: "bg-zinc-500",
-    unknown: "bg-zinc-500",
+    stopping: "bg-zinc-500",
+    no_gpu: "bg-slate-500",
+    unknown: "bg-slate-500",
   };
 
   const labelMap: Record<GpuStatus, string> = {
-    running: "Voice GPU active",
-    provisioning: "GPU provisioning...",
-    gpu_starting: "GPU waking up...",
-    stopped: "Voice GPU off",
-    no_gpu: "No GPU configured",
-    unknown: "GPU status unknown",
+    running: "GPU Active",
+    provisioning: "GPU Starting...",
+    gpu_starting: "GPU Waking Up...",
+    stopped: "GPU Stopped",
+    stopping: "GPU Stopping...",
+    no_gpu: "No GPU",
+    unknown: "No GPU",
   };
 
+  const isStarting = status === "provisioning" || status === "gpu_starting";
+  const canStart = status === "no_gpu" || status === "unknown" || status === "stopped";
+  const canStop = status === "running";
+
   return (
-    <div className="flex items-center gap-1.5">
-      <span className={cn("h-2 w-2 rounded-full", colorMap[status])} />
-      <span className="text-[10px] text-muted-foreground">{labelMap[status]}</span>
+    <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/30 px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className={cn("h-2.5 w-2.5 rounded-full shrink-0", colorMap[status])} />
+        <span className="text-xs font-medium">{labelMap[status]}</span>
+        {isStarting && (
+          <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
+        )}
+      </div>
+      <div className="flex items-center gap-1.5">
+        {canStart && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px] gap-1 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300"
+            disabled={actionInProgress !== null}
+            onClick={onStart}
+          >
+            {actionInProgress === "start" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+            Start Voice
+          </Button>
+        )}
+        {canStop && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px] gap-1 border-red-500/40 text-red-400 hover:bg-red-500/20 hover:text-red-300"
+            disabled={actionInProgress !== null}
+            onClick={onStop}
+          >
+            {actionInProgress === "stop" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Square className="h-3 w-3" />
+            )}
+            Stop
+          </Button>
+        )}
+        {canStop && (
+          <Badge variant="outline" className="text-[9px] h-5 border-emerald-500/40 text-emerald-400">
+            <Cpu className="h-2.5 w-2.5 mr-1" />
+            Chatterbox TTS
+          </Badge>
+        )}
+      </div>
     </div>
   );
 }
@@ -899,6 +1076,7 @@ export default function AutobotChatPage() {
 
   // Settings state
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [lastRespondedModel, setLastRespondedModel] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [voiceCloneConfigured, setVoiceCloneConfigured] = useState(false);
@@ -907,6 +1085,13 @@ export default function AutobotChatPage() {
   const [gpuProvider, setGpuProvider] = useState<GpuProvider>("vast");
   const [gpuProviderApiKey, setGpuProviderApiKey] = useState("");
   const [gpuProviderEndpoint, setGpuProviderEndpoint] = useState("");
+  const [settingsSubject, setSettingsSubject] = useState<SettingsSubject | null>(null);
+  const [contextInventory, setContextInventory] = useState<ContextInventory | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [soulDraft, setSoulDraft] = useState("");
+  const [savingSoul, setSavingSoul] = useState(false);
+  const [includedPersonaKgIds, setIncludedPersonaKgIds] = useState<string[]>([]);
+  const [savingIncludedPersonaId, setSavingIncludedPersonaId] = useState<string | null>(null);
   const [digitalTwin, setDigitalTwin] = useState<DigitalTwinProfile>(DEFAULT_DIGITAL_TWIN);
   const [digitalTwinUploadKind, setDigitalTwinUploadKind] = useState<DigitalTwinAssetKind>("host-video");
   const [digitalTwinUploading, setDigitalTwinUploading] = useState(false);
@@ -920,8 +1105,11 @@ export default function AutobotChatPage() {
 
   // GPU/Voice state
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>("unknown");
+  const [gpuActionInProgress, setGpuActionInProgress] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [micPermissionDenied, setMicPermissionDenied] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
 
   // Refs
   const scrollEndRef = useRef<HTMLDivElement>(null);
@@ -929,6 +1117,8 @@ export default function AutobotChatPage() {
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const currentAudioUrlRef = useRef<string | null>(null);
+  const isSpeakingRef = useRef(isSpeaking);
+  const isListeningRef = useRef(isListening);
   const gpuHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -937,6 +1127,10 @@ export default function AutobotChatPage() {
 
   const activeThread = threads.find((t) => t.id === activeThreadId) || null;
   const messages = activeThread?.messages || [];
+
+  // Keep refs in sync with state for use inside recognition callbacks
+  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
   // ---------------------------------------------------------------------------
   // Load persisted state on mount
@@ -1002,8 +1196,11 @@ export default function AutobotChatPage() {
         const data = await res.json();
         const settings = data?.settings;
         if (cancelled || !settings) return;
+        if (data?.subject && typeof data.subject === "object") {
+          setSettingsSubject(data.subject as SettingsSubject);
+        }
 
-        if (typeof settings.selectedModel === "string" && settings.selectedModel) {
+        if (isValidModel(settings.selectedModel)) {
           setSelectedModel(settings.selectedModel);
           saveStoredModel(settings.selectedModel);
         }
@@ -1047,6 +1244,16 @@ export default function AutobotChatPage() {
         if (settings.digitalTwin && typeof settings.digitalTwin === "object") {
           setDigitalTwin(settings.digitalTwin as DigitalTwinProfile);
         }
+        if (typeof settings.customSoulMd === "string") {
+          setSoulDraft(settings.customSoulMd);
+        }
+        if (Array.isArray(settings.includedPersonaKgIds)) {
+          setIncludedPersonaKgIds(
+            settings.includedPersonaKgIds.filter(
+              (value: unknown): value is string => typeof value === "string" && value.trim().length > 0,
+            ),
+          );
+        }
       } catch {
         // Leave local defaults in place if server settings are unavailable.
       } finally {
@@ -1065,6 +1272,28 @@ export default function AutobotChatPage() {
       setShowSettings(true);
     }
   }, [searchParams]);
+
+  const refreshContextInventory = useCallback(async () => {
+    setContextLoading(true);
+    try {
+      const response = await fetch(CONTEXT_API_ENDPOINT, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = (await response.json()) as ContextInventory;
+      setContextInventory(data);
+      setSettingsSubject(data.subject);
+      setSoulDraft(data.soul.hasCustom ? data.soul.content : "");
+      setIncludedPersonaKgIds(data.kg.includedPersonaKgIds);
+    } catch {
+      // Non-critical. Main chat remains usable without the inventory panel.
+    } finally {
+      setContextLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    void refreshContextInventory();
+  }, [refreshContextInventory, showSettings]);
 
   // Persist threads whenever they change
   useEffect(() => {
@@ -1111,6 +1340,7 @@ export default function AutobotChatPage() {
   }, []);
 
   const startGpu = useCallback(async () => {
+    setGpuActionInProgress("start");
     try {
       const res = await fetch(GPU_API_ENDPOINT, {
         method: "POST",
@@ -1119,10 +1349,31 @@ export default function AutobotChatPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setGpuStatus(data.status || "unknown");
+        setGpuStatus(data.status || "provisioning");
       }
     } catch {
       setGpuStatus("unknown");
+    } finally {
+      setGpuActionInProgress(null);
+    }
+  }, []);
+
+  const stopGpu = useCallback(async () => {
+    setGpuActionInProgress("stop");
+    try {
+      const res = await fetch(GPU_API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGpuStatus(data.status || "stopped");
+      }
+    } catch {
+      // Next poll will correct
+    } finally {
+      setGpuActionInProgress(null);
     }
   }, []);
 
@@ -1154,6 +1405,12 @@ export default function AutobotChatPage() {
     }
     return () => stopGpuHeartbeat();
   }, [ttsEnabled, startGpu, startGpuHeartbeat]);
+
+  // Poll GPU status every 15s so the inline indicator stays current
+  useEffect(() => {
+    const interval = setInterval(fetchGpuStatus, 15_000);
+    return () => clearInterval(interval);
+  }, [fetchGpuStatus]);
 
   // ---------------------------------------------------------------------------
   // TTS (Chatterbox with browser fallback)
@@ -1221,8 +1478,8 @@ export default function AutobotChatPage() {
             v.name.toLowerCase().includes("male")),
       ) || voices.find((v) => v.lang.startsWith("en-US"));
     if (preferred) utterance.voice = preferred;
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.onend = () => { setIsSpeaking(false); setVoiceStatus(null); };
+    utterance.onerror = () => { setIsSpeaking(false); setVoiceStatus(null); };
     synth.speak(utterance);
   }, []);
 
@@ -1233,26 +1490,39 @@ export default function AutobotChatPage() {
 
       try {
         if (voiceMode === "browser") {
+          setVoiceStatus("Speaking (browser voice)");
           speakBrowserFallback(text);
           return;
         }
 
+        setVoiceStatus("Personal voice initiating…");
         const chunks = chunkTextForSpeech(stripMarkdownForSpeech(text));
         let remoteSucceeded = false;
+        let failureReason = "";
 
-        for (const chunk of chunks) {
+        for (let i = 0; i < chunks.length; i++) {
+          if (i === 0) {
+            setVoiceStatus("Personal voice initiating…");
+          } else {
+            setVoiceStatus("Speaking (personal voice)");
+          }
+
           const res = await fetch(TTS_API_ENDPOINT, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: chunk }),
+            body: JSON.stringify({ text: chunks[i] }),
           });
 
-          if (!res.ok) break;
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            failureReason = errData.error || `TTS returned ${res.status}`;
+            break;
+          }
 
           const contentType = res.headers.get("content-type") || "";
           if (!contentType.startsWith("audio/")) {
             const data = await res.json();
-            if (data.fallback) break;
+            failureReason = data.error || "GPU not ready — no audio returned";
             break;
           }
 
@@ -1262,11 +1532,15 @@ export default function AutobotChatPage() {
         }
 
         if (!remoteSucceeded) {
+          setVoiceStatus(`Personal voice unavailable: ${failureReason || "connection failed"}. Using browser voice.`);
           speakBrowserFallback(text);
         } else {
           setIsSpeaking(false);
+          setVoiceStatus(null);
         }
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "connection failed";
+        setVoiceStatus(`Personal voice error: ${msg}. Using browser voice.`);
         speakBrowserFallback(text);
       }
     },
@@ -1304,28 +1578,50 @@ export default function AutobotChatPage() {
     }
 
     const recognition = new SpeechRecognitionCtor();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
 
-    recognition.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => {
-      const transcript = event.results[0]?.[0]?.transcript;
-      if (transcript?.trim()) {
-        setIsListening(false);
-        // We call sendMessage indirectly by setting inputValue and triggering send
-        setInputValue(transcript.trim());
-        // Auto-send after a brief frame
-        requestAnimationFrame(() => {
-          document
-            .getElementById("autobot-send-btn")
-            ?.click();
-        });
+    recognition.onresult = (event: { results: SpeechRecognitionResultList; resultIndex: number }) => {
+      // Process only final results for sending
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result?.isFinal) {
+          const transcript = result[0]?.transcript;
+          if (transcript?.trim()) {
+            // If the bot is speaking, interrupt it first
+            if (isSpeakingRef.current) {
+              window.speechSynthesis?.cancel();
+              cleanupCurrentAudio();
+              setIsSpeaking(false);
+            }
+            // Set input and auto-send via the send button
+            setInputValue(transcript.trim());
+            requestAnimationFrame(() => {
+              document.getElementById("autobot-send-btn")?.click();
+            });
+          }
+        }
       }
     };
 
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => {
+      setIsListening(false);
+    };
+    // In continuous mode, restart if it ends unexpectedly while still "listening"
+    recognition.onend = () => {
+      // Only restart if we haven't explicitly stopped
+      if (isListeningRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          setIsListening(false);
+        }
+      } else {
+        setIsListening(false);
+      }
+    };
 
     try {
       recognition.start();
@@ -1333,7 +1629,7 @@ export default function AutobotChatPage() {
     } catch {
       setIsListening(false);
     }
-  }, []);
+  }, [cleanupCurrentAudio]);
 
   const toggleListening = useCallback(() => {
     if (isSpeaking) {
@@ -1424,13 +1720,20 @@ export default function AutobotChatPage() {
           .slice(-MAX_DISPLAY_HISTORY)
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+        const continuationHistory = buildContinuationHistory(
+          threads,
+          activeThreadId,
+          trimmed,
+        );
+        const requestHistory =
+          continuationHistory.length > 0 ? continuationHistory : history;
 
         const response = await fetch(CHAT_API_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: trimmed,
-            history,
+            history: requestHistory,
             model: selectedModel,
             threadId: activeThreadId,
           }),
@@ -1445,13 +1748,16 @@ export default function AutobotChatPage() {
 
         const data = (await response.json()) as ChatResponse;
         const reply = data.reply || "...";
+        const respondedModel = data.model || selectedModel;
+
+        setLastRespondedModel(respondedModel);
 
         const assistantMessage: ChatMessage = {
           id: `msg_${generateId()}`,
           role: "assistant",
           content: reply,
           timestamp: new Date().toISOString(),
-          model: data.model || selectedModel,
+          model: respondedModel,
         };
 
         setThreads((prev) =>
@@ -1507,35 +1813,17 @@ export default function AutobotChatPage() {
     [inputValue, sendMessage],
   );
 
-  // Voice transcription callback (from VoiceRecorder component)
-  const handleTranscription = useCallback(
-    (text: string) => {
-      sendMessage(text);
-    },
-    [sendMessage],
-  );
-
-  const handleTranscriptionError = useCallback(
-    (error: string) => {
-      if (!activeThreadId) return;
-      const errorMsg: ChatMessage = {
-        id: `msg_${generateId()}`,
-        role: "assistant",
-        content: `Voice transcription error: ${error}`,
-        timestamp: new Date().toISOString(),
-      };
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.id !== activeThreadId) return t;
-          return {
-            ...t,
-            messages: [...t.messages, errorMsg],
-          };
-        }),
-      );
-    },
-    [activeThreadId],
-  );
+  const handleRetryMicPermission = useCallback(async () => {
+    setMicPermissionDenied(false);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      // Permission granted — try listening again
+      startListening();
+    } catch {
+      setMicPermissionDenied(true);
+    }
+  }, [startListening]);
 
   // ---------------------------------------------------------------------------
   // Settings handlers
@@ -1543,6 +1831,7 @@ export default function AutobotChatPage() {
 
   const handleModelChange = useCallback((value: string) => {
     setSelectedModel(value);
+    setLastRespondedModel(null);
     saveStoredModel(value);
     fetch(SETTINGS_API_ENDPOINT, {
       method: "POST",
@@ -1592,6 +1881,42 @@ export default function AutobotChatPage() {
       body: JSON.stringify({ gpuProvider: value }),
     }).catch(() => {});
   }, []);
+
+  const handleSoulSave = useCallback(async () => {
+    setSavingSoul(true);
+    try {
+      await fetch(SETTINGS_API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customSoulMd: soulDraft }),
+      });
+      await refreshContextInventory();
+    } finally {
+      setSavingSoul(false);
+    }
+  }, [refreshContextInventory, soulDraft]);
+
+  const handleIncludedPersonaToggle = useCallback(
+    async (personaId: string, checked: boolean) => {
+      const nextIds = checked
+        ? Array.from(new Set([...includedPersonaKgIds, personaId]))
+        : includedPersonaKgIds.filter((id) => id !== personaId);
+
+      setIncludedPersonaKgIds(nextIds);
+      setSavingIncludedPersonaId(personaId);
+      try {
+        await fetch(SETTINGS_API_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ includedPersonaKgIds: nextIds }),
+        });
+        await refreshContextInventory();
+      } finally {
+        setSavingIncludedPersonaId(null);
+      }
+    },
+    [includedPersonaKgIds, refreshContextInventory],
+  );
 
   const handleDigitalTwinPatch = useCallback((patch: Partial<DigitalTwinProfile>) => {
     setDigitalTwin((prev) => ({ ...prev, ...patch }));
@@ -1750,7 +2075,7 @@ export default function AutobotChatPage() {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] max-w-3xl mx-auto">
+    <div className="fixed inset-x-0 top-16 bottom-16 flex flex-col max-w-3xl mx-auto overflow-hidden z-50">
       {/* Header */}
       <div className="shrink-0 px-4 py-3 border-b flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -1765,12 +2090,12 @@ export default function AutobotChatPage() {
             </div>
             <div>
               <h1 className="text-sm font-semibold leading-none">
-                Autobot Chat
+                Legacy Voice Workspace
               </h1>
               <p className="text-[10px] text-muted-foreground mt-0.5">
                 {processingState !== "idle"
                   ? "Processing..."
-                  : `OpenClaw - ${MODEL_OPTIONS.find((m) => m.value === selectedModel)?.label || selectedModel}`}
+                  : `Legacy chat runtime · ${MODEL_OPTIONS.find((m) => m.value === (lastRespondedModel || selectedModel))?.label || lastRespondedModel || selectedModel}`}
               </p>
             </div>
           </div>
@@ -1909,9 +2234,125 @@ export default function AutobotChatPage() {
           </div>
 
           <p className="text-[10px] text-muted-foreground">
-            This chat uses the colocated OpenClaw runtime on Camalot. Each saved Rivr thread is
-            bound to a stable OpenClaw session key so follow-up messages keep their full context.
+            This page is now the legacy voice and settings workspace. Use the bottom-right executive bubble for the primary Claude Code session; use this page when you need older chat threads, voice cloning controls, or runtime inspection.
           </p>
+
+          {settingsSubject ? (
+            <div className="rounded-md border border-border/60 bg-background/70 px-3 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <Badge variant={settingsSubject.scopeType === "persona" ? "default" : "secondary"}>
+                  {settingsSubject.scopeType === "persona" ? "Persona" : "Main profile"}
+                </Badge>
+                <span className="font-medium">{settingsSubject.scopeLabel}</span>
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                The model, soul prompt, KG toggles, connections, and runtime settings below belong to this {settingsSubject.scopeType}.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="space-y-2 rounded-md border border-border/60 bg-background/70 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <Label className="text-xs">Agent context</Label>
+                <p className="text-[10px] text-muted-foreground">
+                  Inspect the soul prompt, KG inputs, connected systems, and tool surface the legacy runtime sees.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={contextLoading}
+                onClick={() => void refreshContextInventory()}
+              >
+                {contextLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Refresh"}
+              </Button>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Soul override</Label>
+              <textarea
+                value={soulDraft}
+                onChange={(event) => setSoulDraft(event.target.value)}
+                placeholder="Write a custom soul.md override for this agent. Leave blank to use the instance default."
+                className="min-h-[132px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-muted-foreground">
+                  {contextInventory
+                    ? `Effective soul source: ${contextInventory.soul.source}.`
+                    : "Leave blank to inherit the instance-level soul.md."}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-[10px]"
+                  disabled={savingSoul}
+                  onClick={() => void handleSoulSave()}
+                >
+                  {savingSoul ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save soul"}
+                </Button>
+              </div>
+            </div>
+
+            {settingsSubject?.scopeType !== "persona" && contextInventory?.kg.personas.length ? (
+              <div className="space-y-2">
+                <Label className="text-xs">Include persona KGs in this chat</Label>
+                <div className="space-y-2">
+                  {contextInventory.kg.personas.map((persona) => {
+                    const checked = includedPersonaKgIds.includes(persona.id);
+                    return (
+                      <label
+                        key={persona.id}
+                        className="flex items-start gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={savingIncludedPersonaId === persona.id}
+                          onCheckedChange={(value) =>
+                            void handleIncludedPersonaToggle(persona.id, value === true)
+                          }
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium">{persona.name}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {persona.stats.docCount} docs, {persona.stats.entityCount} entities, {persona.stats.tripleCount} triples
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {contextInventory ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[10px]">
+                  <div className="font-medium text-xs">Current KG scope</div>
+                  <div className="mt-1 text-muted-foreground">
+                    Main person KG: {contextInventory.kg.person.docCount} docs, {contextInventory.kg.person.entityCount} entities, {contextInventory.kg.person.tripleCount} triples
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[10px]">
+                  <div className="font-medium text-xs">Connected systems</div>
+                  <div className="mt-1 text-muted-foreground">
+                    {contextInventory.connections.length > 0
+                      ? contextInventory.connections.map((connection) => `${connection.provider}:${connection.status}`).join(", ")
+                      : "No connectors configured."}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[10px] sm:col-span-2">
+                  <div className="font-medium text-xs">Legacy tool surface</div>
+                  <div className="mt-1 text-muted-foreground">
+                    {contextInventory.tools.map((tool) => tool.name).join(", ")}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
 
           <Separator />
 
@@ -1950,7 +2391,13 @@ export default function AutobotChatPage() {
             </p>
           )}
 
-          {voiceMode === "clone" && <GpuStatusBadge status={gpuStatus} />}
+          {/* GPU status — always visible so user sees current state */}
+          <InlineGpuStatus
+            status={gpuStatus}
+            onStart={startGpu}
+            onStop={stopGpu}
+            actionInProgress={gpuActionInProgress}
+          />
 
           <Separator />
 
@@ -2200,37 +2647,12 @@ export default function AutobotChatPage() {
               </Button>
             </div>
 
-            <div className="grid gap-2">
-              {digitalTwin.jobs.slice(0, 4).map((job) => (
-                <Card key={job.id} className="bg-muted/30">
-                  <CardContent className="px-3 py-2 text-[10px]">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">{job.mode}</span>
-                      <Badge variant="outline" className="text-[9px] py-0 h-4">
-                        {job.status}
-                      </Badge>
-                    </div>
-                    <div className="text-muted-foreground line-clamp-2">{job.sourceText}</div>
-                    <div className="mt-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-[10px]"
-                        disabled={digitalTwinRunningJobId === job.id}
-                        onClick={() => void handleRunDigitalTwinJob(job.id, job.sourceText, job.mode)}
-                      >
-                        {digitalTwinRunningJobId === job.id ? "Running..." : "Run on worker"}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-              {digitalTwin.jobs.length === 0 && (
-                <p className="text-[10px] text-muted-foreground">
-                  No digital twin jobs queued yet.
-                </p>
-              )}
-            </div>
+            <DigitalTwinPreview
+              jobs={digitalTwin.jobs}
+              onJobsChange={(updatedJobs) =>
+                setDigitalTwin((prev) => ({ ...prev, jobs: updatedJobs }))
+              }
+            />
           </div>
         </div>
       )}
@@ -2265,9 +2687,7 @@ export default function AutobotChatPage() {
                 Start a conversation
               </h2>
               <p className="text-xs text-muted-foreground max-w-sm">
-                Autobot is powered by OpenClaw. Ask it anything, or use it to
-                create posts, manage your profile, and interact with the Rivr
-                platform through natural conversation.
+                This is the older chat workspace. For the main persistent executive, use the bottom-right launcher. Keep this page for legacy threads, voice cloning, and runtime inspection while the executive surface takes over primary interaction.
               </p>
             </div>
           )}
@@ -2301,14 +2721,84 @@ export default function AutobotChatPage() {
         </div>
       )}
 
+      {/* Voice status indicator */}
+      {voiceStatus && (
+        <div className="shrink-0 mx-4 mb-2 flex items-center gap-2 rounded-lg border border-border/50 bg-muted/50 px-3 py-2">
+          {isSpeaking && voiceStatus.startsWith("Personal voice") && !voiceStatus.includes("unavailable") && !voiceStatus.includes("error") ? (
+            <Volume2 className="h-4 w-4 shrink-0 text-emerald-400 animate-pulse" />
+          ) : voiceStatus.includes("unavailable") || voiceStatus.includes("error") ? (
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />
+          ) : (
+            <Loader2 className="h-4 w-4 shrink-0 text-muted-foreground animate-spin" />
+          )}
+          <span className="text-xs text-muted-foreground">{voiceStatus}</span>
+          {(voiceStatus.includes("unavailable") || voiceStatus.includes("error")) && (
+            <button
+              type="button"
+              className="ml-auto shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => setVoiceStatus(null)}
+              aria-label="Dismiss"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Microphone permission banner */}
+      {micPermissionDenied && (
+        <div className="shrink-0 mx-4 mb-2 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <MicOff className="h-5 w-5 shrink-0 text-amber-500" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium text-amber-200">Microphone access denied</p>
+            <p className="text-muted-foreground text-xs mt-0.5">
+              Allow microphone access in your browser to use voice input.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0 border-amber-500/40 text-amber-200 hover:bg-amber-500/20"
+            onClick={handleRetryMicPermission}
+          >
+            <Mic className="h-3.5 w-3.5 mr-1.5" />
+            Grant Access
+          </Button>
+          <button
+            type="button"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={() => setMicPermissionDenied(false)}
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Input area */}
-      <div className="shrink-0 border-t bg-background px-4 py-3 mb-14">
+      <div className="shrink-0 border-t bg-background px-4 py-3">
         <div className="flex items-end gap-2">
-          <VoiceRecorder
-            onTranscription={handleTranscription}
-            onError={handleTranscriptionError}
+          <Button
+            type="button"
+            variant={isListening ? "destructive" : "outline"}
+            size="icon"
+            onClick={toggleListening}
             disabled={isInputDisabled}
-          />
+            className="relative shrink-0"
+            aria-label={isListening ? "Stop listening" : "Start listening"}
+          >
+            {isListening ? (
+              <>
+                <Square className="h-3.5 w-3.5" />
+                <span className="absolute -top-1 -right-1 h-3 w-3">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
+                </span>
+              </>
+            ) : (
+              <Mic className="h-4 w-4" />
+            )}
+          </Button>
 
           <div className="flex-1 relative">
             <textarea
@@ -2320,7 +2810,7 @@ export default function AutobotChatPage() {
                 }
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Message Autobot..."
+              placeholder="Message legacy workspace..."
               disabled={isInputDisabled}
               rows={1}
               className={cn(

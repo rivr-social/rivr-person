@@ -414,8 +414,8 @@ const MainMap: React.FC<MainMapProps> = ({
     });
     (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
 
-    if (viewer.scene.skyBox) viewer.scene.skyBox.show = false;
-    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
+    if (viewer.scene.skyBox) (viewer.scene.skyBox as unknown as { show: boolean }).show = false;
+    if (viewer.scene.skyAtmosphere) (viewer.scene.skyAtmosphere as unknown as { show: boolean }).show = false;
     viewer.scene.fog.enabled = false;
     if (viewer.scene.sun) viewer.scene.sun.show = false;
     if (viewer.scene.moon) viewer.scene.moon.show = false;

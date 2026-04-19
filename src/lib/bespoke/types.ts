@@ -80,6 +80,7 @@ export interface MyProfileModuleBundle {
   success: boolean;
   actorId: string;
   profile: unknown;
+  documents?: unknown;
   savedListingIds: string[];
   wallet: unknown;
   wallets: unknown;
@@ -104,6 +105,40 @@ export interface MyProfileModuleBundle {
     homeInstance: unknown;
     isHomeInstance: boolean;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Builder data-source binding types
+// ---------------------------------------------------------------------------
+
+/** Known public data-source kinds the builder can bind to. */
+export type DataSourceKind =
+  | "myprofile"
+  | "public-profile"
+  | "solid-pod"
+  | "universal-manifest";
+
+/** Per-source configuration stored alongside the binding. */
+export interface DataSourceConfig {
+  /** For public-profile: the target username */
+  username?: string;
+  /** For solid-pod: the WebID / profile URI */
+  webId?: string;
+  /** For universal-manifest: the kind + id path */
+  umKind?: string;
+  umId?: string;
+}
+
+/** A persisted data-source binding row (mirrors the DB shape). */
+export interface BuilderDataSource {
+  id: string;
+  agentId: string;
+  kind: DataSourceKind;
+  label: string;
+  enabled: boolean;
+  config: DataSourceConfig;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PublicProfileModuleBundle {

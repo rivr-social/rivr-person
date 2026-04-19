@@ -1,20 +1,41 @@
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
 const WHISPER_TRANSCRIBE_URL = process.env.WHISPER_TRANSCRIBE_URL?.trim();
 const WHISPER_TRANSCRIBE_API_KEY = process.env.WHISPER_TRANSCRIBE_API_KEY?.trim();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim();
 const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || "gpt-4o-mini-transcribe";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type TranscriptionWord = {
+  word: string;
+  start: number;
+  end: number;
+  score: number;
+  speaker: string | null;
+};
 
 export type TranscriptionSegment = {
   start: number;
   end: number;
   text: string;
   speaker: string | null;
+  words?: TranscriptionWord[];
 };
 
-type TranscriptionResult = {
+export type TranscriptionResult = {
   text: string;
   provider: "whisper" | "openai";
   segments?: TranscriptionSegment[];
+  language?: string;
 };
+
+/** Status of a live event transcription session. */
+export type TranscriptionStatus = "idle" | "recording" | "processing" | "complete" | "error";
 
 export function isTranscriptionConfigured(): boolean {
   return Boolean(WHISPER_TRANSCRIBE_URL || OPENAI_API_KEY);
@@ -44,15 +65,37 @@ function extractSegments(payload: unknown): TranscriptionSegment[] | undefined {
   for (const seg of record.segments) {
     if (seg && typeof seg === "object") {
       const s = seg as Record<string, unknown>;
+      const words: TranscriptionWord[] = [];
+      if (Array.isArray(s.words)) {
+        for (const w of s.words) {
+          if (w && typeof w === "object") {
+            const wd = w as Record<string, unknown>;
+            words.push({
+              word: typeof wd.word === "string" ? wd.word : "",
+              start: typeof wd.start === "number" ? wd.start : 0,
+              end: typeof wd.end === "number" ? wd.end : 0,
+              score: typeof wd.score === "number" ? wd.score : 0,
+              speaker: typeof wd.speaker === "string" ? wd.speaker : null,
+            });
+          }
+        }
+      }
       segments.push({
         start: typeof s.start === "number" ? s.start : 0,
         end: typeof s.end === "number" ? s.end : 0,
         text: typeof s.text === "string" ? s.text.trim() : "",
         speaker: typeof s.speaker === "string" ? s.speaker : null,
+        words: words.length > 0 ? words : undefined,
       });
     }
   }
   return segments.length > 0 ? segments : undefined;
+}
+
+function extractLanguage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as Record<string, unknown>;
+  return typeof record.language === "string" ? record.language : undefined;
 }
 
 export async function transcribeAudioFile(file: File): Promise<TranscriptionResult> {
@@ -84,7 +127,8 @@ export async function transcribeAudioFile(file: File): Promise<TranscriptionResu
       throw new Error("Whisper transcription returned no text.");
     }
     const segments = extractSegments(payload);
-    return { text, provider: "whisper", segments };
+    const language = extractLanguage(payload);
+    return { text, provider: "whisper", segments, language };
   }
 
   const formData = new FormData();

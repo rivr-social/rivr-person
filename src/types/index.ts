@@ -91,9 +91,83 @@ export type Event = {
   isAttending?: boolean
   image?: string
   price?: string
+  status?: string
+  projectId?: string
+  sessions?: EventSession[]
+  hosts?: EventHost[]
+  expenses?: EventExpense[]
+  payouts?: EventPayout[]
+  workItems?: EventWorkItem[]
+  financialSummary?: EventFinancialSummary
   tags?: string[]
   groupTags?: string[]
 
+}
+
+export type EventHost = {
+  agentId: string
+  displayName?: string
+  role?: string
+  isLead?: boolean
+  payoutShareBps?: number
+  payoutFixedCents?: number
+  payoutEligible?: boolean
+}
+
+export type EventSession = {
+  id: string
+  title: string
+  description?: string
+  start: string
+  end: string
+  location?: {
+    name?: string
+    address?: string
+  }
+  venueId?: string
+  capacity?: number
+  status?: string
+  hostAgentIds?: string[]
+  jobIds?: string[]
+  taskIds?: string[]
+}
+
+export type EventPayout = {
+  id: string
+  recipientAgentId: string
+  label?: string
+  role?: string
+  shareBps?: number
+  fixedCents?: number
+  currency?: string
+  status?: string
+}
+
+export type EventExpense = {
+  id: string
+  recipient: string
+  description: string
+  amountCents: number
+  status?: string
+}
+
+export type EventWorkItem = {
+  resourceId: string
+  kind: "project" | "job" | "task"
+  title?: string
+  projectId?: string
+  eventId?: string
+  sessionId?: string
+  status?: string
+}
+
+export type EventFinancialSummary = {
+  revenueCents?: number
+  expensesCents?: number
+  payoutsCents?: number
+  profitCents?: number
+  remainingCents?: number
+  currency?: string
 }
 
 export enum VenueType {
