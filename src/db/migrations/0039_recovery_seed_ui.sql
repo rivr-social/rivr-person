@@ -16,6 +16,17 @@
 --   - src/db/migrations/0037_federation_auth_foundations.sql (adds the active
 --     recovery_public_key / fingerprint columns to agents).
 
+-- ── email_verification_tokens.metadata ──────────────────────────
+-- The recovery-seed MFA service reuses email_verification_tokens with new
+-- token_type values ("recovery_seed_mfa_challenge", "recovery_seed_reveal_token").
+-- Metadata carries per-challenge context (challengeId, method, attempts
+-- remaining) so the verify path does not need a second table.
+ALTER TABLE email_verification_tokens
+  ADD COLUMN IF NOT EXISTS metadata jsonb;
+
+COMMENT ON COLUMN email_verification_tokens.metadata IS
+  'Optional JSON metadata per token row. Used by recovery-seed MFA flows to track challengeId, delivery method, and remaining verification attempts.';
+
 -- ── recovery_seed_method enum ───────────────────────────────────
 DO $$ BEGIN
   CREATE TYPE recovery_seed_method AS ENUM ('email', 'sms');

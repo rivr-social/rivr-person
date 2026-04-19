@@ -1039,6 +1039,13 @@ export const emailVerificationTokens = pgTable(
     tokenType: text('token_type').notNull(), // 'email_verification' | 'password_reset'
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     usedAt: timestamp('used_at', { withTimezone: true }),
+    /**
+     * Optional per-row metadata. Recovery-seed MFA flows (migration
+     * 0039_recovery_seed_ui) stash `{ challengeId, method,
+     * attemptsRemaining }` here so reveal / rotate can walk the same
+     * token table without a dedicated challenges table.
+     */
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
