@@ -33,6 +33,8 @@ export const STATUS_FORBIDDEN = 403;
 export const STATUS_NOT_FOUND = 404;
 /** Resource previously existed but has been permanently removed. */
 export const STATUS_GONE = 410;
+/** Request conflicts with current server state (e.g. stale version, duplicate nonce). */
+export const STATUS_CONFLICT = 409;
 /** Request body exceeds configured upload or payload limits. */
 export const STATUS_PAYLOAD_TOO_LARGE = 413;
 /** Request content type is not accepted by the endpoint. */

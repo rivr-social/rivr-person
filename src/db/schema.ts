@@ -1730,3 +1730,93 @@ export const builderDataSources = pgTable(
 
 export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
 export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Federation-auth: accept-side credential temp-write (#16)
+// ---------------------------------------------------------------------------
+
+/**
+ * Replay-protection ledger for incoming `credential.tempwrite.from-global`
+ * events.  A nonce may appear at most once; the primary-key constraint is
+ * the enforcement mechanism.
+ *
+ * Written by `src/lib/federation/accept-tempwrite.ts` inside the same
+ * transaction that applies the credential update so a successful apply
+ * and its nonce insert commit atomically.
+ *
+ * Rows are retained indefinitely: nonces are low-cardinality UUIDs and
+ * bounded by rotation frequency, and indefinite retention is what makes
+ * replay protection sound. Created by migration 0038.
+ */
+export const credentialTempwriteNonces = pgTable(
+  'credential_tempwrite_nonces',
+  {
+    nonce: text('nonce').primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    credentialVersion: integer('credential_version').notNull(),
+    seenAt: timestamp('seen_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('credential_tempwrite_nonces_agent_id_idx').on(table.agentId),
+    index('credential_tempwrite_nonces_seen_at_idx').on(table.seenAt),
+  ]
+);
+
+export type CredentialTempwriteNonceRecord =
+  typeof credentialTempwriteNonces.$inferSelect;
+export type NewCredentialTempwriteNonceRecord =
+  typeof credentialTempwriteNonces.$inferInsert;
+
+/**
+ * Append-only audit trail of credential-authority transitions.
+ *
+ * Every attempt to accept a global-signed credential temp-write produces
+ * exactly one row — success or failure. Surfaces in the user activity
+ * feed so owners can see when (and from where) credential material was
+ * written by another authority.
+ *
+ * Future credential-authority events (e.g. `authority.revoke`,
+ * `successor.authority.claim`) may reuse this table by setting
+ * `eventKind` accordingly; the schema is intentionally generic.
+ *
+ * Created by migration 0038.
+ */
+export const credentialAuthorityAudit = pgTable(
+  'credential_authority_audit',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /** Discriminator — e.g. `tempwrite.accepted` or `tempwrite.rejected`. */
+    eventKind: text('event_kind').notNull(),
+    /** Issuer identifier — `global` for this ticket; peer slug in future. */
+    source: text('source').notNull().default('global'),
+    /** Short machine-readable outcome code: `accepted` or a rejection reason. */
+    outcome: text('outcome').notNull(),
+    /** Credential version from the event; null if rejected before parse. */
+    credentialVersion: integer('credential_version'),
+    /** Nonce from the event; null if rejected before parse. */
+    nonce: text('nonce'),
+    /** Best-effort client IP from forwarded headers. */
+    ipAddress: text('ip_address'),
+    /** Structured context: signingNodeSlug, rejectedField, previousVersion, etc. */
+    detail: jsonb('detail').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('credential_authority_audit_agent_id_idx').on(table.agentId),
+    index('credential_authority_audit_agent_created_idx').on(
+      table.agentId,
+      table.createdAt
+    ),
+    index('credential_authority_audit_event_kind_idx').on(table.eventKind),
+  ]
+);
+
+export type CredentialAuthorityAuditRecord =
+  typeof credentialAuthorityAudit.$inferSelect;
+export type NewCredentialAuthorityAuditRecord =
+  typeof credentialAuthorityAudit.$inferInsert;
