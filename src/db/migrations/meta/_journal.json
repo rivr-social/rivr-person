@@ -176,6 +176,13 @@
       "when": 1776772800000,
       "tag": "0039_recovery_seed_ui",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1776859200000,
+      "tag": "0040_credential_tempwrite_accept",
+      "breakpoints": true
     }
   ]
 }
