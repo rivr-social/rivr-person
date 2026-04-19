@@ -4,9 +4,10 @@
  * @file Password reset server action module.
  * @description Exports actions to request password reset emails and complete password resets
  * via one-time tokens. Includes anti-enumeration responses, rate limiting, token rotation,
- * and email/audit logging.
+ * email/audit logging, and home → global credential sync (#15).
  * @dependencies `@/db`, `@/db/schema`, `@/lib/rate-limit`, `@/lib/email`,
- * `@/lib/email-templates`, `@node-rs/bcrypt`, `crypto`, `next/headers`, `drizzle-orm`
+ * `@/lib/email-templates`, `@/lib/federation`, `@/lib/federation/credential-sync`,
+ * `@node-rs/bcrypt`, `crypto`, `next/headers`, `drizzle-orm`
  */
 
 import { db } from "@/db";
@@ -20,6 +21,12 @@ import { sendEmail } from "@/lib/email";
 import { passwordResetEmail } from "@/lib/email-templates";
 import { getClientIp } from "@/lib/client-ip";
 import { hashToken } from "@/lib/token-hash";
+import {
+  buildCredentialUpdatedEvent,
+  signCredentialUpdatedEvent,
+  syncCredentialToGlobal,
+} from "@/lib/federation/credential-sync";
+import { ensureLocalNode } from "@/lib/federation";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -217,7 +224,10 @@ export async function resetPasswordAction(
   // Persist only hashed password material; plaintext is never stored.
   const passwordHash = await hash(newPassword, BCRYPT_SALT_ROUNDS);
   const [agent] = await db
-    .select({ metadata: agents.metadata })
+    .select({
+      metadata: agents.metadata,
+      credentialVersion: agents.credentialVersion,
+    })
     .from(agents)
     .where(eq(agents.id, record.agentId))
     .limit(1);
@@ -226,17 +236,78 @@ export async function resetPasswordAction(
       ? (agent.metadata as Record<string, unknown>)
       : {};
 
+  // Bump the monotonic credential version so global can detect whether
+  // its own verifier is ahead of or behind this home instance (#11).
+  const previousVersion = agent?.credentialVersion ?? 1;
+  const nextCredentialVersion = previousVersion + 1;
+  const passwordChangedAt = new Date();
+
   await db
     .update(agents)
     .set({
       passwordHash,
+      credentialVersion: nextCredentialVersion,
       metadata: {
         ...metadata,
-        passwordChangedAt: new Date().toISOString(),
+        passwordChangedAt: passwordChangedAt.toISOString(),
       },
-      updatedAt: new Date(),
+      updatedAt: passwordChangedAt,
     })
     .where(eq(agents.id, record.agentId));
 
+  // Best-effort credential sync to global (#15). Home stays authoritative
+  // for canonical state; global is just a shared credential verifier. If
+  // global is unreachable, the signed event is queued and drained later
+  // by `drainCredentialSyncQueue()` — the user's reset still succeeds.
+  await syncResetToGlobal(
+    record.agentId,
+    nextCredentialVersion,
+    passwordChangedAt
+  );
+
   return { success: true };
+}
+
+/**
+ * Push a signed `credential.updated` event to global, swallowing any
+ * error so the user's password reset completes even when federation is
+ * misconfigured, global is down, or the receiver endpoint has not yet
+ * shipped on global (rivr-app #7 / #88).
+ *
+ * Logs outcome for operator visibility; `syncCredentialToGlobal` itself
+ * handles queueing + retry bookkeeping.
+ */
+async function syncResetToGlobal(
+  agentId: string,
+  credentialVersion: number,
+  updatedAt: Date
+): Promise<void> {
+  try {
+    const localNode = await ensureLocalNode();
+    const event = buildCredentialUpdatedEvent({
+      agentId,
+      credentialVersion,
+      signingNodeSlug: localNode.slug,
+      updatedAt,
+    });
+    const signedEvent = await signCredentialUpdatedEvent(event);
+    const outcome = await syncCredentialToGlobal(
+      agentId,
+      credentialVersion,
+      signedEvent
+    );
+    if (!outcome.synced) {
+      console.warn(
+        `[password-reset] credential.updated queued for retry for agent ${agentId}: ${outcome.reason}`
+      );
+    }
+  } catch (err) {
+    // Unrecoverable-looking errors (e.g. missing signing key) still must
+    // not break the reset. Log loudly so operators can investigate, but
+    // do not rethrow.
+    const reason = err instanceof Error ? err.message : "unknown sync error";
+    console.error(
+      `[password-reset] credential.updated sync failed for agent ${agentId}: ${reason}`
+    );
+  }
 }
