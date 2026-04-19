@@ -34,6 +34,8 @@ import {
 export const FEDERATION_AUDIT_EVENT_TYPES = [
   "import",
   "export",
+  "export_skipped",
+  "node_key_backfill",
   "peer_connect",
   "peer_rotate",
   "peer_revoke",
