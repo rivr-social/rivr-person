@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { verifyPackedPayload } from "@/lib/federation-remote-session";
 import { isPersonaOf } from "@/lib/persona";
 import { runWithMcpExecutionContext, type PersonaContext } from "@/lib/federation/execution-context";
 import {
@@ -26,6 +27,18 @@ type JsonRpcRequest = {
 };
 
 type McpAuthContext = McpToolCallContext;
+
+type ScopedMcpTokenPayload = {
+  type: "rivr_mcp_token";
+  actorId: string;
+  controllerId: string;
+  actorType: "human" | "persona";
+  issuer: string;
+  audience: string;
+  issuedAt: string;
+  expiresAt: string;
+  scopes: string[];
+};
 
 function errorResponse(id: JsonRpcId, code: number, message: string, data?: unknown) {
   return {
@@ -57,6 +70,24 @@ function getBearerToken(request: Request): string | null {
 function getQueryToken(request: Request): string | null {
   const token = new URL(request.url).searchParams.get("token")?.trim();
   return token ? token : null;
+}
+
+function validateScopedMcpToken(token: string): ScopedMcpTokenPayload | null {
+  const payload = verifyPackedPayload<ScopedMcpTokenPayload>(token);
+  if (!payload || payload.type !== "rivr_mcp_token") return null;
+
+  const now = Date.now();
+  const issuedAt = Date.parse(payload.issuedAt);
+  const expiresAt = Date.parse(payload.expiresAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)) return null;
+  if (issuedAt > now + 60_000 || expiresAt <= now) return null;
+
+  const config = getInstanceConfig();
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  if (payload.issuer !== baseUrl || payload.audience !== baseUrl) return null;
+  if (!payload.scopes.includes("mcp:tools")) return null;
+
+  return payload;
 }
 
 /**
@@ -130,6 +161,33 @@ async function authorizeMcpRequest(
 
   const configuredToken = process.env.AIAGENT_MCP_TOKEN?.trim() || "";
   const providedToken = getBearerToken(request) ?? getQueryToken(request);
+
+  if (providedToken) {
+    const scopedToken = validateScopedMcpToken(providedToken);
+    if (scopedToken) {
+      if (!requestedActorId || requestedActorId === scopedToken.actorId) {
+        return {
+          actorId: scopedToken.actorId,
+          controllerId: scopedToken.controllerId,
+          actorType: scopedToken.actorType,
+          authMode: "token",
+        };
+      }
+
+      const ownedPersona = await isPersonaOf(requestedActorId, scopedToken.controllerId);
+      if (ownedPersona) {
+        return {
+          actorId: requestedActorId,
+          controllerId: scopedToken.controllerId,
+          actorType: "persona",
+          authMode: "token",
+        };
+      }
+
+      return null;
+    }
+  }
+
   if (!configuredToken || !providedToken || providedToken !== configuredToken) {
     return null;
   }
@@ -315,6 +373,8 @@ export function getMcpServerMetadata() {
       session: true,
       bearerToken: Boolean(process.env.AIAGENT_MCP_TOKEN?.trim()),
       bearerTokenEnv: "AIAGENT_MCP_TOKEN",
+      scopedBearerToken: true,
+      scopedBearerTokenEndpoint: "/api/mcp/token",
       queryToken: Boolean(process.env.AIAGENT_MCP_TOKEN?.trim()),
     },
     instance: {
