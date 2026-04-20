@@ -24,7 +24,7 @@ import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
-import { sendEmail } from "@/lib/email";
+import { sendTransactionalEmail } from "@/lib/mailer";
 import { resolve, resolveMx, resolveTxt } from "dns/promises";
 
 // ---------------------------------------------------------------------------
@@ -590,7 +590,8 @@ export async function sendTestEmailAction(
     const metadata = await getUserMetadata(userId);
     const config = getPersonalEmailConfig(metadata);
 
-    const result = await sendEmail({
+    const result = await sendTransactionalEmail({
+      kind: "transactional",
       to: cleanTo,
       subject: "Test Email from Personal Mail Server",
       html: `

@@ -31,7 +31,7 @@ import { and, eq, gt, isNull } from 'drizzle-orm';
 import { randomInt, randomBytes } from 'node:crypto';
 import { db } from '@/db';
 import { emailVerificationTokens } from '@/db/schema';
-import { sendEmail } from '@/lib/email';
+import { sendTransactionalEmail } from '@/lib/mailer';
 import { hashToken } from '@/lib/token-hash';
 
 // ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ const emailProvider: RecoveryMfaProvider = {
         </p>
       </div>`;
 
-    const result = await sendEmail({ to: recipient, subject, html, text });
+    const result = await sendTransactionalEmail({ kind: 'recovery', to: recipient, subject, html, text });
     if (!result.success) {
       throw new Error(
         `Failed to send recovery MFA email: ${result.error ?? 'unknown error'}`,
