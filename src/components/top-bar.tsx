@@ -90,8 +90,33 @@ export function TopBar({ selectedLocale, onLocaleChange }: TopBarProps) {
     <header className="fixed top-0 left-0 right-0 z-50 w-full border-b bg-background">
       <div className="flex h-14 items-center px-2 sm:px-4">
         <div className="flex items-center gap-1.5 shrink-0">
-          <a href={globalBaseUrl || "/"} className="flex items-center gap-1.5">
-            <Image src="/rivr-emoji.png" alt="Rivr" width={32} height={32} className="h-8 w-8" />
+          {/*
+            Ticket #109: top-left logo always navigates to GLOBAL.
+            Uses the new theme-aware R-logo PNGs.
+          */}
+          <a
+            href={globalBaseUrl ? `${globalBaseUrl}/` : "/"}
+            className="flex items-center gap-1.5"
+            aria-label="RIVR — go to global home"
+          >
+            {/* Light-mode logo */}
+            <Image
+              src="/rivr-logo-light.png"
+              alt="RIVR"
+              width={32}
+              height={32}
+              className="h-8 w-8 block dark:hidden"
+              priority
+            />
+            {/* Dark-mode logo */}
+            <Image
+              src="/rivr-logo-dark.png"
+              alt="RIVR"
+              width={32}
+              height={32}
+              className="h-8 w-8 hidden dark:block"
+              priority
+            />
             <div className="hidden sm:flex flex-col items-center">
               <button
                 onClick={(e) => { e.preventDefault(); setTheme(theme === "dark" ? "light" : "dark"); }}
