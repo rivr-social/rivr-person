@@ -44,7 +44,7 @@ import {
   type OfferingDraftPayload,
 } from "@/components/create-offering-form"
 import { LinkPreviewCard } from "@/components/link-preview-card"
-import { extractUrls } from "@/lib/link-preview"
+import { extractUrls } from "@/lib/link-preview-client"
 import type { ResourceEmbed } from "@/db/schema"
 
 interface CreatePostProps {
