@@ -1020,6 +1020,13 @@ export const emailVerificationTokens = pgTable(
     tokenType: text('token_type').notNull(), // 'email_verification' | 'password_reset'
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     usedAt: timestamp('used_at', { withTimezone: true }),
+    /**
+     * Optional per-row metadata. Recovery-seed MFA flows (migration
+     * 0039_recovery_seed_ui) stash `{ challengeId, method,
+     * attemptsRemaining }` here so reveal / rotate can walk the same
+     * token table without a dedicated challenges table.
+     */
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -1836,14 +1843,6 @@ export const recoverySeedEventKindEnum = pgEnum('recovery_seed_event_kind', [
   'reveal_succeeded',
   'rotate_succeeded',
 ]);
-
-    /**
-     * Optional per-row metadata. Recovery-seed MFA flows (migration
-     * 0039_recovery_seed_ui) stash `{ challengeId, method,
-     * attemptsRemaining }` here so reveal / rotate can walk the same
-     * token table without a dedicated challenges table.
-     */
-    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
 
 // =============================================================================
 // Recovery seed audit + retired keys
