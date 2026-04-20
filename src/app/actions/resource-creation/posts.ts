@@ -8,6 +8,7 @@ import {
   resources,
   type NewLedgerEntry,
   type NewResource,
+  type ResourceEmbed,
   type VisibilityLevel,
 } from "@/db/schema";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
@@ -159,6 +160,7 @@ export async function createPostResource(input: {
   eftValues?: Record<string, number>;
   capitalValues?: Record<string, number>;
   auditValues?: Record<string, number>;
+  embeds?: ResourceEmbed[];
   federate?: boolean;
 }): Promise<ActionResult> {
   if (!input.content || !input.content.trim()) {
@@ -252,6 +254,7 @@ export async function createPostResource(input: {
         content: input.content,
         visibility,
         tags: scopeTags,
+        embeds: input.embeds ?? [],
         ...(isLive && input.liveLocation ? { location: input.liveLocation } : {}),
         metadata: {
           entityType: "post",
@@ -408,6 +411,7 @@ export async function createPostCommerceResource(input: {
   eftValues?: Record<string, number>;
   capitalValues?: Record<string, number>;
   auditValues?: Record<string, number>;
+  embeds?: ResourceEmbed[];
   federate?: boolean;
 }): Promise<ActionResult> {
   if (!input.content || !input.content.trim()) {
@@ -800,6 +804,7 @@ export async function createPostCommerceResource(input: {
           ownerId: userId,
           visibility,
           tags: scopeTags,
+          embeds: input.embeds ?? [],
           metadata: {
             entityType: "post",
             postType: input.postType ?? "social",

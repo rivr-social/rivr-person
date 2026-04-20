@@ -273,6 +273,7 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
           ownerId,
           visibility: input.visibility ?? "public",
           tags: input.tags ?? [],
+          embeds: input.embeds ?? [],
           metadata: input.metadata ?? {},
           ...(input.location ? {
             location: {

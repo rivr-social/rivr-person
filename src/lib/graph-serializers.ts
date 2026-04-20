@@ -39,6 +39,21 @@ export interface SerializedResource {
   visibility?: string | null;
   metadata: Record<string, unknown>;
   tags: string[];
+  /**
+   * Rich link/OG embeds attached to a resource (typically posts). Portable
+   * copy of the `resources.embeds` jsonb column; rendered by
+   * `LinkPreviewCard` in feed surfaces. Optional for backward compatibility
+   * with surfaces that build SerializedResource fixtures inline.
+   */
+  embeds?: Array<{
+    url: string;
+    kind: "link" | "internal" | "video" | "image";
+    ogTitle?: string;
+    ogDescription?: string;
+    ogImage?: string;
+    siteName?: string;
+    favicon?: string;
+  }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -101,6 +116,9 @@ export function serializeResource(resource: Resource): SerializedResource {
     visibility: resource.visibility ?? null,
     metadata: (toJsonSafe(resource.metadata ?? {}) as Record<string, unknown>),
     tags: (resource.tags ?? []) as string[],
+    embeds: Array.isArray(resource.embeds)
+      ? (resource.embeds as SerializedResource["embeds"])
+      : [],
     createdAt: toISOString(resource.createdAt),
     updatedAt: toISOString(resource.updatedAt),
   };

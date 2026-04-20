@@ -1,4 +1,4 @@
-import type { ResourceType, VisibilityLevel } from "@/db/schema";
+import type { ResourceEmbed, ResourceType, VisibilityLevel } from "@/db/schema";
 
 export interface ActionResult {
   success: boolean;
@@ -20,6 +20,7 @@ export interface CreateResourceInput {
   description?: string;
   content?: string;
   tags?: string[];
+  embeds?: ResourceEmbed[];
   visibility?: VisibilityLevel;
   metadata?: Record<string, unknown>;
   location?: { lat: number; lng: number };

@@ -15,7 +15,7 @@ import { agents, ledger, emailLog } from "@/db/schema";
 import { eq, and, or, isNull, sql } from "drizzle-orm";
 import { headers } from "next/headers";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
-import { sendBulkEmail } from "@/lib/email";
+import { sendBulkTransactionalEmail } from "@/lib/mailer";
 import { groupBroadcastEmail } from "@/lib/email-templates";
 import { getClientIp } from "@/lib/client-ip";
 
@@ -242,13 +242,14 @@ export async function sendGroupBroadcastAction(
   );
 
   // Execute provider bulk send; per-recipient outcomes are logged below.
-  const results = await sendBulkEmail(
-    recipients,
-    template.subject,
-    template.html,
-    template.text,
-    sender.email ? { replyTo: sender.email } : undefined,
-  );
+  const results = await sendBulkTransactionalEmail(recipients, {
+    kind: "transactional",
+    subject: template.subject,
+    html: template.html,
+    text: template.text,
+    ...(sender.email ? { replyTo: sender.email } : {}),
+    agentIdFor: (email) => emailToAgentId.get(email) ?? undefined,
+  });
 
   // Persist delivery/audit logs for traceability and retry diagnostics.
   let sent = 0;

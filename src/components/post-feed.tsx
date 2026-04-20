@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardFooter } from "@/components/ui/card"
 import { ChevronDown, ChevronUp, EyeOff, Heart, MessageCircle, MoreHorizontal, Pencil, Radio, Share2, Trash2, UserMinus2 } from "lucide-react"
@@ -28,8 +28,54 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { CommentFeed } from "@/components/comment-feed"
 import { ReactionButton } from "@/components/reaction-button"
 import { RelativeTime } from "@/components/relative-time"
+import { LinkPreviewCard } from "@/components/link-preview-card"
+import type { ResourceEmbed } from "@/db/schema"
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z"
+
+/**
+ * Regex used to auto-linkify bare URLs that appear in post content. Matches
+ * `http://` or `https://` followed by any non-whitespace run. Trailing
+ * sentence punctuation is trimmed after the match (see `renderLinkifiedContent`).
+ *
+ * This is intentionally loose; strict RFC 3986 validation is performed only
+ * at the server when fetching previews.
+ */
+const POST_URL_REGEX = /(https?:\/\/[^\s<>]+)/gi
+const TRAILING_URL_PUNCTUATION = /[.,;:!?)\]}>'"]+$/
+
+/**
+ * Transform a block of post text into a list of React nodes where any http(s)
+ * URL becomes a clickable `<a target="_blank">`. Keeps original whitespace
+ * inside plain-text segments intact so `whitespace-pre-wrap` still works.
+ */
+function renderLinkifiedContent(text: string): ReactNode[] {
+  if (!text) return []
+  const parts = text.split(POST_URL_REGEX)
+  return parts.map((part, idx) => {
+    if (idx % 2 === 1) {
+      // Odd indices are the captured URL groups. Strip trailing punctuation so
+      // we don't include a sentence terminator inside the href.
+      const trimmed = part.replace(TRAILING_URL_PUNCTUATION, "")
+      const tail = part.slice(trimmed.length)
+      return (
+        <span key={`lnk-${idx}`}>
+          <a
+            href={trimmed}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary underline-offset-2 hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {trimmed}
+          </a>
+          {tail}
+        </span>
+      )
+    }
+    return <span key={`txt-${idx}`}>{part}</span>
+  })
+}
 
 /**
  * Unified social feed renderer used by feed/home-style pages to display posts, plus optional
@@ -601,7 +647,9 @@ function PostCard({
           ) : null}
 
           <div className="mb-3">
-            <p className={isExpanded ? "whitespace-pre-wrap" : "line-clamp-3 whitespace-pre-wrap"}>{displayContent}</p>
+            <p className={isExpanded ? "whitespace-pre-wrap" : "line-clamp-3 whitespace-pre-wrap"}>
+              {renderLinkifiedContent(displayContent)}
+            </p>
             {hasLongBody ? (
               <Button
                 variant="ghost"
@@ -626,6 +674,20 @@ function PostCard({
               </Button>
             ) : null}
           </div>
+
+          {/* Link-preview embeds attached at post creation. Rendered between
+              content and images so the preview sits with the text it refers
+              to. Multiple embeds stack vertically with a small gap. */}
+          {post.embeds && post.embeds.length > 0 ? (
+            <div className="mb-3 space-y-2">
+              {post.embeds.map((embed, i) => (
+                <LinkPreviewCard
+                  key={`${post.id}-embed-${i}`}
+                  preview={embed as ResourceEmbed}
+                />
+              ))}
+            </div>
+          ) : null}
 
           {displayImages && displayImages.length > 0 ? (
             <Link

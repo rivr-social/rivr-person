@@ -89,6 +89,20 @@ export type Post = {
   tags?: string[]
   groupTags?: string[]
   chapterTags?: string[]
+  /**
+   * Rich link/OG embeds attached at post creation. Populated from the
+   * `resources.embeds` jsonb column; rendered as LinkPreviewCard below
+   * post content in the feed. See `ResourceEmbed` in `@/db/schema`.
+   */
+  embeds?: Array<{
+    url: string
+    kind: 'link' | 'internal' | 'video' | 'image'
+    ogTitle?: string
+    ogDescription?: string
+    ogImage?: string
+    siteName?: string
+    favicon?: string
+  }>
 
   type?: string
   postType?: PostType

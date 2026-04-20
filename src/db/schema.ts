@@ -492,6 +492,26 @@ export const agents = pgTable(
 );
 
 /**
+ * Shape of a single rich embed attached to a resource (typically a post).
+ *
+ * - `link`: external URL with OpenGraph metadata (populated from the
+ *   `link_previews` cache via POST /api/link-preview).
+ * - `internal`: link to another RIVR surface (ring/group/locale/profile/etc.).
+ *   Rendered with a RIVR-native card instead of a generic OG card; metadata
+ *   comes from local DB lookup, not an outbound fetch.
+ * - `video` / `image`: reserved for future platform-specific embeds.
+ */
+export type ResourceEmbed = {
+  url: string;
+  kind: 'link' | 'internal' | 'video' | 'image';
+  ogTitle?: string;
+  ogDescription?: string;
+  ogImage?: string;
+  siteName?: string;
+  favicon?: string;
+};
+
+/**
  * Resources table - stores documents, files, and other content
  * Includes vector embeddings for semantic search
  */
@@ -522,6 +542,10 @@ export const resources = pgTable(
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}),
     tags: text('tags').array().default([]),
     enteredAccountAt: timestamp('entered_account_at', { withTimezone: true }),
+
+    // Rich link/OpenGraph embeds attached at post time. Rendered below post
+    // content in the feed. See `ResourceEmbed` type in this file for shape.
+    embeds: jsonb('embeds').$type<ResourceEmbed[]>().default([]).notNull(),
 
     // Vector embeddings for semantic search (all-MiniLM-L6-v2 = 384 dimensions)
     embedding: vector('embedding', { dimensions: 384 }),
@@ -2086,3 +2110,36 @@ export type RecoveryAssertionNonceRecord =
   typeof recoveryAssertionNonces.$inferSelect;
 export type NewRecoveryAssertionNonceRecord =
   typeof recoveryAssertionNonces.$inferInsert;
+
+/**
+ * link_previews cache table — backs POST /api/link-preview.
+ *
+ * One row per unique normalized URL (keyed by sha-256 of the URL). Fresh rows
+ * are served directly; stale rows are refetched. Negative results (`error` /
+ * `unsupported`) are cached to avoid hammering broken targets. See
+ * `src/lib/link-preview.ts` for the TTL/freshness helpers and SSRF guard.
+ */
+export const linkPreviews = pgTable(
+  'link_previews',
+  {
+    urlHash: text('url_hash').primaryKey(),
+    url: text('url').notNull(),
+    ogTitle: text('og_title'),
+    ogDescription: text('og_description'),
+    ogImage: text('og_image'),
+    ogSiteName: text('og_site_name'),
+    ogType: text('og_type'),
+    favicon: text('favicon'),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).defaultNow().notNull(),
+    ttlSeconds: integer('ttl_seconds').default(86400).notNull(),
+    fetchStatus: text('fetch_status').notNull(),
+    fetchError: text('fetch_error'),
+  },
+  (table) => [
+    index('link_previews_fetched_at_idx').on(table.fetchedAt),
+    index('link_previews_fetch_status_idx').on(table.fetchStatus),
+  ],
+);
+
+export type LinkPreviewRecord = typeof linkPreviews.$inferSelect;
+export type NewLinkPreviewRecord = typeof linkPreviews.$inferInsert;

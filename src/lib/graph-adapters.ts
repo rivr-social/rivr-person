@@ -643,6 +643,7 @@ export function resourceToPost(resource: SerializedResource, author?: Serialized
     tags: resource.tags ?? [],
     groupTags: (meta.groupTags as string[]) ?? [],
     chapterTags: (meta.chapterTags as string[]) ?? [],
+    embeds: Array.isArray(resource.embeds) ? resource.embeds : [],
     postType: (meta.postType as string) ?? "social",
     isLiveInvitation: meta.isLiveInvitation === true,
     title: (meta.title as string) ?? resource.name ?? undefined,
