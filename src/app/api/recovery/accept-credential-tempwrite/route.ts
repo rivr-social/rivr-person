@@ -44,7 +44,6 @@ import {
   writeAuditAccepted,
   writeAuditRejected,
   TempwriteRejectedError,
-  TempwriteMalformedError,
   type CredentialTempwritePayload,
 } from "@/lib/federation/accept-tempwrite";
 
@@ -271,7 +270,3 @@ function safeIp(headerList: Headers): string {
   }
 }
 
-// Keep TempwriteMalformedError in the module graph for the route-level
-// tests even though the route only catches TempwriteRejectedError —
-// helps tree-shaken test imports stay stable.
-export const _sentinel = TempwriteMalformedError;
