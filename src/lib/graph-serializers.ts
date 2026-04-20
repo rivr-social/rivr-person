@@ -42,9 +42,10 @@ export interface SerializedResource {
   /**
    * Rich link/OG embeds attached to a resource (typically posts). Portable
    * copy of the `resources.embeds` jsonb column; rendered by
-   * `LinkPreviewCard` in feed surfaces.
+   * `LinkPreviewCard` in feed surfaces. Optional for backward compatibility
+   * with surfaces that build SerializedResource fixtures inline.
    */
-  embeds: Array<{
+  embeds?: Array<{
     url: string;
     kind: "link" | "internal" | "video" | "image";
     ogTitle?: string;
