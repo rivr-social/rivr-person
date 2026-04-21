@@ -183,25 +183,27 @@ function TwitterBlockquote({
   return (
     <div className="relative w-full">
       {/*
-        Container is targeted by createTweet. While widgets.js loads, show
-        a lightweight card with the URL so the render never looks empty.
+        Twitter injects a shadow-DOM iframe into this container. React must
+        NOT own any children here — if React re-renders while widgets.js has
+        mutated the subtree, the reconciler throws a NotFoundError on
+        removeChild. The fallback link below is a sibling, not a child.
       */}
       <div
         ref={containerRef}
         className="twitter-embed min-h-[80px] w-full"
         data-tweet-url={url}
-      >
-        {!rendered ? (
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center rounded-lg border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground hover:text-foreground"
-          >
-            Loading tweet — {originalUrl}
-          </a>
-        ) : null}
-      </div>
+        suppressHydrationWarning
+      />
+      {!rendered ? (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="pointer-events-auto absolute inset-0 flex items-center justify-center rounded-lg border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground hover:text-foreground"
+        >
+          Loading tweet — {originalUrl}
+        </a>
+      ) : null}
       {onRemove ? (
         <button
           type="button"
