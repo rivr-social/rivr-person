@@ -7,7 +7,7 @@
  * platform match exists.
  */
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import type { PlatformEmbedDescriptor } from "@/lib/platform-embeds"
 
 declare global {
@@ -48,7 +48,7 @@ export function PlatformEmbedBlock({ url, embed, onRemove }: PlatformEmbedBlockP
   ) : null
 
   if (embed.embedKind === "iframe") {
-    const { aspect, fixedHeight, src } = embed
+    const { aspect, fixedHeight, fixedWidth, src } = embed
     // Aspect-ratio iframes (video) use a responsive container; fixed-height
     // iframes (music) just set height directly.
     if (aspect) {
@@ -70,12 +70,23 @@ export function PlatformEmbedBlock({ url, embed, onRemove }: PlatformEmbedBlockP
         </div>
       )
     }
+    // Fixed-width plugin iframes (e.g. Facebook's 500px Social Plugin) need
+    // to be centered and constrained; letting them go w-full exposes the
+    // plugin's own white background as whitespace on one side.
+    const iframeStyle: CSSProperties = fixedWidth
+      ? { height: fixedHeight ?? 152, width: fixedWidth, maxWidth: "100%" }
+      : { height: fixedHeight ?? 152 }
     return (
-      <div className="relative w-full overflow-hidden rounded-lg border border-border">
+      <div
+        className={`relative overflow-hidden rounded-lg border border-border ${
+          fixedWidth ? "mx-auto flex justify-center" : "w-full"
+        }`}
+        style={fixedWidth ? { maxWidth: fixedWidth } : undefined}
+      >
         <iframe
           src={src}
-          className="w-full"
-          style={{ height: fixedHeight ?? 152 }}
+          className={fixedWidth ? undefined : "w-full"}
+          style={iframeStyle}
           loading="lazy"
           allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
           allowFullScreen

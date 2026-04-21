@@ -26,6 +26,14 @@ export type PlatformEmbedDescriptor =
       aspect?: { width: number; height: number };
       /** Optional fixed pixel height when no aspect ratio applies. */
       fixedHeight?: number;
+      /**
+       * Optional fixed pixel width. Needed for plugin iframes whose inner
+       * content is hard-coded to a specific width (e.g. Facebook's Social
+       * Plugin renders at 500px regardless of iframe dimensions). Without
+       * this the iframe fills w-full and shows the plugin's own background
+       * as whitespace on one side.
+       */
+      fixedWidth?: number;
     };
 
 const YOUTUBE_VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{6,}$/;
@@ -130,6 +138,7 @@ export function detectPlatformEmbed(url: string): PlatformEmbedDescriptor | null
         embedKind: "iframe",
         src: `https://www.facebook.com/plugins/${pluginPath}?href=${encoded}&show_text=true&width=500`,
         fixedHeight: 645,
+        fixedWidth: 500,
       };
     }
   }
