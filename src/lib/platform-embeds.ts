@@ -18,7 +18,7 @@ export type PlatformEmbedDescriptor =
       tweetUrl: string;
     }
   | {
-      platform: "youtube" | "vimeo" | "spotify" | "soundcloud";
+      platform: "youtube" | "vimeo" | "spotify" | "soundcloud" | "facebook";
       embedKind: "iframe";
       /** Iframe src. Always HTTPS, platform-owned origin. */
       src: string;
@@ -111,6 +111,25 @@ export function detectPlatformEmbed(url: string): PlatformEmbedDescriptor | null
         embedKind: "iframe",
         src: `https://open.spotify.com/embed/${match[1]}/${match[2]}`,
         fixedHeight: match[1] === "track" || match[1] === "episode" ? 152 : 352,
+      };
+    }
+  }
+
+  // --- Facebook (posts, photos, videos, watches, reels) ---
+  // Uses the official Facebook Social Plugin `plugins/post.php` / `plugins/video.php`
+  // iframe which renders the full post in-place.
+  if (host === "facebook.com" || host === "m.facebook.com" || host === "fb.com") {
+    const path = parsed.pathname;
+    const isVideo = /\/videos?\/|\/watch\b|\/reel\//.test(path);
+    const isPost = /\/posts\/|\/permalink\.php|\/photos?\/|\/story\.php/.test(path);
+    if (isVideo || isPost) {
+      const encoded = encodeURIComponent(parsed.toString());
+      const pluginPath = isVideo ? "video.php" : "post.php";
+      return {
+        platform: "facebook",
+        embedKind: "iframe",
+        src: `https://www.facebook.com/plugins/${pluginPath}?href=${encoded}&show_text=true&width=500`,
+        fixedHeight: 645,
       };
     }
   }

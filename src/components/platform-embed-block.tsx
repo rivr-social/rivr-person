@@ -171,6 +171,8 @@ function labelForPlatform(platform: PlatformEmbedDescriptor["platform"], url: st
       return "Spotify player"
     case "soundcloud":
       return "SoundCloud player"
+    case "facebook":
+      return "Facebook post"
     default:
       return url
   }

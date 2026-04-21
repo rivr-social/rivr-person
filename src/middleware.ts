@@ -73,6 +73,10 @@ function buildCspHeader(nonce: string): string {
     "https://*.scdn.co",
     "https://i1.sndcdn.com",
     "https://*.sndcdn.com",
+    // Facebook post-plugin iframe image CDNs.
+    "https://*.fbcdn.net",
+    "https://scontent.xx.fbcdn.net",
+    "https://static.xx.fbcdn.net",
   ];
 
   // Resolve the app's own origin so HMR WebSockets and fetch work behind Traefik
@@ -138,6 +142,8 @@ function buildCspHeader(nonce: string): string {
     "https://w.soundcloud.com",
     "https://platform.twitter.com",
     "https://syndication.twitter.com",
+    "https://www.facebook.com",
+    "https://web.facebook.com",
   ].join(" ");
 
   return [
