@@ -105,6 +105,12 @@ export async function POST(request: NextRequest) {
       eventType: event.eventType,
       visibility: event.visibility,
       payload: event.payload,
+      // These fields are required by the receiving node's import validator —
+      // dropping them made every event look unsigned/unversioned/unordered
+      // and caused global to reject 100% of incoming events.
+      signature: event.signature,
+      nonce: event.nonce,
+      eventVersion: event.eventVersion,
       createdAt: event.createdAt,
     })),
   });
