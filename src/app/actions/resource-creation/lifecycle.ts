@@ -395,7 +395,15 @@ export async function deleteResource(resourceId: string): Promise<ActionResult> 
       entityType: "resource",
       entityId: resourceId,
       actorId: userId,
-      payload: { resourceType: (verifiedDeleteResource.metadata as Record<string, unknown>)?.resourceKind ?? null },
+      // The resource-cards projection looks up the target row via
+      // `payload.id` (or envelope `entityId` as a fallback). Without `id`
+      // in the payload, federated peers import the delete event
+      // successfully but can't locate the mirror row to soft-delete,
+      // leaving the row visible forever.
+      payload: {
+        id: resourceId,
+        resourceType: (verifiedDeleteResource.metadata as Record<string, unknown>)?.resourceKind ?? null,
+      },
     }).catch(() => {});
   }
 
