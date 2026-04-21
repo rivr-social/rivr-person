@@ -99,12 +99,18 @@ function orientationToEuler(
   const euler = new THREE.Euler(betaRad, alphaRad, -gammaRad, "ZXY")
   quaternion.setFromEuler(euler)
 
-  // Apply screen orientation correction (assume portrait)
+  // Apply screen orientation correction (assume portrait).
+  // Prefer `window.screen.orientation.angle` when available (modern browsers),
+  // fall back to the deprecated `window.orientation` otherwise.
+  const screenAngleDeg =
+    typeof window !== "undefined" && window.screen?.orientation?.angle !== undefined
+      ? window.screen.orientation.angle
+      : typeof window !== "undefined" && typeof window.orientation === "number"
+        ? window.orientation
+        : 0
   const screenCorrection = new THREE.Quaternion().setFromAxisAngle(
     new THREE.Vector3(0, 0, 1),
-    -window.orientation
-      ? THREE.MathUtils.degToRad(Number(window.orientation))
-      : 0,
+    -(screenAngleDeg ? THREE.MathUtils.degToRad(Number(screenAngleDeg)) : 0),
   )
   quaternion.multiply(screenCorrection)
 
@@ -155,6 +161,10 @@ export default function ARView({ items, onBack }: ARViewProps) {
   const [selectedItem, setSelectedItem] = useState<MapItem | null>(null)
   const [isDesktop, setIsDesktop] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  // Gate camera + orientation permission requests behind an explicit user tap.
+  // iOS Safari requires getUserMedia and DeviceOrientationEvent.requestPermission
+  // to be invoked from a user-gesture handler, not an auto-fired useEffect.
+  const [arStarted, setArStarted] = useState(false)
 
   /* ── Desktop detection ── */
   useEffect(() => {
@@ -434,15 +444,30 @@ export default function ARView({ items, onBack }: ARViewProps) {
     return () => window.removeEventListener("resize", handleResize)
   }, [])
 
-  /* ── Boot sequence ── */
+  /* ── Scene init on mount (cheap, no permissions needed) ── */
   useEffect(() => {
     if (isDesktop) return
-
     initScene()
-    startCamera()
-    startGeolocation()
-    const cleanupOrientation = startOrientation()
+  }, [isDesktop, initScene])
 
+  /* ── Permission-gated AR start (must run from a user-gesture handler) ── */
+  const cleanupOrientationRef = useRef<(() => void) | null>(null)
+
+  const handleEnableAR = useCallback(() => {
+    if (arStarted) return
+    setArStarted(true)
+    // Fire the actual getUserMedia and DeviceOrientationEvent.requestPermission
+    // calls directly from this click handler so Safari treats them as
+    // user-activated. Geolocation can run from either a gesture or an effect
+    // but we co-locate it here for clarity.
+    void startCamera()
+    startGeolocation()
+    cleanupOrientationRef.current = startOrientation() ?? null
+  }, [arStarted, startCamera, startGeolocation, startOrientation])
+
+  /* ── Cleanup on unmount ── */
+  useEffect(() => {
+    if (isDesktop) return
     return () => {
       // Cleanup camera stream
       if (streamRef.current) {
@@ -458,12 +483,12 @@ export default function ARView({ items, onBack }: ARViewProps) {
       if (rendererRef.current) {
         rendererRef.current.dispose()
       }
-      // Cleanup orientation
-      cleanupOrientation?.()
+      // Cleanup orientation listener
+      cleanupOrientationRef.current?.()
       // Cancel animation frame
       cancelAnimationFrame(rafRef.current)
     }
-  }, [isDesktop, initScene, startCamera, startGeolocation, startOrientation])
+  }, [isDesktop])
 
   /* ── Raycaster for tapping models ── */
   const handleCanvasClick = useCallback(
@@ -521,13 +546,43 @@ export default function ARView({ items, onBack }: ARViewProps) {
   }
 
   /* ── Permission / loading states ── */
+  // Only treat "pending" as loading after the user has tapped to start;
+  // otherwise we'd auto-show a spinner before any permission is requested.
   const isLoading =
-    cameraPermission === "pending" ||
-    cameraPermission === "requesting" ||
-    locationPermission === "pending" ||
-    locationPermission === "requesting"
+    arStarted &&
+    (cameraPermission === "requesting" ||
+      locationPermission === "requesting" ||
+      (cameraPermission === "pending" && locationPermission === "pending"))
 
   const hasError = cameraPermission === "denied" || locationPermission === "denied"
+
+  /* ── Tap-to-enable gate (required for iOS Safari camera + gyro permissions) ── */
+  if (!arStarted && !hasError) {
+    return (
+      <div className="h-full w-full flex flex-col items-center justify-center bg-zinc-900 text-white p-6 text-center">
+        <div className="text-5xl mb-4">📷</div>
+        <h2 className="text-xl font-semibold mb-2">Enable AR</h2>
+        <p className="text-zinc-400 max-w-md mb-6">
+          AR uses your camera, GPS, and motion sensors to place nearby community items in the world around you.
+          Tap below to grant access.
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={onBack}
+            className="px-4 py-2 bg-zinc-700 text-white rounded-lg font-medium hover:bg-zinc-600 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={handleEnableAR}
+            className="px-5 py-2 bg-white text-zinc-900 rounded-lg font-medium hover:bg-zinc-200 transition-colors"
+          >
+            Enable camera
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (hasError) {
     return (
@@ -547,7 +602,7 @@ export default function ARView({ items, onBack }: ARViewProps) {
               setCameraPermission("pending")
               setLocationPermission("pending")
               setErrorMessage(null)
-              startCamera()
+              void startCamera()
               startGeolocation()
             }}
             className="px-4 py-2 bg-white text-zinc-900 rounded-lg font-medium hover:bg-zinc-200 transition-colors"
