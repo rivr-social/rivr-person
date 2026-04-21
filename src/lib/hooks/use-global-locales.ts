@@ -64,7 +64,12 @@ function isFresh(entry: CacheEntry | null): entry is CacheEntry {
 async function fetchGlobalLocales(): Promise<GlobalLocaleEntry[]> {
   const base = GLOBAL_BASE_URL;
 
+  // /api/locales is the canonical locale directory — it returns the
+  // actual chapter agents (Boulder, Denver, Longmont, etc.) with basin
+  // names resolved server-side. /api/federation/registry only returns
+  // peer instances, which misses most locales.
   const attempts: Array<() => Promise<Response>> = [
+    () => fetch(`${base}/api/locales`, { cache: "no-store" }),
     () => fetch(`${base}/api/federation/registry?kind=locale`, { cache: "no-store" }),
     () => fetch(`${base}/api/federation/registry`, { cache: "no-store" }),
   ];

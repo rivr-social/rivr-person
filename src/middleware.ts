@@ -83,6 +83,15 @@ function buildCspHeader(nonce: string): string {
   const appUrl = process.env.NEXTAUTH_URL?.trim();
   const appWss = appUrl?.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
 
+  // Canonical global/federation instance — the locale switcher, registry
+  // lookups, and /api/locales calls all hit the global app cross-origin.
+  // Resolved from NEXT_PUBLIC_GLOBAL_IDENTITY_AUTHORITY_URL at runtime so
+  // self-hosted deployments can point at a different global.
+  const globalBaseUrl =
+    process.env.NEXT_PUBLIC_GLOBAL_IDENTITY_AUTHORITY_URL?.trim() ||
+    process.env.GLOBAL_IDENTITY_AUTHORITY_URL?.trim() ||
+    "https://a.rivr.social";
+
   const connectSources = [
     "'self'",
     "ws://localhost:*",
@@ -93,6 +102,8 @@ function buildCspHeader(nonce: string): string {
     "https://127.0.0.1:*",
     ...(appUrl ? [appUrl] : []),
     ...(appWss ? [appWss] : []),
+    globalBaseUrl,
+    "https://*.rivr.social",
     "https://api.stripe.com",
     "https://api.mapbox.com",
     "https://*.mapbox.com",
