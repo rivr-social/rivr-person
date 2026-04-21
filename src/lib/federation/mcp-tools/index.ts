@@ -7,6 +7,7 @@ import { sendThanksTokensAction } from "@/app/actions/interactions/thanks-tokens
 import { toggleJoinGroup } from "@/app/actions/interactions/social";
 import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
+import { deleteResource } from "@/app/actions/resource-creation/lifecycle";
 import { createEventResource } from "@/app/actions/resource-creation/events";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import {
@@ -296,6 +297,26 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         federate: getBoolean(args.federate, isGlobal),
         embeds,
       });
+    },
+  },
+  {
+    name: "rivr.posts.delete",
+    description: "Soft-delete a post the active actor owns. Emits a resource.deleted federation event so peer instances mirror the delete.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["resourceId"],
+      properties: {
+        resourceId: { type: "string" },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const resourceId = getString(args.resourceId);
+      if (!resourceId) {
+        throw new Error("resourceId is required.");
+      }
+      return deleteResource(resourceId);
     },
   },
   {
