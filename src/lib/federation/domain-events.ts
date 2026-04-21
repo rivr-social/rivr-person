@@ -120,22 +120,26 @@ export async function emitDomainEvent(params: {
   const nonce = crypto.randomUUID();
   const timestamp = new Date();
 
-  // Try to sign if we have crypto available
+  // Sign via ensureLocalNode so missing keypair state gets backfilled —
+  // the old id-only lookup would silently drop the signature when the
+  // node row had no private_key, producing unsigned events that every
+  // peer would reject with "missing signature" on import.
   let signature: string | undefined;
+  let signingNodeId: string | null = null;
   try {
     const { signPayload } = await import('@/lib/federation-crypto');
-    // signPayload needs the node's private key — fetch from nodes table
-    const localNode = await db
-      .select({ privateKey: nodes.privateKey })
-      .from(nodes)
-      .where(eq(nodes.id, config.instanceId))
-      .limit(1);
-
-    if (localNode.length > 0 && localNode[0].privateKey) {
-      signature = signPayload(params.payload, localNode[0].privateKey);
+    const { ensureLocalNode } = await import('@/lib/federation');
+    const localNode = await ensureLocalNode();
+    if (localNode?.privateKey) {
+      signature = signPayload(params.payload, localNode.privateKey);
+      signingNodeId = localNode.id;
+    } else {
+      console.warn(
+        '[emitDomainEvent] ensureLocalNode returned no privateKey; event will be unsigned and rejected by peers.',
+      );
     }
-  } catch {
-    // Signing unavailable — proceed without signature
+  } catch (err) {
+    console.warn('[emitDomainEvent] signing failed; event will be unsigned.', err);
   }
 
   // Insert into federation_events
@@ -143,7 +147,11 @@ export async function emitDomainEvent(params: {
     .insert(federationEvents)
     .values({
       id: eventId,
-      originNodeId: config.instanceId,
+      // Prefer the node id ensureLocalNode returned — if the instance
+      // was bootstrapped with a different row than config.instanceId
+      // points to, pairing origin_node_id with the signing key's row
+      // keeps peer verification consistent.
+      originNodeId: signingNodeId ?? config.instanceId,
       targetNodeId: params.targetNodeId || null,
       entityType: params.entityType,
       entityId: params.entityId,
