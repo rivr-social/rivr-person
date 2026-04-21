@@ -2,7 +2,7 @@
 
 import { db } from "@/db";
 import { federationEvents, nodes } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getInstanceConfig } from "./instance-config";
 
 /**
@@ -142,6 +142,30 @@ export async function emitDomainEvent(params: {
     console.warn('[emitDomainEvent] signing failed; event will be unsigned.', err);
   }
 
+  // Compute the next eventVersion for this (origin, entityType, entityId)
+  // tuple. Peer instances reject `event.eventVersion <= latestVersion`
+  // as "stale version" — so keeping a hard-coded `1` would make any
+  // second event for the same entity (delete after upsert, etc.) fail
+  // on import.
+  const originNodeId = signingNodeId ?? config.instanceId;
+  let nextEventVersion = 1;
+  try {
+    const latest = await db.query.federationEvents.findFirst({
+      where: and(
+        eq(federationEvents.originNodeId, originNodeId),
+        eq(federationEvents.entityType, params.entityType),
+        eq(federationEvents.entityId, params.entityId),
+      ),
+      orderBy: [desc(federationEvents.eventVersion)],
+      columns: { eventVersion: true },
+    });
+    if (latest?.eventVersion != null) {
+      nextEventVersion = latest.eventVersion + 1;
+    }
+  } catch (err) {
+    console.warn('[emitDomainEvent] eventVersion lookup failed; using 1.', err);
+  }
+
   // Insert into federation_events
   const [inserted] = await db
     .insert(federationEvents)
@@ -151,7 +175,7 @@ export async function emitDomainEvent(params: {
       // was bootstrapped with a different row than config.instanceId
       // points to, pairing origin_node_id with the signing key's row
       // keeps peer verification consistent.
-      originNodeId: signingNodeId ?? config.instanceId,
+      originNodeId,
       targetNodeId: params.targetNodeId || null,
       entityType: params.entityType,
       entityId: params.entityId,
@@ -160,7 +184,7 @@ export async function emitDomainEvent(params: {
       payload: params.payload,
       signature: signature || null,
       nonce,
-      eventVersion: 1,
+      eventVersion: nextEventVersion,
       status: 'queued',
       actorId: params.actorId,
       correlationId: params.correlationId || null,
