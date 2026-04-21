@@ -502,6 +502,12 @@ async function queuePreparedExportEvents(params: {
         visibility,
         metadata: resource.metadata,
         tags: resource.tags,
+        // Content + embeds carry the actual post body and platform embed
+        // descriptors. Without them, federated posts render as plain titles
+        // with no card — rich platform embeds (X, Facebook, YouTube, etc.)
+        // never show up on peer instances.
+        content: resource.content,
+        embeds: resource.embeds,
       };
       return {
         originNodeId: params.originNodeId,
@@ -921,6 +927,8 @@ export async function importFederationEvents(params: {
           externalEntityId: externalId,
         };
 
+        const content = typeof payload.content === "string" ? payload.content : null;
+        const embeds = Array.isArray(payload.embeds) ? payload.embeds : [];
         await db
           .insert(resources)
           .values({
@@ -930,10 +938,23 @@ export async function importFederationEvents(params: {
             ownerId: localOwnerId,
             visibility: event.visibility,
             description: typeof payload.description === "string" ? payload.description : null,
+            content,
+            embeds,
             metadata: metadataWithAttribution,
             tags: Array.isArray(payload.tags) ? (payload.tags as string[]) : [],
           })
-          .onConflictDoNothing({ target: resources.id });
+          .onConflictDoUpdate({
+            target: resources.id,
+            set: {
+              name,
+              description: typeof payload.description === "string" ? payload.description : null,
+              content,
+              embeds,
+              metadata: metadataWithAttribution,
+              tags: Array.isArray(payload.tags) ? (payload.tags as string[]) : [],
+              updatedAt: new Date(),
+            },
+          });
       }
     }
   }
