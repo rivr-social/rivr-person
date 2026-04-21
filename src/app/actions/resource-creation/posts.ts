@@ -320,7 +320,13 @@ export async function createPostResource(input: {
       entityType: "resource",
       entityId: actionResult.resourceId,
       actorId: userId,
-      payload: { postType: input.postType ?? "social", groupId: input.groupId ?? null },
+      // `id` is required by the resource-cards projection on peer instances —
+      // without it the federated row never materializes.
+      payload: {
+        id: actionResult.resourceId,
+        postType: input.postType ?? "social",
+        groupId: input.groupId ?? null,
+      },
     }).catch(() => {});
 
     if (linkedBundle) {
@@ -955,7 +961,12 @@ export async function createPostCommerceResource(input: {
       entityType: "resource",
       entityId: commerceActionResult.resourceId,
       actorId: userId,
-      payload: { postType: input.postType ?? "social", commerce: true, groupId: input.groupId ?? null },
+      payload: {
+        id: commerceActionResult.resourceId,
+        postType: input.postType ?? "social",
+        commerce: true,
+        groupId: input.groupId ?? null,
+      },
     }).catch(() => {});
   }
 
