@@ -4,7 +4,8 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
 import Link from "next/link"
-import { ChevronDown, ChevronLeft, ChevronUp, Heart, MessageCircle, Pencil, Share2, Trash2, MoreHorizontal, EyeOff, UserMinus2 } from "lucide-react"
+import { ChevronDown, ChevronLeft, ChevronUp, Heart, MessageCircle, Pencil, Trash2, MoreHorizontal, EyeOff, UserMinus2 } from "lucide-react"
+import { ShareMenu } from "@/components/share-menu"
 import { fetchReactionSummaries, toggleHiddenContent, type ReactionType } from "@/app/actions/interactions"
 import { CommentFeed } from "@/components/comment-feed"
 import { FollowButton } from "@/components/follow-button"
@@ -343,15 +344,9 @@ export function PostDetailClient({
                 </Button>
               }
             />
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-12 w-full rounded-none justify-center text-muted-foreground"
-              onClick={() => navigator.clipboard.writeText(window.location.href)}
-            >
-              <Share2 className="h-5 w-5 mr-2" />
-              Share
-            </Button>
+            <ShareMenu
+              post={{ id: post.id, title: post.title, content: post.content }}
+            />
             </div>
             <div className="border-t bg-background/60 px-4 py-4">
               <CommentFeed postId={post.id} embedded />

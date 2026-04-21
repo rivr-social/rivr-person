@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardFooter } from "@/components/ui/card"
-import { ChevronDown, ChevronUp, EyeOff, Heart, MessageCircle, MoreHorizontal, Pencil, Radio, Share2, Trash2, UserMinus2 } from "lucide-react"
+import { ChevronDown, ChevronUp, EyeOff, Heart, MessageCircle, MoreHorizontal, Pencil, Radio, Trash2, UserMinus2 } from "lucide-react"
 import { ThankModule } from "@/components/thank-module"
+import { ShareMenu } from "@/components/share-menu"
 import { Button } from "@/components/ui/button"
 import Image from "next/image"
 import Link from "next/link"
@@ -804,18 +805,13 @@ function PostCard({
                   </Button>
                 }
               />
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-12 w-full rounded-none justify-center text-muted-foreground"
-                onClick={(e) => {
+              <ShareMenu
+                post={{ id: post.id, title: post.title, content: post.content }}
+                onTriggerClick={(e) => {
                   e.stopPropagation()
                   onShare()
                 }}
-              >
-                <Share2 className="h-4 w-4 mr-2" />
-                Share
-              </Button>
+              />
             </div>
             {showComments ? (
               <div className="border-t bg-muted/20 px-4 py-4">
