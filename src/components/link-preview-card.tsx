@@ -27,6 +27,8 @@ import Image from "next/image"
 import Link from "next/link"
 import { ExternalLink, Link2 } from "lucide-react"
 import type { ResourceEmbed } from "@/db/schema"
+import { detectPlatformEmbed } from "@/lib/platform-embeds"
+import { PlatformEmbedBlock } from "@/components/platform-embed-block"
 
 /** Maximum description length before truncation — matches common OG viewer behavior. */
 const DESCRIPTION_MAX_CHARS = 160
@@ -72,6 +74,15 @@ export interface LinkPreviewCardProps {
  */
 export function LinkPreviewCard({ preview, compact = false, onRemove }: LinkPreviewCardProps): ReactElement {
   const isInternal = preview.kind === "internal"
+
+  // Rich platform embeds (X, YouTube, Vimeo, Spotify, SoundCloud) take
+  // precedence over the generic OG card. Internal RIVR links always use
+  // the internal-branded card regardless of the underlying URL.
+  const platformEmbed = !isInternal ? detectPlatformEmbed(preview.url) : null
+  if (platformEmbed) {
+    return <PlatformEmbedBlock url={preview.url} embed={platformEmbed} onRemove={onRemove} />
+  }
+
   const title = preview.ogTitle?.trim() || hostLabel(preview.url)
   const description = truncate(preview.ogDescription)
   const site = preview.siteName || (isInternal ? "RIVR" : hostLabel(preview.url))

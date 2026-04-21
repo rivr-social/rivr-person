@@ -60,6 +60,19 @@ function buildCspHeader(nonce: string): string {
     "https://assets.cesium.com",
     "https://*.cesium.com",
     "https://*.stripe.com",
+    // Platform embed CDNs (Twitter/X, YouTube, Vimeo, Spotify, SoundCloud).
+    "https://pbs.twimg.com",
+    "https://abs.twimg.com",
+    "https://syndication.twitter.com",
+    "https://i.ytimg.com",
+    "https://*.ytimg.com",
+    "https://i.vimeocdn.com",
+    "https://*.vimeocdn.com",
+    "https://i.scdn.co",
+    "https://mosaic.scdn.co",
+    "https://*.scdn.co",
+    "https://i1.sndcdn.com",
+    "https://*.sndcdn.com",
   ];
 
   // Resolve the app's own origin so HMR WebSockets and fetch work behind Traefik
@@ -102,9 +115,25 @@ function buildCspHeader(nonce: string): string {
   // next-themes, HMR, and other dev-time inline scripts that lack nonces.
   // In production, enforce nonce-based CSP for proper XSS protection.
   // The sha256 hash whitelists the next-themes inline script that prevents FOUC.
+  const platformEmbedScripts =
+    "https://platform.twitter.com https://cdn.syndication.twimg.com";
+
   const scriptSrc = isDev
-    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com`
-    : `script-src 'self' 'nonce-${nonce}' 'sha256-n46vPwSWuMC0W703pBofImv82Z26xo4LXymv0E9caPk=' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com`;
+    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts}`
+    : `script-src 'self' 'nonce-${nonce}' 'sha256-n46vPwSWuMC0W703pBofImv82Z26xo4LXymv0E9caPk=' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts}`;
+
+  const frameSrc = [
+    "frame-src 'self'",
+    "https://js.stripe.com",
+    "https://hooks.stripe.com",
+    "https://www.youtube.com",
+    "https://www.youtube-nocookie.com",
+    "https://player.vimeo.com",
+    "https://open.spotify.com",
+    "https://w.soundcloud.com",
+    "https://platform.twitter.com",
+    "https://syndication.twitter.com",
+  ].join(" ");
 
   return [
     "default-src 'self'",
@@ -114,7 +143,7 @@ function buildCspHeader(nonce: string): string {
     `img-src ${Array.from(new Set(imageSources)).join(" ")}`,
     "font-src 'self' data:",
     `connect-src ${connectSources.join(" ")}`,
-    "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+    frameSrc,
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
