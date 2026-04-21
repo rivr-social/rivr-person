@@ -109,6 +109,11 @@ function buildCspHeader(nonce: string): string {
     "https://nominatim.openstreetmap.org",
     ...(matrixUrl ? [matrixUrl] : []),
     ...(matrixWss ? [matrixWss] : []),
+    // Twitter/X widgets.js fetches tweet card data from these origins;
+    // without them the rich oembed-style card can't render.
+    "https://cdn.syndication.twimg.com",
+    "https://syndication.twitter.com",
+    "https://platform.twitter.com",
   ];
 
   // In dev mode, use 'unsafe-inline' for scripts to avoid CSP noise from
