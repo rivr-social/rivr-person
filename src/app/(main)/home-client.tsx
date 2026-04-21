@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ResponsiveTabsList } from "@/components/responsive-tabs-list"
 import { PostFeed } from "@/components/post-feed"
 import { GroupFeed } from "@/components/group-feed"
 import { PeopleFeed } from "@/components/people-feed"
@@ -359,14 +360,14 @@ export default function HomeClient({
       )}
 
       <Tabs defaultValue="posts" value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="flex w-full mb-4 gap-0">
-          <TabsTrigger value="posts" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Posts</TabsTrigger>
-          <TabsTrigger value="events" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Events</TabsTrigger>
-          <TabsTrigger value="groups" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Groups</TabsTrigger>
-          <TabsTrigger value="people" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">People</TabsTrigger>
-          <TabsTrigger value="gigs" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Gigs</TabsTrigger>
-          <TabsTrigger value="marketplace" className="flex-1 px-1 text-xs sm:text-sm sm:px-3">Mart</TabsTrigger>
-        </TabsList>
+        <ResponsiveTabsList className="mb-4 gap-0 md:flex md:w-full">
+          <TabsTrigger value="posts" className="px-3 text-sm max-md:shrink-0 md:flex-1 md:px-1 md:text-xs lg:text-sm lg:px-3">Posts</TabsTrigger>
+          <TabsTrigger value="events" className="px-3 text-sm max-md:shrink-0 md:flex-1 md:px-1 md:text-xs lg:text-sm lg:px-3">Events</TabsTrigger>
+          <TabsTrigger value="groups" className="px-3 text-sm max-md:shrink-0 md:flex-1 md:px-1 md:text-xs lg:text-sm lg:px-3">Groups</TabsTrigger>
+          <TabsTrigger value="people" className="px-3 text-sm max-md:shrink-0 md:flex-1 md:px-1 md:text-xs lg:text-sm lg:px-3">People</TabsTrigger>
+          <TabsTrigger value="gigs" className="px-3 text-sm max-md:shrink-0 md:flex-1 md:px-1 md:text-xs lg:text-sm lg:px-3">Gigs</TabsTrigger>
+          <TabsTrigger value="marketplace" className="px-3 text-sm max-md:shrink-0 md:flex-1 md:px-1 md:text-xs lg:text-sm lg:px-3">Mart</TabsTrigger>
+        </ResponsiveTabsList>
 
         <TabsContent value="posts" className="mt-0">
           <PostFeed
