@@ -7,8 +7,7 @@
  * platform match exists.
  */
 
-import { useEffect, useRef } from "react"
-import Script from "next/script"
+import { useEffect, useRef, useState } from "react"
 import type { PlatformEmbedDescriptor } from "@/lib/platform-embeds"
 
 declare global {
@@ -16,6 +15,11 @@ declare global {
     twttr?: {
       widgets?: {
         load: (el?: Element) => void
+        createTweet: (
+          tweetId: string,
+          container: HTMLElement,
+          options?: Record<string, unknown>,
+        ) => Promise<HTMLElement>
       }
     }
   }
@@ -88,6 +92,53 @@ export function PlatformEmbedBlock({ url, embed, onRemove }: PlatformEmbedBlockP
   return <TwitterBlockquote url={embed.tweetUrl} originalUrl={url} onRemove={onRemove} />
 }
 
+/**
+ * Twitter tweet embed.
+ *
+ * Uses `twttr.widgets.createTweet(tweetId, container, options)` rather than
+ * the blockquote + widgets.load pattern because it's more reliable:
+ * - no dependence on Next's Script `onReady` timing
+ * - explicit container means no DOM-sweep race on feed renders
+ * - cleaner error path — we can observe the promise rejection if the
+ *   syndication call fails and degrade to the linked-URL fallback.
+ *
+ * widgets.js is loaded once per document via a module-level promise and
+ * reused for every embed on the page.
+ */
+let widgetsPromise: Promise<void> | null = null
+function loadTwitterWidgets(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve()
+  if (window.twttr?.widgets?.createTweet) return Promise.resolve()
+  if (widgetsPromise) return widgetsPromise
+  widgetsPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src="https://platform.twitter.com/widgets.js"]',
+    )
+    if (existing) {
+      existing.addEventListener("load", () => resolve(), { once: true })
+      existing.addEventListener("error", (e) => reject(e), { once: true })
+      return
+    }
+    const script = document.createElement("script")
+    script.src = "https://platform.twitter.com/widgets.js"
+    script.async = true
+    script.charset = "utf-8"
+    script.onload = () => resolve()
+    script.onerror = (e) => reject(e)
+    document.body.appendChild(script)
+  })
+  return widgetsPromise
+}
+
+function tweetIdFromUrl(url: string): string | null {
+  try {
+    const match = new URL(url).pathname.match(/\/status\/(\d+)/)
+    return match ? match[1] : null
+  } catch {
+    return null
+  }
+}
+
 function TwitterBlockquote({
   url,
   originalUrl,
@@ -98,51 +149,59 @@ function TwitterBlockquote({
   onRemove?: () => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [rendered, setRendered] = useState(false)
+  const tweetId = tweetIdFromUrl(url)
 
   useEffect(() => {
-    const tryLoad = () => {
-      if (typeof window === "undefined") return
-      if (!containerRef.current) return
-      if (window.twttr?.widgets?.load) {
-        window.twttr.widgets.load(containerRef.current)
-      }
-    }
-    // Some mounts happen before the script has loaded the global. Retry a
-    // few times, then give up — the <Script> below will trigger layout
-    // when it finishes.
-    tryLoad()
-    const tick1 = setTimeout(tryLoad, 500)
-    const tick2 = setTimeout(tryLoad, 1500)
+    if (!tweetId || !containerRef.current) return
+    let cancelled = false
+    void loadTwitterWidgets()
+      .then(() => {
+        if (cancelled || !containerRef.current) return
+        const twttr = window.twttr
+        if (!twttr?.widgets?.createTweet) return
+        // Clear any prior render so feed re-renders don't stack embeds.
+        containerRef.current.innerHTML = ""
+        return twttr.widgets.createTweet(tweetId, containerRef.current, {
+          theme: "dark",
+          dnt: true,
+          conversation: "none",
+          align: "center",
+        })
+      })
+      .then(() => {
+        if (!cancelled) setRendered(true)
+      })
+      .catch((err: unknown) => {
+        console.warn("[TwitterEmbed] failed to render tweet", err)
+      })
     return () => {
-      clearTimeout(tick1)
-      clearTimeout(tick2)
+      cancelled = true
     }
-  }, [url])
+  }, [tweetId])
 
   return (
     <div className="relative w-full">
+      {/*
+        Container is targeted by createTweet. While widgets.js loads, show
+        a lightweight card with the URL so the render never looks empty.
+      */}
       <div
         ref={containerRef}
-        className="twitter-embed rounded-lg border border-border bg-muted/30 p-2"
+        className="twitter-embed min-h-[80px] w-full"
+        data-tweet-url={url}
       >
-        <blockquote
-          className="twitter-tweet"
-          data-dnt="true"
-          data-theme="dark"
-          data-conversation="none"
-        >
-          <a href={url}>{originalUrl}</a>
-        </blockquote>
+        {!rendered ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center rounded-lg border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground hover:text-foreground"
+          >
+            Loading tweet — {originalUrl}
+          </a>
+        ) : null}
       </div>
-      <Script
-        src="https://platform.twitter.com/widgets.js"
-        strategy="lazyOnload"
-        onReady={() => {
-          if (typeof window !== "undefined" && containerRef.current) {
-            window.twttr?.widgets?.load(containerRef.current)
-          }
-        }}
-      />
       {onRemove ? (
         <button
           type="button"
