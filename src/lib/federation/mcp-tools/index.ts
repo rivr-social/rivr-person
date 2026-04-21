@@ -277,6 +277,14 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
 
       const isGlobal = getBoolean(args.isGlobal, true);
 
+      // Extract URLs from the body so posts created via MCP get the same
+      // rich embed rendering (X, YouTube, Vimeo, Spotify, SoundCloud) as
+      // posts composed through the UI. Platform detection runs from the
+      // URL alone at render time — no server-side scrape needed.
+      const { extractUrls } = await import("@/lib/link-preview-client");
+      const urls = extractUrls(content);
+      const embeds = urls.map((url) => ({ url, kind: "link" as const }));
+
       return createPostResource({
         title: getString(args.title) ?? undefined,
         content,
@@ -286,6 +294,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         imageUrl: getString(args.imageUrl),
         isGlobal,
         federate: getBoolean(args.federate, isGlobal),
+        embeds,
       });
     },
   },
