@@ -30,7 +30,13 @@ ENV NODE_ENV=production
 ENV AUTH_SECRET="build-placeholder"
 ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
 
-RUN pnpm build
+# Incremental Next.js build — the persistent cache at /app/.next/cache
+# holds webpack module cache + SWC/Terser output + TS type info. Without
+# this mount every deploy is a ~20-minute full compile; with it, only
+# changed modules recompile (~2-5 min). sharing=locked keeps concurrent
+# builds safe. DO NOT REMOVE.
+RUN --mount=type=cache,id=rivr-person-next,target=/app/.next/cache,sharing=locked \
+    pnpm build
 
 RUN mkdir -p .next/standalone/.next && \
     cp -R .next/static .next/standalone/.next/static && \
