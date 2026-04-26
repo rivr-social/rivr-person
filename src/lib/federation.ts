@@ -737,6 +737,8 @@ export async function importFederationEvents(params: {
   fromPeerSlug: string;
   events: Array<{
     id?: string;
+    entityId?: string | null;
+    actorId?: string | null;
     entityType: string;
     eventType: string;
     visibility: VisibilityLevel;
@@ -816,13 +818,20 @@ export async function importFederationEvents(params: {
       }
     }
 
+    const eventEntityId =
+      typeof event.entityId === "string" && event.entityId.trim().length > 0
+        ? event.entityId
+        : typeof event.payload.id === "string"
+          ? event.payload.id
+          : null;
+
     // Version check: only apply events with version > current for the entity
-    if (event.eventVersion != null && typeof event.payload.id === "string") {
+    if (event.eventVersion != null && eventEntityId) {
       const latestEvent = await db.query.federationEvents.findFirst({
         where: and(
           eq(federationEvents.originNodeId, peerNode.id),
           eq(federationEvents.entityType, event.entityType),
-          eq(federationEvents.entityId, event.payload.id as string),
+          eq(federationEvents.entityId, eventEntityId),
           gt(federationEvents.eventVersion, 0),
         ),
         orderBy: [desc(federationEvents.eventVersion)],
@@ -855,6 +864,7 @@ export async function importFederationEvents(params: {
       originNodeId: peerNode.id,
       targetNodeId: params.localNodeId,
       entityType: event.entityType,
+      entityId: eventEntityId,
       eventType: event.eventType,
       visibility: event.visibility,
       payload: event.payload,
@@ -862,6 +872,7 @@ export async function importFederationEvents(params: {
       nonce: event.nonce ?? null,
       eventVersion: event.eventVersion ?? null,
       status: "imported",
+      actorId: null,
       processedAt: new Date(),
     });
 
@@ -898,6 +909,51 @@ export async function importFederationEvents(params: {
             pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
           })
           .onConflictDoNothing({ target: agents.id });
+      }
+    }
+
+    if (
+      event.entityType === "resource" &&
+      (event.eventType === "resource.updated" || event.eventType === "post.updated") &&
+      (event.payload.visibility === "private" || event.payload.visibility === "hidden")
+    ) {
+      const externalId = eventEntityId;
+      if (externalId) {
+        const mapped = await db.query.federationEntityMap.findFirst({
+          where: and(
+            eq(federationEntityMap.originNodeId, peerNode.id),
+            eq(federationEntityMap.externalEntityId, externalId),
+            eq(federationEntityMap.entityType, "resource"),
+          ),
+          columns: { localEntityId: true },
+        });
+        const candidateIds = Array.from(new Set([externalId, mapped?.localEntityId].filter(Boolean) as string[]));
+        await db
+          .update(resources)
+          .set({ deletedAt: new Date(), updatedAt: new Date() })
+          .where(inArray(resources.id, candidateIds));
+      }
+    }
+
+    if (
+      event.entityType === "resource" &&
+      (event.eventType === "resource.deleted" || event.eventType === "post.deleted" || event.eventType === "delete")
+    ) {
+      const externalId = eventEntityId;
+      if (externalId) {
+        const mapped = await db.query.federationEntityMap.findFirst({
+          where: and(
+            eq(federationEntityMap.originNodeId, peerNode.id),
+            eq(federationEntityMap.externalEntityId, externalId),
+            eq(federationEntityMap.entityType, "resource"),
+          ),
+          columns: { localEntityId: true },
+        });
+        const candidateIds = Array.from(new Set([externalId, mapped?.localEntityId].filter(Boolean) as string[]));
+        await db
+          .update(resources)
+          .set({ deletedAt: new Date(), updatedAt: new Date() })
+          .where(inArray(resources.id, candidateIds));
       }
     }
 
@@ -950,6 +1006,8 @@ export async function importFederationEvents(params: {
               description: typeof payload.description === "string" ? payload.description : null,
               content,
               embeds,
+              visibility: event.visibility,
+              deletedAt: null,
               metadata: metadataWithAttribution,
               tags: Array.isArray(payload.tags) ? (payload.tags as string[]) : [],
               updatedAt: new Date(),

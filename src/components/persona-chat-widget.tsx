@@ -167,7 +167,7 @@ export function PersonaChatWidget({
   // Collapsed state: floating button
   if (widgetState === "collapsed") {
     return (
-      <div className="fixed bottom-6 right-6 z-50">
+      <div className="fixed bottom-6 right-6 z-[120]">
         <Button
           onClick={() => setWidgetState("expanded")}
           className="h-14 w-14 rounded-full shadow-lg"
@@ -182,7 +182,7 @@ export function PersonaChatWidget({
 
   // Expanded state: chat panel
   return (
-    <div className="fixed bottom-6 right-6 z-50 w-[360px] max-w-[calc(100vw-2rem)]">
+    <div className="fixed bottom-6 right-6 z-[120] w-[360px] max-w-[calc(100vw-2rem)]">
       <Card className="flex flex-col shadow-2xl border overflow-hidden max-h-[520px]">
         {/* Header */}
         <CardHeader className="flex flex-row items-center gap-3 px-4 py-3 border-b bg-muted/30">

@@ -10,6 +10,7 @@ import {
   type NewResource,
   type VisibilityLevel,
 } from "@/db/schema";
+import { getHostedNodeForOwner, queueEntityExportEvents } from "@/lib/federation";
 import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { and, eq, sql } from "drizzle-orm";
 import { hasEntitlement } from "@/lib/billing";
@@ -230,12 +231,27 @@ export async function updateResource(input: UpdateResourceInput): Promise<Action
   const updateActionResult = updateFacadeResult.data as ActionResult;
 
   if (updateActionResult?.success) {
+    const nextVisibility = (input.visibility ?? verifiedResource.visibility ?? "public") as VisibilityLevel;
+    const federationNode = await getHostedNodeForOwner(verifiedResource.ownerId).catch(() => null);
+    if (federationNode && ["public", "locale", "members"].includes(nextVisibility)) {
+      void queueEntityExportEvents({
+        originNodeId: federationNode.id,
+        resourceIds: [input.resourceId],
+      }).catch((error) => {
+        console.error("[federation] updateResource queue failed:", error);
+      });
+    }
+
     emitDomainEvent({
       eventType: EVENT_TYPES.RESOURCE_UPDATED,
       entityType: "resource",
       entityId: input.resourceId,
       actorId: userId,
-      payload: { resourceType: (verifiedResource.metadata as Record<string, unknown>)?.resourceKind ?? null },
+      payload: {
+        id: input.resourceId,
+        visibility: nextVisibility,
+        resourceType: (verifiedResource.metadata as Record<string, unknown>)?.resourceKind ?? null,
+      },
     }).catch(() => {});
   }
 

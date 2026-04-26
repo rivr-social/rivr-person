@@ -19,6 +19,7 @@ export interface DomainEvent {
   actorId: string;
   timestamp: string;
   version: number;
+  visibility?: 'public' | 'locale' | 'members' | 'private';
   payload: Record<string, unknown>;
   metadata: {
     causationId?: string;
@@ -203,7 +204,8 @@ export async function emitDomainEvent(params: {
     entityId: params.entityId,
     actorId: params.actorId,
     timestamp: timestamp.toISOString(),
-    version: 1,
+    version: nextEventVersion,
+    visibility: params.visibility || 'public',
     payload: params.payload as Record<string, unknown>,
     metadata: {
       correlationId: params.correlationId,

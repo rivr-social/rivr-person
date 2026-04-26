@@ -147,7 +147,9 @@ async function renderGroupPage(id: string) {
   const domainGroups = detail.subgroups.map(agentToGroup)
   const groupMeta = (detail.group.metadata ?? {}) as Record<string, unknown>
   const rawGroupType = String(groupMeta.groupType ?? "").toLowerCase()
-  const canonicalGroupType = rawGroupType === "org" ? "organization" : (rawGroupType || "basic")
+  const agentGroupType = String(detail.group.type ?? "").toLowerCase()
+  const fallbackGroupType = ["organization", "ring", "family"].includes(agentGroupType) ? agentGroupType : "basic"
+  const canonicalGroupType = rawGroupType === "org" ? "organization" : (rawGroupType || fallbackGroupType)
   const ownerId = typeof groupMeta.creatorId === "string" ? groupMeta.creatorId : undefined
   const currentUserId = session?.user?.id ?? null
   const isGroupAdmin = !!(currentUserId && (

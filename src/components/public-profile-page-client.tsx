@@ -5,7 +5,8 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsTrigger } from "@/components/ui/tabs";
+import { ResponsiveTabsList } from "@/components/responsive-tabs-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import { EventFeed } from "@/components/event-feed";
 import { ProfileGroupFeed } from "@/components/profile-group-feed";
 import { ThankModule } from "@/components/thank-module";
 import { AgentGraph } from "@/components/agent-graph";
+import { PersonaChatWidget } from "@/components/persona-chat-widget";
 import { toggleFollowAgent } from "@/app/actions/interactions/social";
 import { useToast } from "@/components/ui/use-toast";
 import type { Group, User, Post } from "@/lib/types";
@@ -153,6 +155,11 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
   const eventAgents = (bundle?.events as SerializedAgent[]) ?? [];
   const groupAgents = (bundle?.groups as SerializedAgent[]) ?? [];
   const bundleDocuments = ((bundle as Record<string, unknown> | null)?.documents as Document[]) ?? [];
+  const autobotPersona = ((bundle as Record<string, unknown> | null)?.autobotPersona as {
+    id?: string;
+    name?: string | null;
+    image?: string | null;
+  } | null) ?? null;
   const [userDocuments, setUserDocuments] = useState<Document[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [docCreatePending, setDocCreatePending] = useState(false);
@@ -718,7 +725,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
           if (!visibleSectionIds.has(PUBLIC_PROFILE_TAB_SECTIONS[value as PublicProfileTab])) return;
           setActiveTab(value as PublicProfileTab);
         }}>
-          <TabsList className="grid grid-cols-5 md:grid-cols-9 w-full">
+          <ResponsiveTabsList>
             {visibleTabs.includes("about") ? <TabsTrigger value="about">About</TabsTrigger> : null}
             {visibleTabs.includes("posts") ? <TabsTrigger value="posts">Posts</TabsTrigger> : null}
             {visibleTabs.includes("docs") ? <TabsTrigger value="docs">Docs</TabsTrigger> : null}
@@ -728,7 +735,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
             {visibleTabs.includes("photos") ? <TabsTrigger value="photos">Photos</TabsTrigger> : null}
             {visibleTabs.includes("offerings") ? <TabsTrigger value="offerings">Offerings</TabsTrigger> : null}
             {visibleTabs.includes("activity") ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
-          </TabsList>
+          </ResponsiveTabsList>
 
           {visibleTabs.includes("about") ? (
             <TabsContent value="about" className="mt-4">
@@ -1007,6 +1014,14 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
           </div>
         ) : null}
       </div>
+
+      {autobotPersona ? (
+        <PersonaChatWidget
+          username={profileUser.username || targetUsername}
+          personaName={autobotPersona.name || profileUser.name}
+          personaImage={autobotPersona.image || profileUser.avatar || null}
+        />
+      ) : null}
 
     </div>
   );

@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ResponsiveTabsList } from "@/components/responsive-tabs-list"
 import { useToast } from "@/components/ui/use-toast"
 import { CreatePost } from "@/components/create-post"
 import { CreateOfferingModal } from "@/components/create-offering-modal"
@@ -381,8 +382,7 @@ export function GroupTabsClient({
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-      <div className="overflow-x-auto -mx-4 px-4 scrollbar-hide">
-        <TabsList className="inline-flex w-max min-w-full gap-1">
+      <ResponsiveTabsList>
           <TabsTrigger value="about" className="shrink-0">About</TabsTrigger>
           <TabsTrigger value="feed" className="shrink-0">Feed</TabsTrigger>
           <TabsTrigger value="events" className="shrink-0">Events</TabsTrigger>
@@ -400,8 +400,7 @@ export function GroupTabsClient({
               <TabsTrigger value="treasury" className="shrink-0">Treasury</TabsTrigger>
             </>
           )}
-        </TabsList>
-      </div>
+      </ResponsiveTabsList>
 
       {/* ── About ── */}
       <TabsContent value="about" className="space-y-4 mt-4">

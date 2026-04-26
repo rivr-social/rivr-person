@@ -479,8 +479,8 @@ export async function updatePersonaAutobotSettings(input: {
 
 /**
  * Finds the first autobot-enabled persona for a given parent agent ID.
- * Used by public surfaces (profile page, persona chat API) to determine
- * whether the user has an active public AI persona.
+ * Falls back to the profile agent itself for older single-person instances
+ * that stored the public chat flag directly on the account row.
  *
  * This does NOT require authentication — it reads from public persona metadata.
  */
@@ -496,11 +496,24 @@ export async function findAutobotEnabledPersona(
       and(
         eq(agents.parentAgentId, parentAgentId),
         isNull(agents.deletedAt),
-        sql`(metadata->>'autobotEnabled')::boolean = true`,
+        sql`lower(coalesce(metadata->>'autobotEnabled', metadata->>'autobot_enabled', 'false')) = 'true'`,
       ),
     )
     .limit(1);
 
-  if (rows.length === 0) return null;
-  return serializeAgent(rows[0]);
+  if (rows[0]) return serializeAgent(rows[0]);
+
+  const selfRows = await db
+    .select()
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, parentAgentId),
+        isNull(agents.deletedAt),
+        sql`lower(coalesce(metadata->>'autobotEnabled', metadata->>'autobot_enabled', 'false')) = 'true'`,
+      ),
+    )
+    .limit(1);
+
+  return selfRows[0] ? serializeAgent(selfRows[0]) : null;
 }

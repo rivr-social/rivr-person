@@ -19,7 +19,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsTrigger } from "@/components/ui/tabs";
+import { ResponsiveTabsList } from "@/components/responsive-tabs-list";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -705,7 +706,7 @@ export function SettingsForm({
       </Card>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SettingsTab)} className="space-y-4">
-        <TabsList className="grid grid-cols-4 md:grid-cols-9">
+        <ResponsiveTabsList>
           <TabsTrigger value="account">Account</TabsTrigger>
           <TabsTrigger value="privacy">Privacy</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
@@ -715,7 +716,7 @@ export function SettingsForm({
           <TabsTrigger value="seller">Seller</TabsTrigger>
           <TabsTrigger value="federation">Federation</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
-        </TabsList>
+        </ResponsiveTabsList>
 
         <TabsContent value="account" className="space-y-4">
           <div className="flex items-center gap-4 mb-6">

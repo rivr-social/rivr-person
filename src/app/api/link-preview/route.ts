@@ -108,10 +108,15 @@ async function fetchOpenGraph(urlString: string): Promise<{
   error?: string;
 }> {
   try {
-    // Dynamic import: open-graph-scraper is ESM and only needed server-side.
-    const mod = await import('open-graph-scraper');
-    const ogs = (mod as unknown as { default: typeof mod }).default ?? mod;
-    const run = (ogs as unknown as (opts: object) => Promise<{
+    // Optional runtime load: some local workspaces may not have this package
+    // installed even though the route can still degrade gracefully.
+    const moduleName = 'open-graph-scraper';
+    const loadScraper = new Function('name', 'return import(name);') as (
+      name: string,
+    ) => Promise<unknown>;
+    const mod = await loadScraper(moduleName);
+    const ogs = (mod as { default?: unknown }).default ?? mod;
+    const run = (ogs as (opts: object) => Promise<{
       error: boolean;
       result: Record<string, unknown>;
       response?: { statusCode?: number };

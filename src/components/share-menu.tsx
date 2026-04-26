@@ -32,6 +32,7 @@ const TITLE_FALLBACK_LENGTH = 60
 const TEXT_EXCERPT_LENGTH = 200
 const POPUP_WIDTH = 600
 const POPUP_HEIGHT = 500
+const SCROLL_CLICK_THRESHOLD_PX = 8
 
 /** Minimal post shape the share menu needs. Keeps the component decoupled
  *  from the full `Post` type so it can be reused from feed + detail views. */
@@ -259,6 +260,8 @@ const PLATFORMS: PlatformDescriptor[] = [
 export function ShareMenu({ post, className, onTriggerClick }: ShareMenuProps) {
   const { toast } = useToast()
   const [open, setOpen] = React.useState(false)
+  const pointerStartRef = React.useRef<{ x: number; y: number; scrollY: number } | null>(null)
+  const suppressNextClickRef = React.useRef(false)
 
   const handleCopy = React.useCallback(
     async (payload: SharePayload) => {
@@ -291,6 +294,12 @@ export function ShareMenu({ post, className, onTriggerClick }: ShareMenuProps) {
 
   const handleTriggerClick = React.useCallback(
     async (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (suppressNextClickRef.current) {
+        suppressNextClickRef.current = false
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       if (onTriggerClick) onTriggerClick(event)
       // Prevent the dropdown from opening reflexively — we decide below.
       const payload = buildSharePayload(post)
@@ -316,6 +325,30 @@ export function ShareMenu({ post, className, onTriggerClick }: ShareMenuProps) {
     [onTriggerClick, post],
   )
 
+  const handlePointerDown = React.useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    pointerStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      scrollY: typeof window === "undefined" ? 0 : window.scrollY,
+    }
+    suppressNextClickRef.current = false
+  }, [])
+
+  const handlePointerMove = React.useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const start = pointerStartRef.current
+    if (!start) return
+    const scrolled = typeof window !== "undefined" ? Math.abs(window.scrollY - start.scrollY) : 0
+    const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y)
+    if (moved > SCROLL_CLICK_THRESHOLD_PX || scrolled > SCROLL_CLICK_THRESHOLD_PX) {
+      suppressNextClickRef.current = true
+    }
+  }, [])
+
+  const handlePointerCancel = React.useCallback(() => {
+    pointerStartRef.current = null
+    suppressNextClickRef.current = true
+  }, [])
+
   const payload = React.useMemo(() => buildSharePayload(post), [post])
 
   return (
@@ -329,6 +362,9 @@ export function ShareMenu({ post, className, onTriggerClick }: ShareMenuProps) {
             "h-12 w-full rounded-none justify-center text-muted-foreground",
             className,
           )}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerCancel={handlePointerCancel}
           onClick={handleTriggerClick}
           aria-label="Share post"
         >
