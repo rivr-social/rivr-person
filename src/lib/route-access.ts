@@ -28,6 +28,11 @@ const PUBLIC_PAGE_PREFIXES = [
   "/projects",
   "/jobs",
   "/products",
+  // Device-authorization approval page: it handles its own auth
+  // redirect internally so it can preserve the `user_code` query arg
+  // across the login round-trip. Middleware's generic redirect
+  // would drop it.
+  "/mcp/authorize",
 ];
 
 const PUBLIC_API_PREFIXES = [
