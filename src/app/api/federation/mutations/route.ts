@@ -4,7 +4,10 @@ import { db } from "@/db";
 import { agents, ledger } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
-import { authorizeFederationRequest } from "@/lib/federation-auth";
+import {
+  authorizeFederationRequest,
+  bindAuthorizedFederationActor,
+} from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
 import { REMOTE_VIEWER_COOKIE_NAME, validateRemoteViewerToken } from "@/lib/federation-remote-session";
@@ -166,7 +169,22 @@ export async function POST(request: Request) {
       );
     }
 
-    return handleLegacyMutation(body, config, remoteInstanceSlug, remoteInstanceId, routedFrom);
+    const actorBinding = bindAuthorizedFederationActor(authorization, body.actorId);
+    if (!actorBinding.authorized || !actorBinding.actorId) {
+      return NextResponse.json(
+        { success: false, error: actorBinding.reason ?? "Actor authorization failed" },
+        { status: 403 },
+      );
+    }
+
+    return handleLegacyMutation(
+      body,
+      actorBinding.actorId,
+      config,
+      remoteInstanceSlug,
+      remoteInstanceId,
+      routedFrom,
+    );
   } catch (error) {
     console.error("[federation/mutations] Error processing mutation:", error);
     return NextResponse.json(
@@ -463,6 +481,7 @@ function createStubHandler(
 
 async function handleLegacyMutation(
   body: MutationRequestBody,
+  authorizedActorId: string,
   config: ReturnType<typeof getInstanceConfig>,
   remoteSlug: string,
   remoteId: string,
@@ -493,7 +512,7 @@ async function handleLegacyMutation(
     `[federation/mutations] Legacy mutation from ${remoteSlug} (${remoteId}):`,
     {
       type,
-      actorId,
+      actorId: authorizedActorId,
       targetAgentId,
       payloadKeys: payload && typeof payload === "object" ? Object.keys(payload as object) : [],
       routedFrom: routedFrom ? routedFrom.originInstanceSlug : null,
@@ -503,7 +522,7 @@ async function handleLegacyMutation(
   const isKnownType = (KNOWN_MUTATION_TYPES as readonly string[]).includes(type);
 
   if (type === "toggleFollowAgent") {
-    const result = await runWithFederationExecutionContext(actorId, () => toggleFollowAgent(targetAgentId));
+    const result = await runWithFederationExecutionContext(authorizedActorId, () => toggleFollowAgent(targetAgentId));
     return NextResponse.json({
       success: result.success,
       data: result,
@@ -521,7 +540,7 @@ async function handleLegacyMutation(
   }
 
   if (type === "applyMembershipProjection") {
-    const result = await applyMembershipProjection(actorId, payload);
+    const result = await applyMembershipProjection(authorizedActorId, payload);
     return NextResponse.json({
       ...result,
       instanceId: config.instanceId,
@@ -538,7 +557,7 @@ async function handleLegacyMutation(
   }
 
   if (type === "createEventResource") {
-    const result = await runWithFederationExecutionContext(actorId, () =>
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
       createEventResource(withTargetOwner(payload, targetAgentId) as Parameters<typeof createEventResource>[0]),
     );
     return NextResponse.json({
@@ -551,7 +570,7 @@ async function handleLegacyMutation(
   }
 
   if (type === "createOffering" || type === "createOfferingResource") {
-    const result = await runWithFederationExecutionContext(actorId, () =>
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
       createOfferingResource(withTargetOwner(payload, targetAgentId) as Parameters<typeof createOfferingResource>[0]),
     );
     return NextResponse.json({

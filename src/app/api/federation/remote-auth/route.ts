@@ -10,6 +10,7 @@ import type {
   RemoteAuthResult,
 } from "@/lib/federation/cross-instance-types";
 import { resolveRequestOrigin } from "@/lib/request-origin";
+import { safeOutboundUrlString } from "@/lib/safe-outbound-url";
 
 const MAX_ASSERTION_AGE_MS = 5 * 60 * 1000;
 const MAX_ASSERTION_FUTURE_MS = 60 * 1000;
@@ -63,8 +64,10 @@ async function verifyActorAssertionWithHome(
   ctx: FederatedActorContext,
   targetBaseUrl: string,
 ): Promise<VerificationResult> {
-  const homeBaseUrl = ctx.homeBaseUrl.replace(/\/+$/, "");
-  const verifyUrl = `${homeBaseUrl}/api/federation/remote-assertion/verify`;
+  const verifyUrl = safeOutboundUrlString(
+    new URL("/api/federation/remote-assertion/verify", ctx.homeBaseUrl),
+    { protocols: ["https:", "http:"] },
+  );
 
   try {
     const response = await fetch(verifyUrl, {
@@ -120,6 +123,29 @@ function buildError(error: string, code: string, status = 401) {
   );
 }
 
+function enforcePersonInstanceOwner(actorId: string): NextResponse | null {
+  const config = getInstanceConfig();
+  if (config.instanceType !== "person") return null;
+
+  if (!config.primaryAgentId) {
+    return buildError(
+      "Person instance owner is not configured",
+      "PERSON_INSTANCE_OWNER_NOT_CONFIGURED",
+      500,
+    );
+  }
+
+  if (actorId !== config.primaryAgentId) {
+    return buildError(
+      "Actor is not authorized for this person instance",
+      "PERSON_INSTANCE_OWNER_REQUIRED",
+      403,
+    );
+  }
+
+  return null;
+}
+
 async function authenticateActor(
   actorContext: Partial<FederatedActorContext>,
   targetBaseUrl: string,
@@ -157,6 +183,14 @@ async function authenticateActor(
   }
 
   const config = getInstanceConfig();
+  const ownerError = enforcePersonInstanceOwner(context.actorId);
+  if (ownerError) {
+    return {
+      ok: false,
+      response: ownerError,
+    };
+  }
+
   const sessionToken = createRemoteViewerToken({
     actorId: context.actorId,
     homeBaseUrl: context.homeBaseUrl,

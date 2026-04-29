@@ -1,4 +1,5 @@
 import { auth } from "@/auth";
+import { safeOutboundUrlString } from "@/lib/safe-outbound-url";
 import type { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -695,11 +696,21 @@ function profileToBuilderResources(
 
 function isValidSolidPodUri(uri: string): boolean {
   try {
-    const parsed = new URL(uri);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
+    getSafeSolidFetchUri(uri);
+    return true;
   } catch {
     return false;
   }
+}
+
+function getSafeSolidFetchUri(uri: string): string {
+  const parsed = new URL(uri);
+  parsed.hash = "";
+  return safeOutboundUrlString(parsed, {
+    protocols: ["https:", "http:"],
+    allowLocalhost: process.env.NODE_ENV !== "production",
+    allowPrivateIpLiterals: process.env.NODE_ENV !== "production",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -770,8 +781,8 @@ export async function POST(
       POD_FETCH_TIMEOUT_MS,
     );
 
-    // Strip fragment for HTTP request (fragments are client-side)
-    const fetchUri = podUri.split("#")[0];
+    // Strip fragment for HTTP request (fragments are client-side).
+    const fetchUri = getSafeSolidFetchUri(podUri);
 
     const podResponse = await fetch(fetchUri, {
       method: "GET",
