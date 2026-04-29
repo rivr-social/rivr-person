@@ -38,11 +38,11 @@ Rivr requires:
 
 Create them as a database admin before running app migrations. Do not grant PostgreSQL superuser to the app user.
 
-### 3. Clone this repo
+### 3. Clone the canonical monorepo
 
 ```bash
-git clone https://github.com/rivr-social/rivr-person.git /opt/rivr-person
-cd /opt/rivr-person
+git clone https://github.com/rivr-social/rivr-monorepo.git /opt/rivr-monorepo
+cd /opt/rivr-monorepo/apps/person
 cp .env.example .env
 ```
 

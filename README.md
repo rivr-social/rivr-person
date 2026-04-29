@@ -2,7 +2,7 @@
 
 **Sovereign, autobot-native Rivr instance for individuals.**
 
-Rivr Person is a standalone deployment that gives you full ownership of your Rivr identity — your profile, your data, your domain. It ships with a built-in MCP server so AI agents (autobots) can read and write on your behalf, a control plane UI for managing personas and reviewing autobot activity, and federation support for staying connected to the wider Rivr network.
+Rivr Person is the deployment surface for the canonical person app in the Rivr monorepo. It gives you full ownership of your Rivr identity — your profile, your data, your domain. It ships with a built-in MCP server so AI agents (autobots) can read and write on your behalf, a control plane UI for managing personas and reviewing autobot activity, and federation support for staying connected to the wider Rivr network.
 
 ## What Makes It Autobot-Native
 
@@ -16,7 +16,7 @@ Rivr Person is a standalone deployment that gives you full ownership of your Riv
 
 Someone should be able to:
 
-1. clone this repo,
+1. clone the canonical monorepo,
 2. provision the PM Core host stack,
 3. deploy the person app,
 4. bind their existing Rivr agent,
@@ -54,9 +54,9 @@ Rivr Person sits on top of that base.
 
 ## What Is In This Repo
 
-This repo contains the person app itself, not the entire Rivr monorepo:
+This repo is the deployment mirror and operator surface for the canonical monorepo app:
 
-- Next.js person-instance app under `src/`
+- person-instance app code under `src/`
 - database schema and migrations under `src/db/`
 - federation routing and resolution code under `src/lib/federation/`
 - person migration and cutover scripts under `src/scripts/`
@@ -64,7 +64,7 @@ This repo contains the person app itself, not the entire Rivr monorepo:
 - example compose and env files
 - operator docs under `docs/`
 
-You do not need the full Rivr monorepo to build or run this repo.
+The canonical source of truth is `rivr-social/rivr-monorepo` under `apps/person`.
 
 ## High-Level Setup Flow
 
@@ -106,11 +106,11 @@ Do not make the Rivr app user a PostgreSQL superuser.
 
 ### 3. Deploy the Rivr person app
 
-Clone and install only this repo:
+Clone the canonical monorepo and build the person app from there:
 
 ```bash
-git clone https://github.com/rivr-social/rivr-person.git
-cd rivr-person
+git clone https://github.com/rivr-social/rivr-monorepo.git
+cd rivr-monorepo/apps/person
 cp .env.example .env
 pnpm install
 pnpm build
@@ -136,18 +136,12 @@ DATABASE_URL=postgres://...
 AUTH_SECRET=<real-secret>
 
 # Federation-auth operating mode (see src/lib/instance-mode.ts).
-# sovereign          — home-server deployments (e.g. rivr.camalot.me);
-#                      enables seed-phrase / recovery-key UI.
-# hosted-federated   — shared hosted deployments where global holds
-#                      credentials; seed-phrase UI is suppressed.
-# Defaults to `sovereign` when unset, matching the canonical Camalot deploy.
+# sovereign          — home-server deployments; enables seed-phrase / recovery-key UI.
+# hosted-federated   — shared hosted deployments where global holds credentials;
+#                      seed-phrase UI is suppressed.
+# Defaults to `sovereign` when unset.
 RIVR_INSTANCE_MODE=sovereign
 ```
-
-The Camalot deploy (`rivr.camalot.me`, host `5.161.46.237`, container
-`pmdl_rivr_person`) sets `RIVR_INSTANCE_MODE=sovereign` via its compose
-env file under `/opt/pm-core`. A hosted rivr-person behind a global
-shell should override this to `hosted-federated`.
 
 ### 4. Bind your existing Rivr agent
 

@@ -1,18 +1,18 @@
 # Person App Deploy Runbook
 
-This is the operator runbook for deploying a standalone `rivr-person` instance such as `rivr.camalot.me`.
+This is the operator runbook for deploying the canonical `rivr-person` app from the monorepo onto a sovereign person instance.
 
-Use this document if you are the agent responsible for bringing up the sovereign person instance, migrating the profile off `b.rivr.social`, and verifying the bespoke profile contract works on the target host.
+Use this document if you are responsible for bringing up the person instance, migrating the profile off a shared host, and verifying the bespoke profile contract works on the target host.
 
 ## Canonical Source
 
-- Repo: `rivr-person`
-- App to deploy: the repo root app
+- Repo: `rivr-monorepo`
+- App to deploy: `apps/person`
 - Build command: `pnpm build`
 - Runtime command: `pnpm start`
 - Docker build: `docker build -t rivr-person:latest .`
 
-This repo is the source of truth. You do not need the full Rivr monorepo to deploy the person app.
+The monorepo is the source of truth.
 
 ## What This App Must Provide
 

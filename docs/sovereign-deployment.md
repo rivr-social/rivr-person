@@ -76,8 +76,8 @@ Only Traefik-routed services are publicly accessible.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/rivr-social/rivr-person.git
-cd rivr-person
+git clone https://github.com/rivr-social/rivr-monorepo.git
+cd rivr-monorepo/apps/person
 ```
 
 ### 2. Prepare the OpenClaw web build context

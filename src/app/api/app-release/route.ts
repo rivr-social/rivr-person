@@ -5,7 +5,7 @@ export async function GET() {
   const status = await buildAppReleaseStatus({
     appName: "rivr-person",
     defaultVersion: "0.1.0",
-    defaultUpstreamRepo: "rivr-social/rivr-person",
+    defaultUpstreamRepo: "rivr-social/rivr-monorepo",
   });
 
   return NextResponse.json(status, {

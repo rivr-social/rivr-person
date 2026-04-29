@@ -27,7 +27,7 @@ Minimum config:
   "mcp": {
     "servers": {
       "rivr": {
-        "url": "https://rivr.camalot.me/api/mcp?token=REPLACE_WITH_AIAGENT_MCP_TOKEN"
+        "url": "https://rivr.example.com/api/mcp?token=REPLACE_WITH_AIAGENT_MCP_TOKEN"
       }
     }
   }
@@ -44,7 +44,7 @@ If your active OpenClaw MCP runtime supports remote request headers, prefer:
   "mcp": {
     "servers": {
       "rivr": {
-        "url": "https://rivr.camalot.me/api/mcp",
+        "url": "https://rivr.example.com/api/mcp",
         "headers": {
           "Authorization": "Bearer REPLACE_WITH_AIAGENT_MCP_TOKEN"
         }
@@ -99,7 +99,7 @@ The `/autobot` page provides a web-based control plane for managing your instanc
 
 ## Verification
 
-1. `curl https://rivr.camalot.me/.well-known/mcp`
+1. `curl https://rivr.example.com/.well-known/mcp`
 2. call `initialize`
 3. call `tools/list`
 4. call `tools/call` with `rivr.instance.get_context`

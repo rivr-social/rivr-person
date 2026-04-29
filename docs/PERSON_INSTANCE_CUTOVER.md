@@ -1,6 +1,6 @@
 # Person Instance Cutover
 
-This is the concrete cutover path for moving a live person profile from a shared instance such as `b.rivr.social` to a dedicated person instance such as `rivr.camalot.me`.
+This is the concrete cutover path for moving a live person profile from a shared instance to a dedicated person instance.
 
 ## Principles
 
@@ -41,9 +41,9 @@ SOURCE_PRIMARY_AGENT_ID=<your-person-agent-uuid>
 
 TARGET_INSTANCE_ID=<rivr-camalot-node-uuid>
 TARGET_INSTANCE_SLUG=camalot
-TARGET_BASE_URL=https://rivr.camalot.me
+TARGET_BASE_URL=https://rivr.example.com
 TARGET_PRIMARY_AGENT_ID=<your-person-agent-uuid>
-TARGET_DISPLAY_NAME="Camalot"
+TARGET_DISPLAY_NAME="<display-name>"
 TARGET_PUBLIC_KEY=<target-node-public-key>
 
 CUTOVER_PHASE=complete
@@ -52,7 +52,7 @@ pnpm federation:person:cutover
 
 ## Deployment Sequence
 
-1. Bring up `rivr.camalot.me` with normal app credentials and a database where the required extensions are already installed.
+1. Bring up the target person domain with normal app credentials and a database where the required extensions are already installed.
 2. Run Rivr migrations as the normal app user.
 3. Import the person-instance manifest into the target database.
 4. Set:
@@ -61,13 +61,13 @@ pnpm federation:person:cutover
    - `INSTANCE_SLUG=camalot`
    - `PRIMARY_AGENT_ID=<your-person-agent-uuid>`
    - `REGISTRY_URL=https://b.rivr.social/api/federation/registry`
-   - `NEXT_PUBLIC_BASE_URL=https://rivr.camalot.me`
+   - `NEXT_PUBLIC_BASE_URL=https://rivr.example.com`
 5. Restart the target app.
 6. Run `pnpm federation:person:cutover` with `CUTOVER_PHASE=complete`.
 7. Verify:
-   - `GET /api/federation/registry?agentId=<your-agent-id>` now resolves to `https://rivr.camalot.me`
-   - `GET /api/myprofile` on `rivr.camalot.me` succeeds with your session
-   - `GET /api/profile/<username>` on `rivr.camalot.me` returns your public profile bundle
+   - `GET /api/federation/registry?agentId=<your-agent-id>` now resolves to `https://rivr.example.com`
+   - `GET /api/myprofile` on the target domain succeeds with your session
+   - `GET /api/profile/<username>` on the target domain returns your public profile bundle
 
 ## Notes
 
