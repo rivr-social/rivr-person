@@ -274,6 +274,65 @@ export function agentToGroup(agent: SerializedAgent): Group {
  * @example
  * const eventItem = agentToEvent(eventAgent);
  */
+/** Default duration when an event has a start but no explicit end, in ms. */
+const DEFAULT_EVENT_DURATION_MS = 60 * 60 * 1000;
+
+/**
+ * Compose an ISO start string for an event from its metadata.
+ *
+ * Priority: explicit `startDate` ISO → `date` + `time` from the offering
+ * form → caller-supplied fallback (typically `agent.createdAt`). The form
+ * stores `date` (YYYY-MM-DD) and `time` (HH:mm) as separate fields, so
+ * this is what aligns the adapter with what the form actually writes.
+ */
+function resolveEventStart(
+  meta: Record<string, unknown>,
+  fallback: string,
+): string {
+  if (typeof meta.startDate === "string" && meta.startDate.length > 0) {
+    return meta.startDate;
+  }
+  if (typeof meta.date === "string" && meta.date.length > 0) {
+    const time =
+      typeof meta.time === "string" && meta.time.length > 0
+        ? meta.time
+        : "00:00";
+    return `${meta.date}T${time}`;
+  }
+  return fallback;
+}
+
+/**
+ * Compose an ISO end string for an event.
+ *
+ * Priority: explicit `endDate` ISO → `date` + `endTime` → start + default
+ * duration → caller-supplied fallback. Default duration is one hour;
+ * surfaces that need a precise end should write an explicit `endDate`
+ * during creation.
+ */
+function resolveEventEnd(
+  meta: Record<string, unknown>,
+  fallback: string,
+  startIso: string,
+): string {
+  if (typeof meta.endDate === "string" && meta.endDate.length > 0) {
+    return meta.endDate;
+  }
+  if (
+    typeof meta.endTime === "string" &&
+    meta.endTime.length > 0 &&
+    typeof meta.date === "string" &&
+    meta.date.length > 0
+  ) {
+    return `${meta.date}T${meta.endTime}`;
+  }
+  const startMs = Date.parse(startIso);
+  if (!Number.isNaN(startMs)) {
+    return new Date(startMs + DEFAULT_EVENT_DURATION_MS).toISOString();
+  }
+  return fallback;
+}
+
 export function agentToEvent(agent: SerializedAgent) {
   const meta = agent.metadata ?? {};
   const scopeTags = toStringArray(
@@ -378,6 +437,15 @@ export function agentToEvent(agent: SerializedAgent) {
         .filter((item) => item.resourceId.length > 0)
     : [];
 
+  // Resolve the event's start/end from either the legacy `startDate` /
+  // `endDate` ISO fields OR the form's `date` + `time` / `endTime` pair.
+  // Falls back to `agent.createdAt` only when neither shape is populated,
+  // which prevents events from rendering at the resource creation timestamp
+  // (the original bug — events created with `metadata.date` were shown on
+  // the day the row was inserted instead of on their actual scheduled date).
+  const start = resolveEventStart(meta, agent.createdAt);
+  const end = resolveEventEnd(meta, agent.createdAt, start);
+
   return {
     id: agent.id,
     name: agent.name,
@@ -386,8 +454,8 @@ export function agentToEvent(agent: SerializedAgent) {
     type: "event" as const,
     image: agent.image ?? "/placeholder-event.jpg",
     timeframe: {
-      start: (meta.startDate as string) ?? agent.createdAt,
-      end: (meta.endDate as string) ?? agent.createdAt,
+      start,
+      end,
     },
     organizer: (meta.organizerId as string) ?? agent.parentId ?? "",
     creator: (meta.creatorId as string) ?? "",
