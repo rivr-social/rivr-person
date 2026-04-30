@@ -264,11 +264,32 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      const events = await listExportableEvents({
+      // Per-peer-targeted events first: these were emitted with an
+      // explicit `targetNodeId` and are eligible only for that peer.
+      const targetedEvents = await listExportableEvents({
         originNodeId: localNode.id,
         targetNodeSlug: peer.peerSlug,
         limit: MAX_EVENTS_PER_PEER,
       });
+
+      // Untargeted public-broadcast events: emitted with `targetNodeId`
+      // null and non-private visibility. These should fan out to every
+      // trusted peer (each peer's importer applies its own scope+
+      // membership filter to decide whether to materialize a resource).
+      // Without this branch, normal user-facing creates — which never
+      // set a target — would never reach any peer.
+      const broadcastEvents = await listExportableEvents({
+        originNodeId: localNode.id,
+        limit: MAX_EVENTS_PER_PEER,
+      });
+
+      // De-dupe by id when an event happens to qualify as both targeted
+      // and broadcast (defensive — listExportableEvents excludes private
+      // from the broadcast branch already).
+      const eventsById = new Map<string, (typeof targetedEvents)[number]>();
+      for (const e of targetedEvents) eventsById.set(e.id, e);
+      for (const e of broadcastEvents) eventsById.set(e.id, e);
+      const events = Array.from(eventsById.values()).slice(0, MAX_EVENTS_PER_PEER);
 
       if (events.length === 0) {
         results.push({ peerSlug: peer.peerSlug, attempted: 0, delivered: 0 });

@@ -437,28 +437,61 @@ export async function createEventResource(input: {
   const actionResult = facadeResult.data as ActionResult;
 
   if (actionResult?.success && actionResult.resourceId) {
-    // Surface the same scoping fields the importer's scope filter
-    // reads (`metadata.scopedGroupIds`, `metadata.groupId`, `ownerId`)
-    // so peer instances can route the event without re-deriving scope
-    // from the resource's metadata via a separate query.
-    const eventPayloadScopedGroupIds = (input.scopedGroupIds ?? []).filter(
-      (value): value is string => typeof value === "string" && value.trim().length > 0,
-    );
-    emitDomainEvent({
-      eventType: EVENT_TYPES.EVENT_CREATED,
-      entityType: "resource",
-      entityId: actionResult.resourceId,
-      actorId: resolvedUserId,
-      payload: {
-        eventType: input.eventType,
-        groupId: normalizedGroupId,
-        ownerId,
-        metadata: {
+    // Read the freshly-written resource so the federation payload mirrors
+    // exactly what landed in the local table. The importer needs the
+    // canonical resource shape (id/name/type/description/metadata/tags)
+    // to build a peer-side mirror row — emitting only thin scoping fields
+    // would leave the importer unable to materialize the resource.
+    const [createdResource] = await db
+      .select({
+        id: resources.id,
+        name: resources.name,
+        type: resources.type,
+        description: resources.description,
+        ownerId: resources.ownerId,
+        visibility: resources.visibility,
+        tags: resources.tags,
+        metadata: resources.metadata,
+        createdAt: resources.createdAt,
+        updatedAt: resources.updatedAt,
+      })
+      .from(resources)
+      .where(eq(resources.id, actionResult.resourceId))
+      .limit(1);
+
+    if (createdResource) {
+      // The importer's scope filter reads `metadata.scopedGroupIds`,
+      // `metadata.groupId`, and `payload.ownerId` to decide whether a
+      // resource targets the receiving peer. The metadata column already
+      // carries scopedGroupIds inside `chapterTags`/`tags`, but writing
+      // the explicit field here keeps the contract stable across emits.
+      const eventPayloadScopedGroupIds = (input.scopedGroupIds ?? []).filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      );
+      const enrichedMetadata = {
+        ...((createdResource.metadata as Record<string, unknown> | null) ?? {}),
+        scopedGroupIds: eventPayloadScopedGroupIds,
+      };
+
+      emitDomainEvent({
+        eventType: EVENT_TYPES.EVENT_CREATED,
+        entityType: "resource",
+        entityId: createdResource.id,
+        actorId: resolvedUserId,
+        payload: {
+          id: createdResource.id,
+          name: createdResource.name,
+          type: createdResource.type,
+          description: createdResource.description,
+          ownerId: createdResource.ownerId,
+          visibility: createdResource.visibility,
+          tags: createdResource.tags ?? [],
+          metadata: enrichedMetadata,
+          eventType: input.eventType,
           groupId: normalizedGroupId,
-          scopedGroupIds: eventPayloadScopedGroupIds,
         },
-      },
-    }).catch(() => {});
+      }).catch(() => {});
+    }
   }
 
   return actionResult;
