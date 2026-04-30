@@ -40,6 +40,7 @@ import {
   listExportableEvents,
   markEventsExported,
 } from "@/lib/federation";
+import { signPayload } from "@/lib/federation-crypto";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import {
   STATUS_INTERNAL_ERROR,
@@ -296,7 +297,32 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      const body = buildImportBody(config.instanceSlug, events);
+      // Re-sign every event with the local node's current private key
+      // before delivery. Some legacy queued rows were emitted before the
+      // keypair was provisioned (signature column nullable); without
+      // resigning here those rows would be rejected by peers as "missing
+      // signature" forever. Resigning is also defensive against key
+      // rotations between emit time and delivery time.
+      const eventsForDelivery = await Promise.all(
+        events.map(async (e) => {
+          if (e.signature) return e;
+          if (!localNode.privateKey) return e;
+          try {
+            const signature = signPayload(
+              e.payload as Record<string, unknown>,
+              localNode.privateKey,
+            );
+            return { ...e, signature };
+          } catch (err) {
+            console.warn(
+              `[federation-deliver] failed to re-sign event ${e.id}:`,
+              err instanceof Error ? err.message : err,
+            );
+            return e;
+          }
+        }),
+      );
+      const body = buildImportBody(config.instanceSlug, eventsForDelivery);
       const outcome = await postBatchToPeer({
         peerBaseUrl: peer.peerBaseUrl,
         body,
