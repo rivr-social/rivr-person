@@ -23,6 +23,22 @@ import type { EventHost, EventPayout, EventSession, EventWorkItem } from "@/type
 
 const MAX_EVENT_DESCRIPTION_LENGTH = 50000;
 
+/**
+ * Coerce an optional `groupId` input into a real id or `null`.
+ *
+ * UI forms commonly submit empty strings instead of `null` when no
+ * group is selected. An empty `groupId` reaching `metadata.groupId`
+ * (or domain-event payloads) breaks downstream consumers like the
+ * federation scope filter, which checks `metadata.groupId` for
+ * routing decisions and would treat `""` as "scoped to a group with
+ * an empty id" rather than "unscoped".
+ */
+function normalizeGroupId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return value ?? null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export async function syncEventTicketOfferings(params: {
   eventId: string;
   ownerId: string;
@@ -219,9 +235,14 @@ export async function createEventResource(input: {
     };
   }
 
-  if (input.groupId) {
+  // Coerce empty string -> null up-front so downstream metadata,
+  // ownership, and federation event payloads see "no group" rather
+  // than "group id of empty string".
+  const normalizedGroupId = normalizeGroupId(input.groupId);
+
+  if (normalizedGroupId) {
     // Group-linked events must be created by a member with group write capability.
-    const allowed = await hasGroupWriteAccess(resolvedUserId, input.groupId);
+    const allowed = await hasGroupWriteAccess(resolvedUserId, normalizedGroupId);
     if (!allowed) {
       return {
         success: false,
@@ -231,7 +252,7 @@ export async function createEventResource(input: {
     }
   }
 
-  const ownerId = input.ownerId ?? input.groupId ?? resolvedUserId;
+  const ownerId = input.ownerId ?? normalizedGroupId ?? resolvedUserId;
   if (ownerId !== resolvedUserId) {
     const allowed = await hasGroupWriteAccess(resolvedUserId, ownerId);
     if (!allowed) {
@@ -320,7 +341,7 @@ export async function createEventResource(input: {
           chapterTags: Array.from(new Set([...baseChapterTags, ...(input.scopedLocaleIds ?? [])])),
           eventType: input.eventType,
           price: normalizedTickets[0]?.priceCents ? normalizedTickets[0].priceCents / 100 : input.price ?? null,
-          groupId: input.groupId ?? (ownerId !== resolvedUserId ? ownerId : null),
+          groupId: normalizedGroupId ?? (ownerId !== resolvedUserId ? ownerId : null),
           projectId: input.projectId ?? null,
           managingProjectId: input.projectId ?? null,
           venueId: input.venueId ?? null,
@@ -416,12 +437,27 @@ export async function createEventResource(input: {
   const actionResult = facadeResult.data as ActionResult;
 
   if (actionResult?.success && actionResult.resourceId) {
+    // Surface the same scoping fields the importer's scope filter
+    // reads (`metadata.scopedGroupIds`, `metadata.groupId`, `ownerId`)
+    // so peer instances can route the event without re-deriving scope
+    // from the resource's metadata via a separate query.
+    const eventPayloadScopedGroupIds = (input.scopedGroupIds ?? []).filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
     emitDomainEvent({
       eventType: EVENT_TYPES.EVENT_CREATED,
       entityType: "resource",
       entityId: actionResult.resourceId,
       actorId: resolvedUserId,
-      payload: { eventType: input.eventType, groupId: input.groupId ?? null, ownerId },
+      payload: {
+        eventType: input.eventType,
+        groupId: normalizedGroupId,
+        ownerId,
+        metadata: {
+          groupId: normalizedGroupId,
+          scopedGroupIds: eventPayloadScopedGroupIds,
+        },
+      },
     }).catch(() => {});
   }
 

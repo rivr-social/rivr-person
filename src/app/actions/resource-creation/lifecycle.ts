@@ -1469,12 +1469,28 @@ export async function createProjectResource(input: {
     const projectActionResult = projectFacadeResult.data as ActionResult;
 
     if (projectActionResult?.success && projectActionResult.resourceId) {
+      // Mirror the scope fields the federation importer reads for its
+      // resource scope filter so peer instances can route this project
+      // by group/scoped-group without re-querying the resource row.
+      // `input.groupId` is already validated non-empty above, but
+      // sanitize anyway to keep downstream readers consistent.
+      const projectGroupId =
+        typeof input.groupId === "string" && input.groupId.trim().length > 0
+          ? input.groupId.trim()
+          : null;
       emitDomainEvent({
         eventType: EVENT_TYPES.RESOURCE_CREATED,
         entityType: "resource",
         entityId: projectActionResult.resourceId,
         actorId: userId,
-        payload: { resourceType: "project", groupId: input.groupId },
+        payload: {
+          resourceType: "project",
+          groupId: projectGroupId,
+          metadata: {
+            groupId: projectGroupId,
+            scopedGroupIds: scopedGroupIds,
+          },
+        },
       }).catch(() => {});
     }
 
