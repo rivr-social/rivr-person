@@ -143,8 +143,21 @@ export function VisibilityScopeSelector({
     }
   }, [fetchUsers])
 
-  // Prune groups/users when locales change
+  // Prune groups/users when locales change.
+  //
+  // Semantics: the prune step removes selections that no longer belong to any
+  // currently-selected locale. When NO locales are selected the picker has no
+  // locale constraint at all (groups/users are global), so every existing
+  // selection must remain valid. Skipping the prune in that branch fixes a
+  // regression where picking a group with no locale selected (or removing the
+  // last locale after picking a group) silently dropped the group from
+  // `value.groupIds`, which then prevented `metadata.scopedGroupIds` from
+  // capturing the user's choice on submit.
   useEffect(() => {
+    if (normalizedLocaleIds.length === 0) {
+      return
+    }
+
     const selectedLocaleSet = new Set(normalizedLocaleIds)
 
     const validGroupIds = value.groupIds.filter((gid) => {
