@@ -61,6 +61,7 @@ import {
   Box,
   Check,
   ChevronLeft,
+  Image as ImageIcon,
   Loader2,
   Package,
   RotateCcw,
@@ -808,7 +809,7 @@ export function PersonaCreator({
                   {state.name || "Unnamed character"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Upload a .glb on the Appearance tab to see a rotating model here.
+                  No 3D avatar yet — upload one below.
                 </p>
               </div>
             </div>
@@ -834,6 +835,49 @@ export function PersonaCreator({
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
               {state.tagline}
             </p>
+          )}
+        </div>
+        {/* Inline upload affordance — visible on every tab so the user
+            never has to hunt for it on Appearance to swap the model. */}
+        <div className="flex flex-wrap items-center justify-center gap-2 border-t bg-background px-3 py-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => glbInputRef.current?.click()}
+            disabled={isUploadingGlb}
+          >
+            {isUploadingGlb ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Upload className="mr-2 h-4 w-4" />
+            )}
+            {state.avatar3dUrl ? "Replace .glb" : "Upload .glb"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={isUploadingImage}
+          >
+            {isUploadingImage ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <ImageIcon className="mr-2 h-4 w-4" />
+            )}
+            {state.image ? "Replace image" : "Upload image"}
+          </Button>
+          {state.avatar3dUrl && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setField("avatar3dUrl", "")}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Remove .glb
+            </Button>
           )}
         </div>
       </CardContent>
