@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -268,42 +269,48 @@ export function PersonaManager() {
                     >
                       {/* ── Persona identity row ── */}
                       <div className="flex items-center gap-3 p-3">
-                        <div className="relative">
-                          <Avatar className="h-10 w-10">
-                            <AvatarImage src={persona.image ?? undefined} alt={persona.name} />
-                            <AvatarFallback>
-                              {persona.name.substring(0, 2).toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
-                          {isActive && (
-                            <div className="absolute -bottom-1 -right-1 rounded-full bg-primary p-0.5">
-                              <Drama className="h-3 w-3 text-primary-foreground" />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-sm truncate">{persona.name}</span>
-                            {username && (
-                              <span className="text-xs text-muted-foreground">@{username}</span>
-                            )}
+                        <Link
+                          href={`/profile/${username ?? persona.id}`}
+                          className="flex flex-1 items-center gap-3 min-w-0 hover:opacity-80 transition-opacity"
+                          title={`View ${persona.name}'s public profile`}
+                        >
+                          <div className="relative shrink-0">
+                            <Avatar className="h-10 w-10">
+                              <AvatarImage src={persona.image ?? undefined} alt={persona.name} />
+                              <AvatarFallback>
+                                {persona.name.substring(0, 2).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
                             {isActive && (
-                              <Badge variant="default" className="text-xs">
-                                Active
-                              </Badge>
-                            )}
-                            {isAutobotEnabled && (
-                              <Badge variant="secondary" className="text-xs gap-1">
-                                <Bot className="h-3 w-3" />
-                                Autobot
-                              </Badge>
+                              <div className="absolute -bottom-1 -right-1 rounded-full bg-primary p-0.5">
+                                <Drama className="h-3 w-3 text-primary-foreground" />
+                              </div>
                             )}
                           </div>
-                          {bio && (
-                            <p className="text-xs text-muted-foreground truncate">{bio}</p>
-                          )}
-                        </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm truncate">{persona.name}</span>
+                              {username && (
+                                <span className="text-xs text-muted-foreground">@{username}</span>
+                              )}
+                              {isActive && (
+                                <Badge variant="default" className="text-xs">
+                                  Active
+                                </Badge>
+                              )}
+                              {isAutobotEnabled && (
+                                <Badge variant="secondary" className="text-xs gap-1">
+                                  <Bot className="h-3 w-3" />
+                                  Autobot
+                                </Badge>
+                              )}
+                            </div>
+                            {bio && (
+                              <p className="text-xs text-muted-foreground truncate">{bio}</p>
+                            )}
+                          </div>
+                        </Link>
 
                         <div className="flex items-center gap-1">
                           <CollapsibleTrigger asChild>

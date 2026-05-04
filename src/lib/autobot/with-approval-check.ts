@@ -56,10 +56,15 @@ async function resolvePersonaPolicy(personaId: string): Promise<{
 
   const metadata = (persona.metadata ?? {}) as Record<string, unknown>;
   const rawMode = metadata.autobotControlMode;
+  // Default to 'delegated' so a fresh persona (no explicit mode set) can act
+  // freely on read + medium-risk writes (posts, RSVPs, KG push, etc.) without
+  // forcing the controller to manually approve every step. High-risk actions
+  // (groups.join, thanks.send, deploys) still require approval. Operators who
+  // want strict gating can set autobotControlMode='direct-only' on the persona.
   const controlMode: AutobotControlMode =
     typeof rawMode === 'string' && VALID_CONTROL_MODES.includes(rawMode)
       ? (rawMode as AutobotControlMode)
-      : 'direct-only';
+      : 'delegated';
 
   return { controlMode, metadata };
 }
