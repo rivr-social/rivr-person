@@ -543,11 +543,16 @@ export default function ProfilePage() {
   const router = useRouter();
   const { toast } = useToast();
 
-  // When a persona is the active actor, redirect to the persona's PUBLIC
-  // profile route. The bare `/profile` page renders the controller's
-  // myprofile bundle, so without this redirect the persona would invisibly
-  // see the controller's identity here. Mirrors the user-menu / bottom-nav
-  // active-persona resolution.
+  // Resolve the effective actor: when a persona is active, "/profile" should
+  // render the persona's self-view (same rich UI, but scoped to the persona's
+  // identity, posts, events, groups, agent graph, etc.). Wallet/Stripe stays
+  // on the controller — see the wallet tab below for the carve-out.
+  const [activePersonaInfo, setActivePersonaInfo] = useState<{
+    id: string;
+    name?: string;
+    image?: string | null;
+    metadata?: Record<string, unknown>;
+  } | null>(null);
   useEffect(() => {
     if (status !== "authenticated") return;
     let cancelled = false;
@@ -555,25 +560,33 @@ export default function ProfilePage() {
       .then((info) => {
         if (cancelled) return;
         if (info.active && info.persona) {
-          const meta =
-            info.persona.metadata && typeof info.persona.metadata === "object"
-              ? (info.persona.metadata as Record<string, unknown>)
-              : {};
-          const username =
-            typeof meta.username === "string" ? meta.username : "";
-          router.replace(`/profile/${username || info.persona.id}`);
+          setActivePersonaInfo({
+            id: info.persona.id,
+            name: info.persona.name,
+            image: info.persona.image,
+            metadata: info.persona.metadata,
+          });
+        } else {
+          setActivePersonaInfo(null);
         }
       })
       .catch(() => {
         // ignore — fall back to controller view
+        if (!cancelled) setActivePersonaInfo(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [status, router]);
+  }, [status]);
+
+  const effectiveUserId = activePersonaInfo?.id ?? session?.user?.id ?? "";
+  const effectiveName =
+    activePersonaInfo?.name ?? session?.user?.name ?? "Your Profile";
+  const effectiveImage = activePersonaInfo?.image ?? session?.user?.image ?? null;
 
   // IndexedDB-first: useAgent reads from local cache instantly, then syncs from server.
-  const { agent } = useAgent(session?.user?.id ?? null);
+  // When a persona is active this resolves the persona's row; otherwise the controller's.
+  const { agent } = useAgent(effectiveUserId || null);
   const [userPosts, setUserPosts] = useState<Post[]>([]);
   const [userEvents, setUserEvents] = useState<GraphEvent[]>([]);
   const [userGroups, setUserGroups] = useState<Group[]>([]);
@@ -1034,17 +1047,21 @@ export default function ProfilePage() {
 
   const metadata = (agent?.metadata ?? {}) as Record<string, unknown>;
   const socialLinks = asRecord(metadata.socialLinks ?? metadata.social_links);
-  const userId = agent?.id || session?.user?.id || "";
+  // Identifying "me" for fetching MY data — when a persona is active this is
+  // the persona's id; otherwise the controller's. Wallet/Stripe carve-outs
+  // below explicitly use session.user.id instead.
+  const userId = agent?.id || effectiveUserId || "";
 
   const profileUser: User = useMemo(
     () => ({
       id: userId,
-      name: agent?.name || session?.user?.name || "Your Profile",
+      // Personas share controller email auth, so email falls back to session.
+      name: agent?.name || effectiveName,
       username: asString(metadata.username) || session?.user?.email?.split("@")[0] || "user",
       email: agent?.email || session?.user?.email || "",
       bio: agent?.description || asString(metadata.bio) || "",
       tagline: asString(metadata.tagline) || "",
-      avatar: localAvatarUrl || agent?.image || session?.user?.image || "/placeholder-user.jpg",
+      avatar: localAvatarUrl || agent?.image || effectiveImage || "/placeholder-user.jpg",
       location: asString(metadata.location),
       skills: asStringArray(metadata.skills),
       resources: asStringArray(metadata.resources),
@@ -1071,9 +1088,8 @@ export default function ProfilePage() {
       metadata,
       localAvatarUrl,
       session?.user?.email,
-      session?.user?.id,
-      session?.user?.image,
-      session?.user?.name,
+      effectiveImage,
+      effectiveName,
       userId,
     ]
   );
@@ -1405,7 +1421,15 @@ export default function ProfilePage() {
               </button>
               <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload("avatar", f); e.target.value = ""; }} />
               <Button size="sm" variant="outline" asChild>
-                <Link href="/settings">Edit Profile</Link>
+                <Link
+                  href={
+                    activePersonaInfo
+                      ? `/personas/${activePersonaInfo.id}/edit`
+                      : "/settings"
+                  }
+                >
+                  Edit Profile
+                </Link>
               </Button>
             </div>
 
@@ -1692,7 +1716,7 @@ export default function ProfilePage() {
               <Card className="mt-4">
                 <CardHeader><CardTitle>Relationships</CardTitle></CardHeader>
                 <CardContent>
-                  <AgentGraph agentId={session?.user?.id ?? ""} agentName={session?.user?.name ?? "Me"} agentType="person" />
+                  <AgentGraph agentId={effectiveUserId} agentName={effectiveName} agentType="person" />
                 </CardContent>
               </Card>
             ) : null}
@@ -2074,7 +2098,7 @@ export default function ProfilePage() {
           {visibleTabs.includes("docs") ? (
           <TabsContent value="docs" className="mt-4">
             <DocumentsTab
-              ownerId={session?.user?.id}
+              ownerId={effectiveUserId || undefined}
               documents={personalDocuments}
               docsPath="/profile"
             />
