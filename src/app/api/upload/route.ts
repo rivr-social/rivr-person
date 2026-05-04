@@ -37,6 +37,52 @@ const UPLOAD_RATE_LIMIT = 20;
 const UPLOAD_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 /**
+ * Maps known file extensions to MIME types so uploads where the browser
+ * reports `file.type === ''` (or an unhelpful default like
+ * `application/octet-stream`) still validate cleanly against the storage
+ * allowlist.
+ *
+ * Most desktop browsers send an empty MIME for `.glb`, `.gltf`, `.obj`,
+ * `.fbx`, and `.vrm` because the OS does not register a system MIME type
+ * for those extensions. Without this fallback the upload route returns
+ * 415 and the client toast reads "Upload failed" — which is the bug the
+ * persona creator's 3D avatar upload was hitting.
+ */
+const EXTENSION_MIME_MAP: Record<string, string> = {
+  glb: 'model/gltf-binary',
+  gltf: 'model/gltf+json',
+  obj: 'model/obj',
+  fbx: 'model/fbx',
+  vrm: 'model/vrm',
+};
+
+/**
+ * Resolves an effective MIME type for an upload.
+ *
+ * Order of preference:
+ * 1. The browser-supplied `file.type`, when it is a non-empty string and
+ *    not the generic `application/octet-stream` placeholder.
+ * 2. An extension-based lookup (covers `.glb` and friends).
+ * 3. A final fallback to `application/octet-stream`, which is in the
+ *    storage allowlist for binary blobs.
+ */
+function resolveEffectiveMimeType(filename: string, browserMime: string): string {
+  const trimmed = browserMime.trim();
+  if (trimmed && trimmed !== 'application/octet-stream') {
+    return trimmed;
+  }
+
+  const dotIndex = filename.lastIndexOf('.');
+  if (dotIndex >= 0 && dotIndex < filename.length - 1) {
+    const ext = filename.slice(dotIndex + 1).toLowerCase();
+    const mapped = EXTENSION_MIME_MAP[ext];
+    if (mapped) return mapped;
+  }
+
+  return trimmed || 'application/octet-stream';
+}
+
+/**
  * Uploads one or more files for an authenticated user.
  *
  * Security and business rules:
@@ -167,8 +213,13 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
+    // Browsers do not register a system MIME type for `.glb`/`.gltf`/`.fbx`
+    // and friends, so `file.type` is often an empty string. Resolve a
+    // sensible fallback before validation.
+    const effectiveMime = resolveEffectiveMimeType(file.name, file.type);
+
     try {
-      const result = await uploadFile(buffer, file.name, file.type, targetBucket);
+      const result = await uploadFile(buffer, file.name, effectiveMime, targetBucket);
       results.push(result);
     } catch (error) {
       // Preserve actionable validation feedback from storage policy enforcement.

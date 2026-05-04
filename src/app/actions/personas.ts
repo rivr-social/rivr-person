@@ -56,6 +56,97 @@ const SKILL_VALUE_MIN = 0;
 const SKILL_VALUE_MAX = 100;
 
 /**
+ * Persona "Core Attributes" — the three picker taxonomies surfaced in the
+ * Stats tab of the character creator (driven by `<EftPicker>` and overlaid
+ * by `<Ecosocial3dPlot>`). Each is persisted independently in
+ * `agents.metadata` so the existing `metadata.skills` (PERSONA_SKILL_KEYS,
+ * Skills tab) stays untouched:
+ *
+ * - `metadata.eftAttributes`     — 12 Ecological Footprint categories
+ * - `metadata.capitalAttributes` —  8 Forms of Capital
+ * - `metadata.auditAttributes`   —  6 Integral Audit categories
+ *
+ * Picker values run 0..5 (sunburst rings); we clamp 0..100 here so the
+ * server-side allowlist accepts both the picker scale and any future scaled
+ * values without rejecting them.
+ */
+const EFT_ATTRIBUTE_KEYS = [
+  'food',
+  'housing',
+  'clothing',
+  'wellness',
+  'travel',
+  'water',
+  'life',
+  'regen',
+  'technology',
+  'art',
+  'education',
+  'community',
+] as const;
+const EFT_ATTRIBUTE_KEY_SET = new Set<string>(EFT_ATTRIBUTE_KEYS);
+
+const CAPITAL_ATTRIBUTE_KEYS = [
+  'living',
+  'material',
+  'financial',
+  'social',
+  'intellectual',
+  'experiential',
+  'cultural',
+  'spiritual',
+] as const;
+const CAPITAL_ATTRIBUTE_KEY_SET = new Set<string>(CAPITAL_ATTRIBUTE_KEYS);
+
+const AUDIT_ATTRIBUTE_KEYS = [
+  'condition',
+  'community',
+  'knowledge',
+  'value',
+  'technology',
+  'wellbeing',
+] as const;
+const AUDIT_ATTRIBUTE_KEY_SET = new Set<string>(AUDIT_ATTRIBUTE_KEYS);
+
+/**
+ * Generic sanitiser for an attribute-map blob.
+ *
+ * Drops unknown keys (forward-compat for new categories), rejects non-numeric
+ * values with a precise error message, and clamps each value to [0, 100].
+ */
+function sanitizeAttributeMap(
+  raw: unknown,
+  allowedKeys: ReadonlySet<string>,
+  label: string,
+): { ok: true; attributes: Record<string, number> } | { ok: false; error: string } {
+  if (raw === null || raw === undefined) {
+    return { ok: true, attributes: {} };
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: `${label} must be an object map.` };
+  }
+  const cleaned: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!allowedKeys.has(key)) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return { ok: false, error: `${label} "${key}" must be a number.` };
+    }
+    const clamped = Math.max(SKILL_VALUE_MIN, Math.min(SKILL_VALUE_MAX, Math.round(value)));
+    cleaned[key] = clamped;
+  }
+  return { ok: true, attributes: cleaned };
+}
+
+const sanitizeEftAttributes = (raw: unknown) =>
+  sanitizeAttributeMap(raw, EFT_ATTRIBUTE_KEY_SET, 'EFT attribute');
+
+const sanitizeCapitalAttributes = (raw: unknown) =>
+  sanitizeAttributeMap(raw, CAPITAL_ATTRIBUTE_KEY_SET, 'Capital attribute');
+
+const sanitizeAuditAttributes = (raw: unknown) =>
+  sanitizeAttributeMap(raw, AUDIT_ATTRIBUTE_KEY_SET, 'Audit attribute');
+
+/**
  * Gets the authenticated user ID or throws.
  */
 async function requireUserId(): Promise<string> {
@@ -114,6 +205,22 @@ export interface CreatePersonaInput {
   avatar3dUrl?: string;
   /** Map of `PERSONA_SKILL_KEYS` to scores in [0, 100]. */
   skills?: Record<string, number>;
+  /**
+   * Map of EFT category keys (from `EFT_CATEGORIES`) to scores in [0, 100].
+   * Persisted under `metadata.eftAttributes`. Driven by `<EftPicker>` on the
+   * Stats tab; rendered live into `<Ecosocial3dPlot>`.
+   */
+  eftAttributes?: Record<string, number>;
+  /**
+   * Map of Capital category keys (from `CAPITAL_CATEGORIES`) to scores in
+   * [0, 100]. Persisted under `metadata.capitalAttributes`.
+   */
+  capitalAttributes?: Record<string, number>;
+  /**
+   * Map of Integral Audit category keys (from `AUDIT_CATEGORIES`) to scores
+   * in [0, 100]. Persisted under `metadata.auditAttributes`.
+   */
+  auditAttributes?: Record<string, number>;
   /** Operating mode for autobot delegation. */
   autobotControlMode?: AutobotControlMode;
 }
@@ -196,6 +303,21 @@ export async function createPersona(input: CreatePersonaInput): Promise<{
     return { success: false, error: skillsResult.error };
   }
 
+  const eftResult = sanitizeEftAttributes(input.eftAttributes);
+  if (!eftResult.ok) {
+    return { success: false, error: eftResult.error };
+  }
+
+  const capitalResult = sanitizeCapitalAttributes(input.capitalAttributes);
+  if (!capitalResult.ok) {
+    return { success: false, error: capitalResult.error };
+  }
+
+  const auditResult = sanitizeAuditAttributes(input.auditAttributes);
+  if (!auditResult.ok) {
+    return { success: false, error: auditResult.error };
+  }
+
   // Check persona limit
   const [countResult] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -241,6 +363,16 @@ export async function createPersona(input: CreatePersonaInput): Promise<{
     language: language || undefined,
     avatar3dUrl: avatar3dUrl || undefined,
     skills: Object.keys(skillsResult.skills).length > 0 ? skillsResult.skills : undefined,
+    eftAttributes:
+      Object.keys(eftResult.attributes).length > 0 ? eftResult.attributes : undefined,
+    capitalAttributes:
+      Object.keys(capitalResult.attributes).length > 0
+        ? capitalResult.attributes
+        : undefined,
+    auditAttributes:
+      Object.keys(auditResult.attributes).length > 0
+        ? auditResult.attributes
+        : undefined,
     autobotControlMode: controlMode,
   };
 
@@ -311,6 +443,22 @@ export interface UpdatePersonaInput {
   avatar3dUrl?: string;
   /** Map of `PERSONA_SKILL_KEYS` to scores in [0, 100]. */
   skills?: Record<string, number>;
+  /**
+   * Map of EFT category keys (from `EFT_CATEGORIES`) to scores in [0, 100].
+   * Persisted under `metadata.eftAttributes`. When provided, replaces any
+   * existing attributes; an empty object clears the field.
+   */
+  eftAttributes?: Record<string, number>;
+  /**
+   * Map of Capital category keys (from `CAPITAL_CATEGORIES`) to scores in
+   * [0, 100]. Persisted under `metadata.capitalAttributes`.
+   */
+  capitalAttributes?: Record<string, number>;
+  /**
+   * Map of Integral Audit category keys (from `AUDIT_CATEGORIES`) to scores
+   * in [0, 100]. Persisted under `metadata.auditAttributes`.
+   */
+  auditAttributes?: Record<string, number>;
   /** Operating mode for autobot delegation. */
   autobotControlMode?: AutobotControlMode;
 }
@@ -448,6 +596,37 @@ export async function updatePersona(
     }
     metadataUpdates.skills =
       Object.keys(skillsResult.skills).length > 0 ? skillsResult.skills : undefined;
+  }
+
+  if (input.eftAttributes !== undefined) {
+    const eftResult = sanitizeEftAttributes(input.eftAttributes);
+    if (!eftResult.ok) {
+      return { success: false, error: eftResult.error };
+    }
+    metadataUpdates.eftAttributes =
+      Object.keys(eftResult.attributes).length > 0 ? eftResult.attributes : undefined;
+  }
+
+  if (input.capitalAttributes !== undefined) {
+    const capitalResult = sanitizeCapitalAttributes(input.capitalAttributes);
+    if (!capitalResult.ok) {
+      return { success: false, error: capitalResult.error };
+    }
+    metadataUpdates.capitalAttributes =
+      Object.keys(capitalResult.attributes).length > 0
+        ? capitalResult.attributes
+        : undefined;
+  }
+
+  if (input.auditAttributes !== undefined) {
+    const auditResult = sanitizeAuditAttributes(input.auditAttributes);
+    if (!auditResult.ok) {
+      return { success: false, error: auditResult.error };
+    }
+    metadataUpdates.auditAttributes =
+      Object.keys(auditResult.attributes).length > 0
+        ? auditResult.attributes
+        : undefined;
   }
 
   if (input.autobotControlMode !== undefined) {

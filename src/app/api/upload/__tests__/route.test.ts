@@ -309,6 +309,65 @@ describe('POST /api/upload', () => {
       expect(body.error).toContain('test.jpg');
     });
 
+    it('infers MIME from .glb extension when browser sends empty type', async () => {
+      // Regression: browsers commonly send `file.type === ''` for `.glb` files
+      // because the OS does not register a system MIME type for the
+      // extension. Without the route's extension fallback the storage layer
+      // would reject the upload with InvalidMimeTypeError → 415, which is
+      // exactly the bug the persona creator's 3D avatar upload was hitting.
+      mockUploadFile.mockResolvedValue({
+        key: 'uploads/123-abc-avatar.glb',
+        url: 'http://localhost:9000/rivr-uploads/uploads/123-abc-avatar.glb',
+        bucket: 'rivr-uploads',
+        size: 4,
+        mimeType: 'model/gltf-binary',
+        timestamp: Date.now(),
+      });
+
+      const formData = new FormData();
+      // empty string type === what the browser sends for .glb on most OSes
+      formData.append('file', new Blob(['glb-bytes'], { type: '' }), 'avatar.glb');
+      const request = createRequest(formData);
+      const response = await POST(request);
+
+      expect(response.status).toBe(200);
+      // Storage layer should have been called with the inferred MIME, not ''.
+      expect(mockUploadFile).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'avatar.glb',
+        'model/gltf-binary',
+        undefined,
+      );
+    });
+
+    it('infers MIME from .glb extension when browser sends application/octet-stream', async () => {
+      mockUploadFile.mockResolvedValue({
+        key: 'uploads/123-abc-avatar.glb',
+        url: 'http://localhost:9000/rivr-uploads/uploads/123-abc-avatar.glb',
+        bucket: 'rivr-uploads',
+        size: 4,
+        mimeType: 'model/gltf-binary',
+        timestamp: Date.now(),
+      });
+
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new Blob(['glb-bytes'], { type: 'application/octet-stream' }),
+        'avatar.glb',
+      );
+      const request = createRequest(formData);
+      const response = await POST(request);
+
+      expect(response.status).toBe(200);
+      expect(mockUploadFile).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'avatar.glb',
+        'model/gltf-binary',
+        undefined,
+      );
+    });
+
     it('should return 500 for unexpected errors', async () => {
       mockUploadFile.mockRejectedValue(new Error('something unexpected'));
 
