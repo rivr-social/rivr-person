@@ -2,9 +2,51 @@ import { auth } from "@/auth";
 import { db } from "@/db";
 import { nodePeers, nodes } from "@/db/schema";
 import { getEnv } from "@/lib/env";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { verifyPackedPayload } from "@/lib/federation-remote-session";
 import { and, eq } from "drizzle-orm";
 import crypto from "crypto";
 import { timingSafeEqual } from "crypto";
+
+/**
+ * Validate an MCP scoped bearer token. Mirrors `validateScopedMcpToken` in
+ * `lib/federation/mcp-server.ts` so federation routes can accept the same
+ * tokens MCP accepts. Returns the controller's actor id on success — the
+ * X-Persona-Id header (handled by the caller) decides whether the request
+ * acts as the controller or one of their personas.
+ */
+function validateMcpBearer(request: Request): string | null {
+  const header = request.headers.get("authorization");
+  if (!header?.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length).trim();
+  if (!token) return null;
+
+  const payload = verifyPackedPayload<{
+    type: string;
+    actorId: string;
+    controllerId: string;
+    issuer: string;
+    audience: string;
+    issuedAt: string;
+    expiresAt: string;
+    scopes: string[];
+  }>(token);
+  if (!payload || payload.type !== "rivr_mcp_token") return null;
+
+  const now = Date.now();
+  const issuedAt = Date.parse(payload.issuedAt);
+  const expiresAt = Date.parse(payload.expiresAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)) return null;
+  if (issuedAt > now + 60_000 || expiresAt <= now) return null;
+
+  const config = getInstanceConfig();
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  if (payload.issuer !== baseUrl || payload.audience !== baseUrl) return null;
+  if (!payload.scopes.includes("mcp:tools")) return null;
+
+  // Return the controller's actor id. Persona swap is the caller's job.
+  return payload.controllerId;
+}
 
 /**
  * Federation authentication and configuration validation utilities.
@@ -133,7 +175,15 @@ export async function authorizeFederationRequest(request: Request): Promise<Fede
     }
   }
 
-  // 2. Per-peer secret auth — preferred for server-to-server because it is scoped per relationship.
+  // 2. MCP scoped bearer (RFC 8628 device-flow tokens, /api/mcp/token issued).
+  //    These are the same tokens MCP accepts at /api/mcp; federation routes
+  //    must accept them too so persona-asserted writes via X-Persona-Id work.
+  const mcpControllerId = validateMcpBearer(request);
+  if (mcpControllerId) {
+    return { authorized: true, actorId: mcpControllerId };
+  }
+
+  // 3. Per-peer secret auth — preferred for server-to-server because it is scoped per relationship.
   const peerSlug = request.headers.get("x-peer-slug")?.trim();
   const peerSecret = request.headers.get("x-peer-secret")?.trim();
 
