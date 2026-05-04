@@ -191,9 +191,24 @@ export async function ensureLocalNode(ownerAgentId?: string) {
  * callers are typically fire-and-forget, the failure would be invisible.
  */
 export async function getHostedNodeForOwner(ownerAgentId: string) {
-  const existing = await db.query.nodes.findFirst({
+  let existing = await db.query.nodes.findFirst({
     where: and(eq(nodes.ownerAgentId, ownerAgentId), eq(nodes.isHosted, true)),
   });
+
+  // Personas don't own their own hosted node — they inherit their controller's.
+  // If the direct lookup misses, walk up parent_id once and try again so that
+  // a persona acting via X-Persona-Id can federate via the controller's node.
+  if (!existing) {
+    const agent = await db.query.agents.findFirst({
+      where: eq(agents.id, ownerAgentId),
+      columns: { parentId: true },
+    });
+    if (agent?.parentId) {
+      existing = await db.query.nodes.findFirst({
+        where: and(eq(nodes.ownerAgentId, agent.parentId), eq(nodes.isHosted, true)),
+      });
+    }
+  }
 
   if (!existing) return null;
 
