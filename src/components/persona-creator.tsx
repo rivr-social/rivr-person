@@ -20,10 +20,9 @@
  * - 2D image uploads/URL persist into `agents.image`.
  * - 3D `.glb` uploads route through the existing `/api/upload` pipeline (same
  *   one `profile-media-tab` uses) and persist as `metadata.avatar3dUrl`.
- * - When a 3D avatar is set, the Appearance step renders a rotatable
- *   `<model-viewer>` preview. The component script is loaded once at
- *   `afterInteractive` from Google's CDN; CSP allows this via the explicit
- *   `https://ajax.googleapis.com` script-src entry.
+ * - When a 3D avatar is set, the Appearance step renders a rotatable preview
+ *   via `Avatar3DViewer`, a self-hosted three.js renderer. No third-party
+ *   scripts are loaded at runtime.
  * - Skill sliders are clamped to [0, 100] and persisted as `metadata.skills`
  *   keyed by `PERSONA_SKILL_KEYS`.
  * - Default operating mode is `delegated`, matching the platform default.
@@ -32,7 +31,6 @@
 import { useCallback, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import Script from "next/script";
 import {
   ArrowLeft,
   ArrowRight,
@@ -74,6 +72,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/use-toast";
+import { Avatar3DViewer } from "@/components/avatar-3d-viewer";
 import {
   createPersona,
   updatePersona,
@@ -88,14 +87,6 @@ import {
   type PersonaSkillKey,
   type VoiceStyle,
 } from "@/lib/persona-config";
-
-/**
- * URL of Google's hosted `<model-viewer>` ES module. Loaded once via
- * `next/script` so the rotatable 3D preview is available in the Appearance
- * step. CSP `script-src` allows `https://ajax.googleapis.com` explicitly.
- */
-const MODEL_VIEWER_SCRIPT_SRC =
-  "https://ajax.googleapis.com/ajax/libs/model-viewer/3/model-viewer.min.js";
 
 /* ── Constants ── */
 
@@ -852,28 +843,17 @@ export function PersonaCreator({
           </div>
 
           {/*
-            Rotatable 3D preview. `<model-viewer>` is a web component loaded
-            once at the bottom of the rendered tree via `next/script`. CSP
-            already whitelists ajax.googleapis.com (script-src) and the
-            instance MinIO bucket (connect-src) for the .glb fetch.
+            Rotatable 3D preview. `Avatar3DViewer` is a self-hosted three.js
+            renderer (no third-party scripts at runtime). CSP `connect-src`
+            already allows the instance MinIO bucket for the .glb fetch.
           */}
           {state.avatar3dUrl && (
             <div className="rounded-md border bg-background overflow-hidden">
-              <div
-                className="w-full"
-                style={{ height: 300 }}
-                aria-label={`3D avatar preview for ${state.name || "persona"}`}
-              >
-                <model-viewer
-                  src={state.avatar3dUrl}
-                  alt={`3D avatar for ${state.name || "persona"}`}
-                  camera-controls=""
-                  auto-rotate=""
-                  ar=""
-                  shadow-intensity="1"
-                  style={{ width: "100%", height: "100%" }}
-                />
-              </div>
+              <Avatar3DViewer
+                src={state.avatar3dUrl}
+                alt={`3D avatar for ${state.name || "persona"}`}
+                height={300}
+              />
               <p className="px-3 py-2 text-xs text-muted-foreground">
                 Drag to rotate. The avatar auto-orbits when idle.
               </p>
@@ -1145,19 +1125,6 @@ export function PersonaCreator({
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
-      {/*
-        `<model-viewer>` is registered once on the page. `afterInteractive`
-        keeps it out of the critical path; the preview gracefully no-ops
-        until the custom element is defined. CSP `script-src` allows
-        `https://ajax.googleapis.com` (see `src/middleware.ts`).
-      */}
-      <Script
-        id="model-viewer-script"
-        src={MODEL_VIEWER_SCRIPT_SRC}
-        type="module"
-        strategy="afterInteractive"
-      />
-
       {headerOverride ?? defaultHeader}
 
       {stepper}
