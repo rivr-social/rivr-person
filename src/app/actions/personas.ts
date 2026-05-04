@@ -43,31 +43,13 @@ const MAX_VOICE_STYLE_LENGTH = 40;
 const MAX_AVATAR_URL_LENGTH = 2000;
 const MAX_IMAGE_URL_LENGTH = 2000;
 
-/** Voice/speaking style values offered to the persona creator. */
-export const VOICE_STYLE_OPTIONS = [
-  'terse',
-  'warm',
-  'formal',
-  'technical',
-  'playful',
-] as const;
-export type VoiceStyle = (typeof VOICE_STYLE_OPTIONS)[number];
-
-/**
- * Canonical platform-skill keys persisted under `metadata.skills`.
- * Each value is a number in the inclusive range [0, 100].
- */
-export const PERSONA_SKILL_KEYS = [
-  'federationSavvy',
-  'technicalDepth',
-  'organizing',
-  'publicVoice',
-  'riskTolerance',
-  'creativeOutput',
-  'conversationalWarmth',
-  'speed',
-] as const;
-export type PersonaSkillKey = (typeof PERSONA_SKILL_KEYS)[number];
+// Constants/types moved to @/lib/persona-config so client components can
+// import them without forcing this "use server" file's value-level exports
+// to be required-async (which Next 15 enforces).
+import {
+  PERSONA_SKILL_KEYS,
+  type AutobotControlMode,
+} from '@/lib/persona-config';
 
 const SKILL_KEY_SET = new Set<string>(PERSONA_SKILL_KEYS);
 const SKILL_VALUE_MIN = 0;
@@ -543,8 +525,7 @@ export async function getActivePersonaInfo(): Promise<{
 // Autobot control-pane metadata types and constants
 // ---------------------------------------------------------------------------
 
-/** Valid autobot control modes for a persona. */
-export type AutobotControlMode = 'direct-only' | 'approval-required' | 'delegated';
+// AutobotControlMode imported from @/lib/persona-config (above).
 
 const VALID_CONTROL_MODES: readonly AutobotControlMode[] = [
   'direct-only',

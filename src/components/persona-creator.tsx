@@ -65,15 +65,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/use-toast";
+import { createPersona, type CreatePersonaInput } from "@/app/actions/personas";
 import {
-  createPersona,
   PERSONA_SKILL_KEYS,
   VOICE_STYLE_OPTIONS,
   type AutobotControlMode,
-  type CreatePersonaInput,
   type PersonaSkillKey,
   type VoiceStyle,
-} from "@/app/actions/personas";
+} from "@/lib/persona-config";
 
 /* ── Constants ── */
 

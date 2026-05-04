@@ -46,7 +46,7 @@ import {
   Zap,
 } from "lucide-react";
 import { updatePersonaAutobotSettings } from "@/app/actions/personas";
-import type { AutobotControlMode } from "@/app/actions/personas";
+import type { AutobotControlMode } from "@/lib/persona-config";
 import type { SerializedAgent } from "@/lib/graph-serializers";
 
 // ---------------------------------------------------------------------------
