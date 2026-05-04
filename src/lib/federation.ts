@@ -196,16 +196,17 @@ export async function getHostedNodeForOwner(ownerAgentId: string) {
   });
 
   // Personas don't own their own hosted node — they inherit their controller's.
-  // If the direct lookup misses, walk up parent_id once and try again so that
+  // If the direct lookup misses, walk up parent_agent_id (the persona→controller
+  // relationship; not parent_id, which is the place hierarchy) and try again so
   // a persona acting via X-Persona-Id can federate via the controller's node.
   if (!existing) {
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, ownerAgentId),
-      columns: { parentId: true },
+      columns: { parentAgentId: true },
     });
-    if (agent?.parentId) {
+    if (agent?.parentAgentId) {
       existing = await db.query.nodes.findFirst({
-        where: and(eq(nodes.ownerAgentId, agent.parentId), eq(nodes.isHosted, true)),
+        where: and(eq(nodes.ownerAgentId, agent.parentAgentId), eq(nodes.isHosted, true)),
       });
     }
   }
