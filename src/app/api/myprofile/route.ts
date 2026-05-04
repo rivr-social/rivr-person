@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import {
   fetchMarketplaceListings,
   fetchMyReceipts,
@@ -22,6 +21,8 @@ import {
 import { MYPROFILE_MODULE_ID } from "@/lib/bespoke/modules/myprofile";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
+import { buildErc8004Registration } from "@/lib/erc8004";
+import { resolveActiveActorAgentId } from "@/lib/persona";
 
 export const dynamic = "force-dynamic";
 
@@ -31,17 +32,26 @@ export const dynamic = "force-dynamic";
  * Authenticated bundle endpoint for the current user's bespoke profile UI.
  * This intentionally exposes only the caller's own data and keeps the server
  * action/gating logic on the server side.
+ *
+ * Persona-aware: when the caller asserts a persona via the `X-Persona-Id`
+ * header (validated to be owned by the authenticated controller), or when an
+ * active-persona cookie is set in the browser session, the bundle hydrates
+ * the persona's `agents` row instead of the controller's. Subscription tier,
+ * wallet/transactions, ticket purchases, and ERC-8004 registration are still
+ * keyed off the controller so personas inherit billing/identity from their
+ * parent account.
  */
-export async function GET() {
-  const session = await auth();
-  const actorId = session?.user?.id ?? null;
+export async function GET(request: Request) {
+  const activeActor = await resolveActiveActorAgentId(request);
 
-  if (!actorId) {
+  if (!activeActor) {
     return NextResponse.json(
       { success: false, error: "Authentication required" },
       { status: 401, headers: noStoreHeaders() },
     );
   }
+
+  const { actorId, controllerId, isPersona } = activeActor;
 
   try {
     const [profile, savedListingIds, wallet, wallets, transactions, ticketPurchases, subscriptions, receipts, posts, events, groups, marketplaceListings, reactionCounts, connections, documents, homeInstance] = await Promise.all([
@@ -64,11 +74,31 @@ export async function GET() {
     ]);
 
     const config = getInstanceConfig();
+    const profileUsername =
+      profile?.agent?.metadata && typeof profile.agent.metadata === "object"
+        ? (profile.agent.metadata as Record<string, unknown>).username
+        : null;
+    const profilePath = `/profile/${encodeURIComponent(
+      typeof profileUsername === "string" && profileUsername.trim().length > 0
+        ? profileUsername.trim()
+        : actorId,
+    )}`;
+    const erc8004 =
+      profile?.agent
+        ? buildErc8004Registration({
+            agent: profile.agent,
+            profileUrl: `${config.baseUrl}${profilePath}`,
+            manifestUrl: `${config.baseUrl}/api/myprofile/manifest`,
+            registrationFileUrl: `${config.baseUrl}/api/personas/${encodeURIComponent(actorId)}/erc8004`,
+          })
+        : null;
 
     return NextResponse.json(
       {
         success: true,
         actorId,
+        controllerId,
+        isPersona,
         profile,
         savedListingIds,
         wallet,
@@ -88,6 +118,7 @@ export async function GET() {
           moduleId: MYPROFILE_MODULE_ID,
           manifestEndpoint: "/api/myprofile/manifest",
         },
+        erc8004,
         federation: {
           localInstanceId: config.instanceId,
           localInstanceType: config.instanceType,

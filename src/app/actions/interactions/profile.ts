@@ -9,6 +9,7 @@ import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { updateProfileAction } from "@/app/actions/settings";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
 import { federatedWrite } from "@/lib/federation/remote-write";
+import { resolveActiveActorAgentId } from "@/lib/persona";
 import {
   getCurrentUserId,
   toggleLedgerInteraction,
@@ -38,7 +39,11 @@ export async function updateMyProfile(payload: {
   skills: string[];
   location?: string;
 }): Promise<ActionResult> {
-  const userId = await getCurrentUserId();
+  // Persona-aware: when an active persona is selected (cookie path) or the
+  // federation execution context resolves to a persona, writes target the
+  // persona's `agents` row. Falls back to the controller otherwise.
+  const activeActor = await resolveActiveActorAgentId();
+  const userId = activeActor?.actorId ?? (await getCurrentUserId());
   if (!userId) return { success: false, message: "You must be logged in to update your profile." };
 
   const facadeResult = await federatedWrite<typeof payload, ActionResult>(
@@ -59,6 +64,9 @@ export async function updateMyProfile(payload: {
       const profileResult = await updateProfileAction({
         name: payload.name,
         username: String(existingMeta.username ?? "").trim() || `user-${userId.slice(0, 8)}`,
+        // Pass persona's existing email through unchanged; updateProfileAction
+        // skips the email column for personas anyway, but we still satisfy the
+        // controller-mode email-required validation by echoing the row's value.
         email: existing?.email ?? "",
         bio: payload.bio,
         phone: String(existingMeta.phone ?? ""),

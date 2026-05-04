@@ -142,3 +142,72 @@ export async function isPersona(agentId: string): Promise<boolean> {
     .limit(1);
   return !!row?.parentAgentId;
 }
+
+/**
+ * Result of resolving the active acting actor.
+ *
+ * - `actorId` — agent id whose row myprofile / settings should read & write.
+ *   Equals the persona id when one is active, otherwise the controller id.
+ * - `controllerId` — id of the authenticated human/account that owns the session.
+ *   Subscription tier, wallet, and email auth always live on this row.
+ * - `isPersona` — true when the active actor is a child persona of the controller.
+ */
+export type ActiveActorContext = {
+  actorId: string;
+  controllerId: string;
+  isPersona: boolean;
+};
+
+/**
+ * Resolves the active actor for myprofile / settings surfaces.
+ *
+ * Resolution order:
+ * 1. Authenticate session (controller). Returns null if no session.
+ * 2. If `request` is provided AND has an `X-Persona-Id` header that resolves
+ *    to a persona owned by the controller, the persona is the active actor.
+ *    This is the same shape used by the MCP server.
+ * 3. Otherwise, fall back to the active-persona cookie (browser/session path).
+ * 4. If neither is set or the asserted persona is not owned, the controller
+ *    is the active actor.
+ *
+ * @param request Optional incoming Request. Required to honor `X-Persona-Id`.
+ * @returns Active actor context, or null if the caller is not authenticated.
+ */
+export async function resolveActiveActorAgentId(
+  request?: Request,
+): Promise<ActiveActorContext | null> {
+  const controllerId = await getAuthenticatedUserId();
+  if (!controllerId) return null;
+
+  const headerPersonaId = request?.headers.get("x-persona-id")?.trim() || null;
+  if (headerPersonaId && UUID_RE.test(headerPersonaId)) {
+    const owned = await isPersonaOf(headerPersonaId, controllerId);
+    if (owned) {
+      return {
+        actorId: headerPersonaId,
+        controllerId,
+        isPersona: true,
+      };
+    }
+  }
+
+  const cookiePersonaId = await getActivePersonaId();
+  if (cookiePersonaId) {
+    const owned = await isPersonaOf(cookiePersonaId, controllerId);
+    if (owned) {
+      return {
+        actorId: cookiePersonaId,
+        controllerId,
+        isPersona: true,
+      };
+    }
+    // Stale cookie — clear it so subsequent requests fall back cleanly.
+    await setActivePersonaCookie(null);
+  }
+
+  return {
+    actorId: controllerId,
+    controllerId,
+    isPersona: false,
+  };
+}

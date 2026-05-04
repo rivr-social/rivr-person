@@ -301,12 +301,25 @@ export function SettingsForm({
   initialFederationStatus,
   initialPersonInstanceSetup,
   initialAppReleaseStatus,
+  activePersona,
 }: {
   initialData: SettingsInitialData;
   initialFederationStatus: FederationIdentityStatus | null;
   initialPersonInstanceSetup: PersonInstanceSetupState;
   initialAppReleaseStatus: AppReleaseStatus | null;
+  /**
+   * Persona-context flags forwarded from the server component. When `isPersona`
+   * is true the email field is rendered read-only because email is the
+   * controller's auth identity and personas share their parent's session.
+   */
+  activePersona?: {
+    isPersona: boolean;
+    actorId: string;
+    controllerId: string;
+    personaName?: string;
+  };
 }) {
+  const isPersonaActive = activePersona?.isPersona === true;
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -759,10 +772,18 @@ export function SettingsForm({
               <label className="text-sm font-medium">Email</label>
               <input
                 type="email"
-                className="p-2 border rounded-md bg-background text-foreground"
+                className="p-2 border rounded-md bg-background text-foreground disabled:opacity-60 disabled:cursor-not-allowed"
                 value={profile.email}
                 onChange={(e) => setProfile((prev) => ({ ...prev, email: e.target.value }))}
+                disabled={isPersonaActive}
+                readOnly={isPersonaActive}
+                aria-readonly={isPersonaActive}
               />
+              {isPersonaActive ? (
+                <p className="text-xs text-muted-foreground">
+                  Email is shared with your main account and can only be changed there.
+                </p>
+              ) : null}
             </div>
 
             <div className="grid gap-2">

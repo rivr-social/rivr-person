@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
+import { resolveActiveActorAgentId } from "@/lib/persona";
 
 export const dynamic = "force-dynamic";
 
@@ -9,10 +9,15 @@ export const dynamic = "force-dynamic";
  *
  * Authenticated manifest describing the current user's bespoke profile module
  * surface: sections, fields, components, and allowed mutations.
+ *
+ * Persona-aware: the returned `actorId` reflects the active acting agent
+ * (persona id when `X-Persona-Id` is asserted by the controller or when an
+ * active-persona cookie is set). The manifest shape itself is identical for
+ * all actors — only the bound actor id changes.
  */
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
+export async function GET(request: Request) {
+  const activeActor = await resolveActiveActorAgentId(request);
+  if (!activeActor) {
     return NextResponse.json(
       { success: false, error: "Authentication required" },
       { status: 401, headers: noStoreHeaders() },
@@ -22,7 +27,9 @@ export async function GET() {
   return NextResponse.json(
     {
       success: true,
-      actorId: session.user.id,
+      actorId: activeActor.actorId,
+      controllerId: activeActor.controllerId,
+      isPersona: activeActor.isPersona,
       manifest: getMyProfileModuleManifest(),
     },
     { headers: noStoreHeaders() },

@@ -2,28 +2,33 @@
  * Settings page for `/settings`.
  *
  * Purpose:
- * - Loads the current user's profile data (name, username, email, bio, phone, image)
- *   and renders a client-side `SettingsForm` for editing.
+ * - Loads the active actor's profile data (name, username, email, bio, phone,
+ *   image) and renders a client-side `SettingsForm` for editing.
+ * - When a persona is active (selected via the persona switcher), the page
+ *   pre-fills the form with the persona's `agents` row instead of the
+ *   controller's. Subscription tier, wallet, and email auth still belong to
+ *   the controller — see `resolveActiveActorAgentId` in `@/lib/persona`.
  *
  * Rendering: Server Component (no `"use client"` directive).
  * Data requirements:
  * - Authenticated session via `auth()`.
- * - User agent row from the database (`agents` table) queried by session user ID.
+ * - Active actor agent row from the database (`agents` table) queried by the
+ *   resolved actor id (controller or persona).
  *
- * Auth: Redirects to `/auth/login` if no session or no matching user exists.
+ * Auth: Redirects to `/auth/login` if no session or no matching agent exists.
  * Metadata: No `metadata` export; metadata is inherited from the layout.
  *
  * @module settings/page
  */
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
-import { auth } from "@/auth";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { SettingsForm, type SettingsInitialData } from "./settings-form";
 import { buildFederationIdentityStatus, type FederationIdentityStatus } from "@/lib/federation-identities";
 import { buildPersonInstanceSetupState, type PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { buildAppReleaseStatus, type AppReleaseStatus } from "@/lib/app-release";
+import { resolveActiveActorAgentId } from "@/lib/persona";
 
 /**
  * Generates a URL-safe fallback username from the user's display name.
@@ -42,13 +47,18 @@ function fallbackUsername(name: string): string {
  */
 export default async function SettingsPage() {
   // Auth check: redirect unauthenticated visitors to login.
-  const session = await auth();
+  // Persona switcher cookies upgrade the active actor to a persona row when
+  // the cookie value is owned by the authenticated controller.
+  const activeActor = await resolveActiveActorAgentId();
 
-  if (!session?.user?.id) {
+  if (!activeActor) {
     redirect("/auth/login");
   }
 
-  // Fetch the user's agent row from the database.
+  const { actorId, controllerId, isPersona } = activeActor;
+
+  // Fetch the active actor's agent row from the database. When a persona is
+  // active this is the persona row; otherwise it is the controller row.
   const [currentUser] = await db
     .select({
       id: agents.id,
@@ -59,12 +69,27 @@ export default async function SettingsPage() {
       metadata: agents.metadata,
     })
     .from(agents)
-    .where(eq(agents.id, session.user.id))
+    .where(eq(agents.id, actorId))
     .limit(1);
 
-  // If the agent row is missing (orphaned session), redirect to login.
+  // If the agent row is missing (orphaned session or stale persona cookie),
+  // redirect to login. Stale persona cookies are cleared inside the resolver,
+  // but a missing controller row is the only remaining failure mode.
   if (!currentUser) {
     redirect("/auth/login");
+  }
+
+  // Personas share the controller's email (auth identity); fetch it separately
+  // so we can show it as a read-only field instead of the persona's empty
+  // email column.
+  let controllerEmail: string | null = null;
+  if (isPersona) {
+    const [controllerRow] = await db
+      .select({ email: agents.email })
+      .from(agents)
+      .where(eq(agents.id, controllerId))
+      .limit(1);
+    controllerEmail = controllerRow?.email ?? null;
   }
 
   // Safely extract metadata as a record for field lookups.
@@ -74,13 +99,17 @@ export default async function SettingsPage() {
       : {};
 
   // Assemble initial form data with fallbacks for missing fields.
+  // Email is the controller's auth identity. When operating as a persona we
+  // surface the controller's email read-only so users can see which account
+  // they're authenticated as, but the persona row's own email column is left
+  // alone (personas cannot change auth identity).
   const initialData: SettingsInitialData = {
     name: currentUser.name,
     username:
       typeof metadata.username === "string" && metadata.username
         ? metadata.username
         : fallbackUsername(currentUser.name),
-    email: currentUser.email ?? "",
+    email: isPersona ? controllerEmail ?? "" : currentUser.email ?? "",
     bio:
       currentUser.description ??
       (typeof metadata.bio === "string" ? metadata.bio : ""),
@@ -144,6 +173,12 @@ export default async function SettingsPage() {
       initialFederationStatus={initialFederationStatus}
       initialPersonInstanceSetup={initialPersonInstanceSetup}
       initialAppReleaseStatus={initialAppReleaseStatus}
+      activePersona={{
+        isPersona,
+        actorId,
+        controllerId,
+        personaName: isPersona ? currentUser.name : undefined,
+      }}
     />
   );
 }
