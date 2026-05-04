@@ -32,7 +32,6 @@ import {
 } from "@/components/ui/collapsible";
 import { Bot, ChevronDown, Drama, Edit2, Plus, Trash2, UserCheck, UserX } from "lucide-react";
 import {
-  createPersona,
   deletePersona,
   listMyPersonas,
   switchActivePersona,
@@ -58,7 +57,6 @@ export function PersonaManager() {
   const [actionLoading, setActionLoading] = useState(false);
 
   // Dialog state
-  const [createOpen, setCreateOpen] = useState(false);
   const [editingPersona, setEditingPersona] = useState<SerializedAgent | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState<PersonaFormState>(EMPTY_FORM);
@@ -83,31 +81,6 @@ export function PersonaManager() {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  const handleCreate = async () => {
-    if (!form.name.trim()) {
-      toast({ title: "Name is required", variant: "destructive" });
-      return;
-    }
-    setActionLoading(true);
-    try {
-      const result = await createPersona({
-        name: form.name.trim(),
-        username: form.username.trim() || undefined,
-        bio: form.bio.trim() || undefined,
-      });
-      if (result.success) {
-        toast({ title: "Persona created" });
-        setCreateOpen(false);
-        setForm(EMPTY_FORM);
-        await refresh();
-      } else {
-        toast({ title: result.error ?? "Failed to create persona", variant: "destructive" });
-      }
-    } finally {
-      setActionLoading(false);
-    }
-  };
 
   const handleUpdate = async () => {
     if (!editingPersona) return;
@@ -204,10 +177,7 @@ export function PersonaManager() {
             </CardTitle>
             <Button
               size="sm"
-              onClick={() => {
-                setForm(EMPTY_FORM);
-                setCreateOpen(true);
-              }}
+              onClick={() => router.push("/personas/new")}
             >
               <Plus className="h-4 w-4 mr-1" />
               Create Persona
@@ -374,59 +344,6 @@ export function PersonaManager() {
           )}
         </CardContent>
       </Card>
-
-      {/* Create dialog */}
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create Persona</DialogTitle>
-            <DialogDescription>
-              Create an alternate identity. Your wallet is shared but content is separate.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <div>
-              <Label htmlFor="persona-name">Name *</Label>
-              <Input
-                id="persona-name"
-                placeholder="Persona display name"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                maxLength={100}
-              />
-            </div>
-            <div>
-              <Label htmlFor="persona-username">Username</Label>
-              <Input
-                id="persona-username"
-                placeholder="optional_username"
-                value={form.username}
-                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-                maxLength={40}
-              />
-            </div>
-            <div>
-              <Label htmlFor="persona-bio">Bio</Label>
-              <Textarea
-                id="persona-bio"
-                placeholder="A short description of this persona"
-                value={form.bio}
-                onChange={(e) => setForm((f) => ({ ...f, bio: e.target.value }))}
-                maxLength={500}
-                rows={3}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setCreateOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleCreate} disabled={actionLoading}>
-                {actionLoading ? "Creating..." : "Create"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Edit dialog */}
       <Dialog open={!!editingPersona} onOpenChange={(open) => !open && setEditingPersona(null)}>

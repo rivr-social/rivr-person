@@ -36,6 +36,42 @@ const UUID_RE =
 const MAX_NAME_LENGTH = 100;
 const MAX_USERNAME_LENGTH = 40;
 const MAX_BIO_LENGTH = 500;
+const MAX_TAGLINE_LENGTH = 140;
+const MAX_PRONOUNS_LENGTH = 40;
+const MAX_LANGUAGE_LENGTH = 40;
+const MAX_VOICE_STYLE_LENGTH = 40;
+const MAX_AVATAR_URL_LENGTH = 2000;
+const MAX_IMAGE_URL_LENGTH = 2000;
+
+/** Voice/speaking style values offered to the persona creator. */
+export const VOICE_STYLE_OPTIONS = [
+  'terse',
+  'warm',
+  'formal',
+  'technical',
+  'playful',
+] as const;
+export type VoiceStyle = (typeof VOICE_STYLE_OPTIONS)[number];
+
+/**
+ * Canonical platform-skill keys persisted under `metadata.skills`.
+ * Each value is a number in the inclusive range [0, 100].
+ */
+export const PERSONA_SKILL_KEYS = [
+  'federationSavvy',
+  'technicalDepth',
+  'organizing',
+  'publicVoice',
+  'riskTolerance',
+  'creativeOutput',
+  'conversationalWarmth',
+  'speed',
+] as const;
+export type PersonaSkillKey = (typeof PERSONA_SKILL_KEYS)[number];
+
+const SKILL_KEY_SET = new Set<string>(PERSONA_SKILL_KEYS);
+const SKILL_VALUE_MIN = 0;
+const SKILL_VALUE_MAX = 100;
 
 /**
  * Gets the authenticated user ID or throws.
@@ -53,6 +89,54 @@ async function requireUserId(): Promise<string> {
 }
 
 /**
+ * Sanitizes and validates a `skills` map. Returns either the cleaned map (only
+ * known keys, clamped to [0, 100]) or an error message describing the failure.
+ */
+function sanitizeSkills(
+  raw: unknown,
+): { ok: true; skills: Record<string, number> } | { ok: false; error: string } {
+  if (raw === null || raw === undefined) {
+    return { ok: true, skills: {} };
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'Skills must be an object map.' };
+  }
+  const cleaned: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!SKILL_KEY_SET.has(key)) {
+      // Drop unknown keys silently; keeps forward/backward compatibility for new sliders.
+      continue;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return { ok: false, error: `Skill "${key}" must be a number.` };
+    }
+    const clamped = Math.max(SKILL_VALUE_MIN, Math.min(SKILL_VALUE_MAX, Math.round(value)));
+    cleaned[key] = clamped;
+  }
+  return { ok: true, skills: cleaned };
+}
+
+/** Input shape for creating a persona via the character-creator flow. */
+export interface CreatePersonaInput {
+  name: string;
+  username?: string;
+  bio?: string;
+  /** 2D avatar image URL (sets agents.image). */
+  image?: string;
+  tagline?: string;
+  pronouns?: string;
+  /** One of VOICE_STYLE_OPTIONS — free-form string is preserved if unrecognized. */
+  voiceStyle?: string;
+  language?: string;
+  /** Public URL of an uploaded `.glb` model; persisted to `metadata.avatar3dUrl`. */
+  avatar3dUrl?: string;
+  /** Map of `PERSONA_SKILL_KEYS` to scores in [0, 100]. */
+  skills?: Record<string, number>;
+  /** Operating mode for autobot delegation. */
+  autobotControlMode?: AutobotControlMode;
+}
+
+/**
  * Creates a new persona agent under the current user's account.
  *
  * The persona is a regular agent row with:
@@ -60,12 +144,15 @@ async function requireUserId(): Promise<string> {
  * - `type` = 'person'
  * - `metadata.isPersona` = true
  * - No email or password (personas cannot log in independently)
+ *
+ * The character-creator flow may also persist `tagline`, `pronouns`, `voiceStyle`,
+ * `language`, `avatar3dUrl`, `skills`, and `autobotControlMode` into metadata.
  */
-export async function createPersona(input: {
-  name: string;
-  username?: string;
-  bio?: string;
-}): Promise<{ success: boolean; personaId?: string; error?: string }> {
+export async function createPersona(input: CreatePersonaInput): Promise<{
+  success: boolean;
+  personaId?: string;
+  error?: string;
+}> {
   const userId = await requireUserId();
 
   const name = (input.name ?? '').trim();
@@ -81,6 +168,50 @@ export async function createPersona(input: {
   const bio = (input.bio ?? '').trim();
   if (bio.length > MAX_BIO_LENGTH) {
     return { success: false, error: 'Bio must be under 500 characters.' };
+  }
+
+  // Optional rich-creator fields
+  const tagline = (input.tagline ?? '').trim();
+  if (tagline.length > MAX_TAGLINE_LENGTH) {
+    return { success: false, error: `Tagline must be under ${MAX_TAGLINE_LENGTH} characters.` };
+  }
+
+  const pronouns = (input.pronouns ?? '').trim();
+  if (pronouns.length > MAX_PRONOUNS_LENGTH) {
+    return { success: false, error: `Pronouns must be under ${MAX_PRONOUNS_LENGTH} characters.` };
+  }
+
+  const voiceStyle = (input.voiceStyle ?? '').trim();
+  if (voiceStyle.length > MAX_VOICE_STYLE_LENGTH) {
+    return { success: false, error: `Voice style must be under ${MAX_VOICE_STYLE_LENGTH} characters.` };
+  }
+
+  const language = (input.language ?? '').trim();
+  if (language.length > MAX_LANGUAGE_LENGTH) {
+    return { success: false, error: `Language must be under ${MAX_LANGUAGE_LENGTH} characters.` };
+  }
+
+  const image = (input.image ?? '').trim();
+  if (image.length > MAX_IMAGE_URL_LENGTH) {
+    return { success: false, error: 'Image URL is too long.' };
+  }
+
+  const avatar3dUrl = (input.avatar3dUrl ?? '').trim();
+  if (avatar3dUrl.length > MAX_AVATAR_URL_LENGTH) {
+    return { success: false, error: '3D avatar URL is too long.' };
+  }
+
+  let controlMode: AutobotControlMode | undefined;
+  if (input.autobotControlMode !== undefined) {
+    if (!VALID_CONTROL_MODES.includes(input.autobotControlMode)) {
+      return { success: false, error: 'Invalid control mode.' };
+    }
+    controlMode = input.autobotControlMode;
+  }
+
+  const skillsResult = sanitizeSkills(input.skills);
+  if (!skillsResult.ok) {
+    return { success: false, error: skillsResult.error };
   }
 
   // Check persona limit
@@ -122,6 +253,13 @@ export async function createPersona(input: {
     isPersona: true,
     bio: bio || undefined,
     username: username || undefined,
+    tagline: tagline || undefined,
+    pronouns: pronouns || undefined,
+    voiceStyle: voiceStyle || undefined,
+    language: language || undefined,
+    avatar3dUrl: avatar3dUrl || undefined,
+    skills: Object.keys(skillsResult.skills).length > 0 ? skillsResult.skills : undefined,
+    autobotControlMode: controlMode,
   };
 
   const [newAgent] = await db
@@ -131,6 +269,7 @@ export async function createPersona(input: {
       type: 'person',
       parentAgentId: userId,
       visibility: 'public',
+      image: image || null,
       metadata,
     })
     .returning({ id: agents.id });
