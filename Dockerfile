@@ -75,6 +75,8 @@ RUN mkdir -p /workspace/.agent-hq /workspace/apps /workspace/agents /workspace/.
     chown -R nextjs:nodejs /workspace /home/nextjs
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 # PTY bridge server files
 COPY --chown=nextjs:nodejs src/server/pty-bridge.mjs src/server/start.mjs ./src/server/

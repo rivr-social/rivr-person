@@ -11,6 +11,7 @@ import {
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
 import { REMOTE_VIEWER_COOKIE_NAME, validateRemoteViewerToken } from "@/lib/federation-remote-session";
+import { isPersonaOf } from "@/lib/persona";
 import type {
   FederatedInteractionRequest,
   FederatedInteractionAction,
@@ -121,6 +122,44 @@ export async function POST(request: Request) {
       );
     }
 
+    // ── Persona assertion via X-Persona-Id ────────────────────────────
+    // Mirrors the persona-resolution shape from `lib/federation/mcp-server.ts`.
+    // A controller-authenticated request may assert that it is acting AS one
+    // of its child personas by sending `X-Persona-Id`. We must validate that
+    // the persona's parent_agent_id matches the authenticated controller; if
+    // it does not, this is a privilege-escalation attempt and we reject with
+    // 403 (NOT 200). On success we treat the persona as the active actor for
+    // both the federation actor binding and the downstream execution context,
+    // so the resulting mutation is filed under the persona, not the controller.
+    const headerPersonaId = request.headers.get("x-persona-id")?.trim() || null;
+    const controllerActorId = authorization.actorId ?? null;
+    let actingActorId = controllerActorId;
+    if (headerPersonaId) {
+      if (!controllerActorId) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "X-Persona-Id requires a controller-bound authenticated actor (session, scoped token, or remote viewer).",
+          },
+          { status: 401 },
+        );
+      }
+      if (headerPersonaId !== controllerActorId) {
+        const owned = await isPersonaOf(headerPersonaId, controllerActorId).catch(() => false);
+        if (!owned) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: "X-Persona-Id is not a persona of the authenticated controller.",
+            },
+            { status: 403 },
+          );
+        }
+        actingActorId = headerPersonaId;
+      }
+    }
+
     const remoteInstanceId = request.headers.get("X-Instance-Id");
     const remoteInstanceSlug = request.headers.get("X-Instance-Slug");
 
@@ -169,7 +208,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const actorBinding = bindAuthorizedFederationActor(authorization, body.actorId);
+    // Use the persona-resolved acting actor (falls back to the controller when
+    // X-Persona-Id was not provided) when binding the legacy mutation actor.
+    const effectiveAuthorization = actingActorId
+      ? { ...authorization, actorId: actingActorId }
+      : authorization;
+    const actorBinding = bindAuthorizedFederationActor(effectiveAuthorization, body.actorId);
     if (!actorBinding.authorized || !actorBinding.actorId) {
       return NextResponse.json(
         { success: false, error: actorBinding.reason ?? "Actor authorization failed" },
