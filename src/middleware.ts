@@ -104,6 +104,10 @@ function buildCspHeader(nonce: string): string {
     ...(appWss ? [appWss] : []),
     globalBaseUrl,
     "https://*.rivr.social",
+    // Allow GLB/GLTF fetches by `<model-viewer>` from this instance's MinIO
+    // bucket (e.g. https://s3.camalot.me) — same-origin patterns above only
+    // cover *.rivr.social, so sovereign instances need this explicit entry.
+    ...(publicDomain ? [`https://s3.${publicDomain}`] : []),
     "https://api.stripe.com",
     "https://api.mapbox.com",
     "https://*.mapbox.com",
@@ -138,9 +142,13 @@ function buildCspHeader(nonce: string): string {
   const platformEmbedScripts =
     "https://platform.twitter.com https://cdn.syndication.twimg.com";
 
+  // Google Hosted Libraries CDN — serves the <model-viewer> ES module used
+  // for rotatable 3D persona avatars in the persona creator/editor.
+  const modelViewerScript = "https://ajax.googleapis.com";
+
   const scriptSrc = isDev
-    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts}`
-    : `script-src 'self' 'nonce-${nonce}' 'sha256-n46vPwSWuMC0W703pBofImv82Z26xo4LXymv0E9caPk=' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts}`;
+    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts} ${modelViewerScript}`
+    : `script-src 'self' 'nonce-${nonce}' 'sha256-n46vPwSWuMC0W703pBofImv82Z26xo4LXymv0E9caPk=' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts} ${modelViewerScript}`;
 
   const frameSrc = [
     "frame-src 'self'",

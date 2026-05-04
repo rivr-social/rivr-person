@@ -7,16 +7,19 @@
  * - Home (local)
  * - Map (links to global instance)
  * - Create (local, scope-aware)
- * - Profile (local)
+ * - Profile (local — routes to the active persona's public profile when one is
+ *   active, otherwise to `/profile` for the controller).
  *
  * Builder and Autobot are accessed from the Profile page or Command Bar.
  */
 
+import { useEffect, useState } from "react"
 import { Home, Map, PlusSquare, User } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { getGlobalUrl } from "@/lib/federation/global-url"
+import { getActivePersonaInfo } from "@/app/actions/personas"
 
 /**
  * Renders fixed bottom navigation with federation-aware routing.
@@ -27,11 +30,40 @@ export function BottomNav() {
 
   const globalMapUrl = getGlobalUrl("/map")
 
+  // Mirror the persona-banner pattern: read the active-persona cookie via a
+  // server action and route the profile button to the persona's public
+  // profile when one is active. Falling back to `/profile` keeps the
+  // controller's experience unchanged when no persona is active.
+  const [profileHref, setProfileHref] = useState<string>("/profile")
+  useEffect(() => {
+    let cancelled = false
+    getActivePersonaInfo()
+      .then((info) => {
+        if (cancelled) return
+        if (info.active && info.persona) {
+          const meta =
+            info.persona.metadata && typeof info.persona.metadata === "object"
+              ? (info.persona.metadata as Record<string, unknown>)
+              : {}
+          const username = typeof meta.username === "string" ? meta.username : ""
+          setProfileHref(`/profile/${username || info.persona.id}`)
+        } else {
+          setProfileHref("/profile")
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProfileHref("/profile")
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [pathname])
+
   const navItems = [
     { name: "Home", href: "/", icon: Home, active: pathname === "/", external: false },
     { name: "Map", href: globalMapUrl, icon: Map, active: false, external: true },
     { name: "Create", href: "/create", icon: PlusSquare, active: pathname.startsWith("/create"), external: false },
-    { name: "Profile", href: "/profile", icon: User, active: pathname.startsWith("/profile"), external: false },
+    { name: "Profile", href: profileHref, icon: User, active: pathname.startsWith("/profile"), external: false },
   ]
 
   return (

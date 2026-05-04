@@ -5,6 +5,12 @@
  *
  * Renders a sticky banner below the header when the user is operating as a persona.
  * Shows the persona name and a "Switch back" button.
+ *
+ * NOTE (next intended direction, not implemented here): the autobot chat
+ * bubble should default to the active persona when one is active, and to the
+ * controller (with public-KG-from-selected-files context) otherwise. That's
+ * a deeper change to the chat-widget routing/context layer and is tracked
+ * separately from these persona-context fixes.
  */
 
 import { useCallback, useEffect, useState } from "react";

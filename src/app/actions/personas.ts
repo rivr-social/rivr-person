@@ -291,16 +291,40 @@ export async function listMyPersonas(): Promise<{
 }
 
 /**
- * Updates a persona's profile fields.
- * Only the parent account can update its personas.
+ * Input shape for `updatePersona`.
+ *
+ * Mirrors `CreatePersonaInput` so the persona-creator component can be reused
+ * for editing — every field is optional; only provided fields are touched.
  */
-export async function updatePersona(input: {
+export interface UpdatePersonaInput {
   personaId: string;
   name?: string;
   username?: string;
   bio?: string;
   image?: string;
-}): Promise<{ success: boolean; error?: string }> {
+  tagline?: string;
+  pronouns?: string;
+  /** One of VOICE_STYLE_OPTIONS — empty string clears. */
+  voiceStyle?: string;
+  language?: string;
+  /** Public URL of an uploaded `.glb` model; persisted to `metadata.avatar3dUrl`. */
+  avatar3dUrl?: string;
+  /** Map of `PERSONA_SKILL_KEYS` to scores in [0, 100]. */
+  skills?: Record<string, number>;
+  /** Operating mode for autobot delegation. */
+  autobotControlMode?: AutobotControlMode;
+}
+
+/**
+ * Updates a persona's profile fields.
+ * Only the parent account can update its personas.
+ *
+ * Accepts the full set of persona-creator fields so the edit and create flows
+ * can share a single client surface (`PersonaCreator`).
+ */
+export async function updatePersona(
+  input: UpdatePersonaInput,
+): Promise<{ success: boolean; error?: string }> {
   const userId = await requireUserId();
 
   if (!input.personaId || !UUID_RE.test(input.personaId)) {
@@ -371,7 +395,66 @@ export async function updatePersona(input: {
   }
 
   if (input.image !== undefined) {
+    if (input.image.length > MAX_IMAGE_URL_LENGTH) {
+      return { success: false, error: 'Image URL is too long.' };
+    }
     updates.image = input.image || null;
+  }
+
+  if (input.tagline !== undefined) {
+    const tagline = input.tagline.trim();
+    if (tagline.length > MAX_TAGLINE_LENGTH) {
+      return { success: false, error: `Tagline must be under ${MAX_TAGLINE_LENGTH} characters.` };
+    }
+    metadataUpdates.tagline = tagline || undefined;
+  }
+
+  if (input.pronouns !== undefined) {
+    const pronouns = input.pronouns.trim();
+    if (pronouns.length > MAX_PRONOUNS_LENGTH) {
+      return { success: false, error: `Pronouns must be under ${MAX_PRONOUNS_LENGTH} characters.` };
+    }
+    metadataUpdates.pronouns = pronouns || undefined;
+  }
+
+  if (input.voiceStyle !== undefined) {
+    const voiceStyle = input.voiceStyle.trim();
+    if (voiceStyle.length > MAX_VOICE_STYLE_LENGTH) {
+      return { success: false, error: `Voice style must be under ${MAX_VOICE_STYLE_LENGTH} characters.` };
+    }
+    metadataUpdates.voiceStyle = voiceStyle || undefined;
+  }
+
+  if (input.language !== undefined) {
+    const language = input.language.trim();
+    if (language.length > MAX_LANGUAGE_LENGTH) {
+      return { success: false, error: `Language must be under ${MAX_LANGUAGE_LENGTH} characters.` };
+    }
+    metadataUpdates.language = language || undefined;
+  }
+
+  if (input.avatar3dUrl !== undefined) {
+    const avatar3dUrl = input.avatar3dUrl.trim();
+    if (avatar3dUrl.length > MAX_AVATAR_URL_LENGTH) {
+      return { success: false, error: '3D avatar URL is too long.' };
+    }
+    metadataUpdates.avatar3dUrl = avatar3dUrl || undefined;
+  }
+
+  if (input.skills !== undefined) {
+    const skillsResult = sanitizeSkills(input.skills);
+    if (!skillsResult.ok) {
+      return { success: false, error: skillsResult.error };
+    }
+    metadataUpdates.skills =
+      Object.keys(skillsResult.skills).length > 0 ? skillsResult.skills : undefined;
+  }
+
+  if (input.autobotControlMode !== undefined) {
+    if (!VALID_CONTROL_MODES.includes(input.autobotControlMode)) {
+      return { success: false, error: 'Invalid control mode.' };
+    }
+    metadataUpdates.autobotControlMode = input.autobotControlMode;
   }
 
   updates.metadata = metadataUpdates;
@@ -383,6 +466,31 @@ export async function updatePersona(input: {
     .where(eq(agents.id, input.personaId));
 
   return { success: true };
+}
+
+/**
+ * Loads a single persona owned by the current user, for the edit flow.
+ * Returns null if the persona doesn't exist or isn't owned by the caller.
+ */
+export async function getMyPersonaById(
+  personaId: string,
+): Promise<SerializedAgent | null> {
+  if (!personaId || !UUID_RE.test(personaId)) return null;
+  const userId = await requireUserId();
+
+  const [row] = await db
+    .select()
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, personaId),
+        eq(agents.parentAgentId, userId),
+        isNull(agents.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return row ? serializeAgent(row) : null;
 }
 
 /**

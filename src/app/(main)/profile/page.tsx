@@ -41,6 +41,7 @@ import { ProfileGroupFeed } from "@/components/profile-group-feed";
 import { ProfileCalendar } from "@/components/profile-calendar";
 import { OfferingsTab } from "@/components/offerings-tab";
 import { PersonaManager } from "@/components/persona-manager";
+import { getActivePersonaInfo } from "@/app/actions/personas";
 import { DocumentsTab } from "@/components/documents-tab";
 import { ProfileMediaTab } from "@/components/profile-media-tab";
 import { AgentGraph } from "@/components/agent-graph";
@@ -541,6 +542,35 @@ export default function ProfilePage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { toast } = useToast();
+
+  // When a persona is the active actor, redirect to the persona's PUBLIC
+  // profile route. The bare `/profile` page renders the controller's
+  // myprofile bundle, so without this redirect the persona would invisibly
+  // see the controller's identity here. Mirrors the user-menu / bottom-nav
+  // active-persona resolution.
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    let cancelled = false;
+    void getActivePersonaInfo()
+      .then((info) => {
+        if (cancelled) return;
+        if (info.active && info.persona) {
+          const meta =
+            info.persona.metadata && typeof info.persona.metadata === "object"
+              ? (info.persona.metadata as Record<string, unknown>)
+              : {};
+          const username =
+            typeof meta.username === "string" ? meta.username : "";
+          router.replace(`/profile/${username || info.persona.id}`);
+        }
+      })
+      .catch(() => {
+        // ignore — fall back to controller view
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [status, router]);
 
   // IndexedDB-first: useAgent reads from local cache instantly, then syncs from server.
   const { agent } = useAgent(session?.user?.id ?? null);

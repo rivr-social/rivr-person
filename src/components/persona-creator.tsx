@@ -3,19 +3,27 @@
 /**
  * PersonaCreator component.
  *
- * Multi-step "character creator" flow used by `/personas/new` to scaffold a
- * persona's identity, look (2D + 3D avatar), platform-skill profile, and
- * autobot operating mode in one guided pass.
+ * Multi-step "character creator" flow used to scaffold (or edit) a persona's
+ * identity, look (2D + 3D avatar), platform-skill profile, and autobot
+ * operating mode in one guided pass.
  *
- * The component is purely presentational/state-managing — persistence happens
- * via the `createPersona` server action when the controller submits the
- * Review step.
+ * Two modes:
+ * - **Create** (default): used by `/personas/new`. Submitting calls the
+ *   `createPersona` server action.
+ * - **Edit**: when `existingPersona` is supplied, the form is pre-filled from
+ *   the persona's row + metadata and the submit button calls `updatePersona`.
+ *   This is the same UI mounted at `/personas/[id]/edit` and on `/settings`
+ *   while a persona is the active actor — see `resolveActiveActorAgentId`.
  *
  * Key behaviours:
  * - Five sections: Identity → Appearance → Skills → Operating Mode → Review.
  * - 2D image uploads/URL persist into `agents.image`.
  * - 3D `.glb` uploads route through the existing `/api/upload` pipeline (same
  *   one `profile-media-tab` uses) and persist as `metadata.avatar3dUrl`.
+ * - When a 3D avatar is set, the Appearance step renders a rotatable
+ *   `<model-viewer>` preview. The component script is loaded once at
+ *   `afterInteractive` from Google's CDN; CSP allows this via the explicit
+ *   `https://ajax.googleapis.com` script-src entry.
  * - Skill sliders are clamped to [0, 100] and persisted as `metadata.skills`
  *   keyed by `PERSONA_SKILL_KEYS`.
  * - Default operating mode is `delegated`, matching the platform default.
@@ -24,6 +32,7 @@
 import { useCallback, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Script from "next/script";
 import {
   ArrowLeft,
   ArrowRight,
@@ -65,7 +74,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/use-toast";
-import { createPersona, type CreatePersonaInput } from "@/app/actions/personas";
+import {
+  createPersona,
+  updatePersona,
+  type CreatePersonaInput,
+  type UpdatePersonaInput,
+} from "@/app/actions/personas";
+import type { SerializedAgent } from "@/lib/graph-serializers";
 import {
   PERSONA_SKILL_KEYS,
   VOICE_STYLE_OPTIONS,
@@ -73,6 +88,14 @@ import {
   type PersonaSkillKey,
   type VoiceStyle,
 } from "@/lib/persona-config";
+
+/**
+ * URL of Google's hosted `<model-viewer>` ES module. Loaded once via
+ * `next/script` so the rotatable 3D preview is available in the Appearance
+ * step. CSP `script-src` allows `https://ajax.googleapis.com` explicitly.
+ */
+const MODEL_VIEWER_SCRIPT_SRC =
+  "https://ajax.googleapis.com/ajax/libs/model-viewer/3/model-viewer.min.js";
 
 /* ── Constants ── */
 
@@ -241,12 +264,87 @@ function fileNameFromUrl(url: string): string {
   }
 }
 
+/**
+ * Builds initial creator state from an existing persona row.
+ * Falls back to `INITIAL_STATE` defaults for any field that isn't present in
+ * the persona's metadata. Skill values outside [0, 100] are clamped.
+ */
+function stateFromExistingPersona(persona: SerializedAgent): CreatorState {
+  const metadata =
+    persona.metadata && typeof persona.metadata === "object"
+      ? (persona.metadata as Record<string, unknown>)
+      : {};
+
+  const rawSkills =
+    metadata.skills && typeof metadata.skills === "object" && !Array.isArray(metadata.skills)
+      ? (metadata.skills as Record<string, unknown>)
+      : {};
+  const skills: Record<PersonaSkillKey, number> = { ...INITIAL_SKILLS };
+  for (const key of PERSONA_SKILL_KEYS) {
+    const raw = rawSkills[key];
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      skills[key] = Math.max(0, Math.min(100, Math.round(raw)));
+    }
+  }
+
+  const rawVoiceStyle = typeof metadata.voiceStyle === "string" ? metadata.voiceStyle : "";
+  const voiceStyle: VoiceStyle | "" = isVoiceStyle(rawVoiceStyle) ? rawVoiceStyle : "";
+
+  const rawMode = metadata.autobotControlMode;
+  const autobotControlMode: AutobotControlMode =
+    rawMode === "direct-only" || rawMode === "approval-required" || rawMode === "delegated"
+      ? rawMode
+      : DEFAULT_CONTROL_MODE;
+
+  return {
+    name: persona.name ?? "",
+    username: typeof metadata.username === "string" ? metadata.username : "",
+    tagline: typeof metadata.tagline === "string" ? metadata.tagline : "",
+    bio:
+      typeof metadata.bio === "string"
+        ? metadata.bio
+        : persona.description ?? "",
+    pronouns: typeof metadata.pronouns === "string" ? metadata.pronouns : "",
+    voiceStyle,
+    language: typeof metadata.language === "string" ? metadata.language : "",
+    image: persona.image ?? "",
+    avatar3dUrl:
+      typeof metadata.avatar3dUrl === "string" ? metadata.avatar3dUrl : "",
+    skills,
+    autobotControlMode,
+  };
+}
+
 /* ── Component ── */
 
-export function PersonaCreator() {
+/**
+ * Props for `PersonaCreator`.
+ *
+ * - `existingPersona` — when provided, the form switches to **edit mode**:
+ *   pre-fills from the persona's row + metadata, calls `updatePersona` on
+ *   submit, and the final button reads "Save".
+ * - `headerOverride` — replaces the default header. Settings-mode mounts use
+ *   this so the surface reads as a settings page rather than "New persona".
+ * - `onSavedRedirectTo` — destination after a successful save/create. Defaults
+ *   to `/autobot` (matches the new-persona flow).
+ */
+export interface PersonaCreatorProps {
+  existingPersona?: SerializedAgent;
+  headerOverride?: React.ReactNode;
+  onSavedRedirectTo?: string;
+}
+
+export function PersonaCreator({
+  existingPersona,
+  headerOverride,
+  onSavedRedirectTo,
+}: PersonaCreatorProps = {}) {
   const router = useRouter();
   const { toast } = useToast();
-  const [state, setState] = useState<CreatorState>(INITIAL_STATE);
+  const isEditMode = !!existingPersona;
+  const [state, setState] = useState<CreatorState>(() =>
+    existingPersona ? stateFromExistingPersona(existingPersona) : INITIAL_STATE,
+  );
   const [stepIndex, setStepIndex] = useState(0);
   const [isSubmitting, startSubmitTransition] = useTransition();
   const [isUploadingGlb, setIsUploadingGlb] = useState(false);
@@ -398,11 +496,48 @@ export function PersonaCreator() {
 
   /* ── Submit ── */
 
-  const handleCreate = useCallback(() => {
+  const handleSubmit = useCallback(() => {
     const trimmedName = state.name.trim();
     if (!trimmedName) {
       toast({ title: "Name is required", variant: "destructive" });
       setStepIndex(0);
+      return;
+    }
+
+    const redirectTo = onSavedRedirectTo ?? "/autobot";
+
+    if (isEditMode && existingPersona) {
+      // Edit mode: every field is sent so cleared values (e.g. removing a
+      // 3D avatar) propagate. `updatePersona` only writes provided fields, so
+      // empty strings explicitly clear those fields.
+      const updatePayload: UpdatePersonaInput = {
+        personaId: existingPersona.id,
+        name: trimmedName,
+        username: state.username.trim(),
+        bio: state.bio.trim(),
+        image: state.image.trim(),
+        tagline: state.tagline.trim(),
+        pronouns: state.pronouns.trim(),
+        voiceStyle: state.voiceStyle || "",
+        language: state.language.trim(),
+        avatar3dUrl: state.avatar3dUrl.trim(),
+        skills: { ...state.skills },
+        autobotControlMode: state.autobotControlMode,
+      };
+
+      startSubmitTransition(async () => {
+        const result = await updatePersona(updatePayload);
+        if (result.success) {
+          toast({ title: "Persona updated" });
+          router.push(redirectTo);
+          router.refresh();
+        } else {
+          toast({
+            title: result.error ?? "Failed to update persona",
+            variant: "destructive",
+          });
+        }
+      });
       return;
     }
 
@@ -424,7 +559,7 @@ export function PersonaCreator() {
       const result = await createPersona(payload);
       if (result.success) {
         toast({ title: "Persona created" });
-        router.push("/autobot");
+        router.push(redirectTo);
         router.refresh();
       } else {
         toast({
@@ -433,7 +568,7 @@ export function PersonaCreator() {
         });
       }
     });
-  }, [router, state, toast]);
+  }, [existingPersona, isEditMode, onSavedRedirectTo, router, state, toast]);
 
   /* ── Render: stepper header ── */
 
@@ -715,6 +850,35 @@ export function PersonaCreator() {
               </Button>
             </div>
           </div>
+
+          {/*
+            Rotatable 3D preview. `<model-viewer>` is a web component loaded
+            once at the bottom of the rendered tree via `next/script`. CSP
+            already whitelists ajax.googleapis.com (script-src) and the
+            instance MinIO bucket (connect-src) for the .glb fetch.
+          */}
+          {state.avatar3dUrl && (
+            <div className="rounded-md border bg-background overflow-hidden">
+              <div
+                className="w-full"
+                style={{ height: 300 }}
+                aria-label={`3D avatar preview for ${state.name || "persona"}`}
+              >
+                <model-viewer
+                  src={state.avatar3dUrl}
+                  alt={`3D avatar for ${state.name || "persona"}`}
+                  camera-controls=""
+                  auto-rotate=""
+                  ar=""
+                  shadow-intensity="1"
+                  style={{ width: "100%", height: "100%" }}
+                />
+              </div>
+              <p className="px-3 py-2 text-xs text-muted-foreground">
+                Drag to rotate. The avatar auto-orbits when idle.
+              </p>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -950,28 +1114,51 @@ export function PersonaCreator() {
 
   const isLastStep = currentStep === "review";
 
-  return (
-    <div className="mx-auto w-full max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/autobot"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-            aria-label="Back to autobot"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Link>
-          <div>
-            <h1 className="flex items-center gap-2 text-xl font-semibold">
-              <Drama className="h-5 w-5" />
-              New persona
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              Configure identity, look, and platform behaviour for an alternate operating identity.
-            </p>
-          </div>
+  /*
+   * Default header. Settings-mode mounts pass `headerOverride` to replace
+   * this block (see `/settings` when persona is active).
+   */
+  const defaultHeader = (
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        <Link
+          href="/autobot"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+          aria-label="Back to autobot"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Link>
+        <div>
+          <h1 className="flex items-center gap-2 text-xl font-semibold">
+            <Drama className="h-5 w-5" />
+            {isEditMode
+              ? `Edit persona${existingPersona?.name ? ` — ${existingPersona.name}` : ""}`
+              : "New persona"}
+          </h1>
+          <p className="text-xs text-muted-foreground">
+            Configure identity, look, and platform behaviour for an alternate operating identity.
+          </p>
         </div>
       </div>
+    </div>
+  );
+
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
+      {/*
+        `<model-viewer>` is registered once on the page. `afterInteractive`
+        keeps it out of the critical path; the preview gracefully no-ops
+        until the custom element is defined. CSP `script-src` allows
+        `https://ajax.googleapis.com` (see `src/middleware.ts`).
+      */}
+      <Script
+        id="model-viewer-script"
+        src={MODEL_VIEWER_SCRIPT_SRC}
+        type="module"
+        strategy="afterInteractive"
+      />
+
+      {headerOverride ?? defaultHeader}
 
       {stepper}
 
@@ -988,14 +1175,16 @@ export function PersonaCreator() {
           Back
         </Button>
         {isLastStep ? (
-          <Button type="button" onClick={handleCreate} disabled={isSubmitting}>
+          <Button type="button" onClick={handleSubmit} disabled={isSubmitting}>
             {isSubmitting ? (
               <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Creating...
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />{" "}
+                {isEditMode ? "Saving..." : "Creating..."}
               </>
             ) : (
               <>
-                <Check className="mr-2 h-4 w-4" /> Create persona
+                <Check className="mr-2 h-4 w-4" />{" "}
+                {isEditMode ? "Save persona" : "Create persona"}
               </>
             )}
           </Button>

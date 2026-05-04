@@ -21,7 +21,7 @@
  * @module settings/page
  */
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { SettingsForm, type SettingsInitialData } from "./settings-form";
@@ -29,6 +29,8 @@ import { buildFederationIdentityStatus, type FederationIdentityStatus } from "@/
 import { buildPersonInstanceSetupState, type PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { buildAppReleaseStatus, type AppReleaseStatus } from "@/lib/app-release";
 import { resolveActiveActorAgentId } from "@/lib/persona";
+import { PersonaCreator } from "@/components/persona-creator";
+import { serializeAgent } from "@/lib/graph-serializers";
 
 /**
  * Generates a URL-safe fallback username from the user's display name.
@@ -41,9 +43,19 @@ function fallbackUsername(name: string): string {
 }
 
 /**
- * Server-rendered settings page that fetches user data and delegates to `SettingsForm`.
+ * Server-rendered settings page that fetches user data and delegates to the
+ * appropriate editor.
  *
- * @returns The `SettingsForm` client component hydrated with the user's current data.
+ * Branching:
+ * - **Controller active** → renders the existing controller `SettingsForm`
+ *   unchanged.
+ * - **Persona active** → renders the shared `PersonaCreator` in edit mode,
+ *   so `/settings` looks like the full persona surface (identity →
+ *   appearance with 3D viewer → skills → operating mode → review). This is
+ *   intentional: when a persona is the active actor, the whole app behaves
+ *   as if that persona is the user, including the settings surface.
+ *
+ * @returns The matching editor component hydrated with the actor's data.
  */
 export default async function SettingsPage() {
   // Auth check: redirect unauthenticated visitors to login.
@@ -56,6 +68,31 @@ export default async function SettingsPage() {
   }
 
   const { actorId, controllerId, isPersona } = activeActor;
+
+  // When a persona is active, settings becomes the persona-edit surface.
+  // We fetch the full agent row and hand it to `PersonaCreator` (edit mode),
+  // which mirrors `/personas/[id]/edit`.
+  if (isPersona) {
+    const [personaRow] = await db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, actorId), isNull(agents.deletedAt)))
+      .limit(1);
+
+    if (!personaRow) {
+      // Stale persona cookie that survived the resolver — fall through to
+      // login to force a clean reauth/cookie state.
+      redirect("/auth/login");
+    }
+
+    const serialized = serializeAgent(personaRow);
+    return (
+      <PersonaCreator
+        existingPersona={serialized}
+        onSavedRedirectTo="/settings"
+      />
+    );
+  }
 
   // Fetch the active actor's agent row from the database. When a persona is
   // active this is the persona row; otherwise it is the controller row.

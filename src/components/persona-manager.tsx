@@ -5,6 +5,12 @@
  *
  * Renders the persona management panel for the profile page: lists existing
  * personas, shows which is active, and provides create/edit/delete/switch controls.
+ *
+ * Editing is delegated to `/personas/[id]/edit`, which mounts the same
+ * `PersonaCreator` UI used by `/personas/new` and the persona-active variant
+ * of `/settings`. The flat in-list edit dialog has been removed in favour of
+ * that single shared surface so identity, appearance (3D avatar viewer),
+ * skills, and operating-mode are all editable in one place.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -21,9 +27,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import {
   Collapsible,
@@ -35,18 +38,9 @@ import {
   deletePersona,
   listMyPersonas,
   switchActivePersona,
-  updatePersona,
 } from "@/app/actions/personas";
 import { AutobotControlPane } from "@/components/autobot-control-pane";
 import type { SerializedAgent } from "@/lib/graph-serializers";
-
-interface PersonaFormState {
-  name: string;
-  username: string;
-  bio: string;
-}
-
-const EMPTY_FORM: PersonaFormState = { name: "", username: "", bio: "" };
 
 export function PersonaManager() {
   const router = useRouter();
@@ -56,10 +50,9 @@ export function PersonaManager() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Dialog state
-  const [editingPersona, setEditingPersona] = useState<SerializedAgent | null>(null);
+  // Dialog state — only the delete-confirm dialog remains; edit navigates
+  // to the dedicated edit route so the rich PersonaCreator UI is reused.
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<PersonaFormState>(EMPTY_FORM);
 
   // Autobot control pane expanded state (persona id -> boolean)
   const [expandedPanes, setExpandedPanes] = useState<Record<string, boolean>>({});
@@ -81,29 +74,6 @@ export function PersonaManager() {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  const handleUpdate = async () => {
-    if (!editingPersona) return;
-    setActionLoading(true);
-    try {
-      const result = await updatePersona({
-        personaId: editingPersona.id,
-        name: form.name.trim() || undefined,
-        username: form.username.trim() || undefined,
-        bio: form.bio.trim() || undefined,
-      });
-      if (result.success) {
-        toast({ title: "Persona updated" });
-        setEditingPersona(null);
-        setForm(EMPTY_FORM);
-        await refresh();
-      } else {
-        toast({ title: result.error ?? "Failed to update persona", variant: "destructive" });
-      }
-    } finally {
-      setActionLoading(false);
-    }
-  };
 
   const handleDelete = async () => {
     if (!deleteConfirmId) return;
@@ -140,14 +110,13 @@ export function PersonaManager() {
     }
   };
 
+  /**
+   * Navigates to the dedicated edit page for a persona, which mounts the
+   * shared `PersonaCreator` component in edit mode (full identity, appearance
+   * with 3D viewer, skills, and operating-mode steps).
+   */
   const openEdit = (persona: SerializedAgent) => {
-    const metadata = persona.metadata ?? {};
-    setForm({
-      name: persona.name,
-      username: typeof metadata.username === "string" ? metadata.username : "",
-      bio: typeof metadata.bio === "string" ? metadata.bio : "",
-    });
-    setEditingPersona(persona);
+    router.push(`/personas/${persona.id}/edit`);
   };
 
   if (loading) {
@@ -344,56 +313,6 @@ export function PersonaManager() {
           )}
         </CardContent>
       </Card>
-
-      {/* Edit dialog */}
-      <Dialog open={!!editingPersona} onOpenChange={(open) => !open && setEditingPersona(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Persona</DialogTitle>
-            <DialogDescription>
-              Update this persona&apos;s profile information.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <div>
-              <Label htmlFor="edit-persona-name">Name</Label>
-              <Input
-                id="edit-persona-name"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                maxLength={100}
-              />
-            </div>
-            <div>
-              <Label htmlFor="edit-persona-username">Username</Label>
-              <Input
-                id="edit-persona-username"
-                value={form.username}
-                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-                maxLength={40}
-              />
-            </div>
-            <div>
-              <Label htmlFor="edit-persona-bio">Bio</Label>
-              <Textarea
-                id="edit-persona-bio"
-                value={form.bio}
-                onChange={(e) => setForm((f) => ({ ...f, bio: e.target.value }))}
-                maxLength={500}
-                rows={3}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setEditingPersona(null)}>
-                Cancel
-              </Button>
-              <Button onClick={handleUpdate} disabled={actionLoading}>
-                {actionLoading ? "Saving..." : "Save"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Delete confirmation dialog */}
       <Dialog open={!!deleteConfirmId} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>

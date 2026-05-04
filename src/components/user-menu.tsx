@@ -53,6 +53,30 @@ export function UserMenu({ open, onClose }: UserMenuProps) {
     }
   }, [])
 
+  /**
+   * When a persona is the active actor, the user menu should send the
+   * controller to the persona's PUBLIC profile (`/profile/<username|id>`)
+   * rather than the canonical `/profile` route, which always renders the
+   * controller's myprofile bundle. Username falls back to the persona ID
+   * when no `metadata.username` is set, matching the pattern used by
+   * `/profile/[username]/page.tsx`.
+   */
+  const activePersona = activePersonaId
+    ? personas.find((p) => p.id === activePersonaId) ?? null
+    : null
+  const activePersonaUsername =
+    activePersona?.metadata && typeof activePersona.metadata === "object"
+      ? (activePersona.metadata as Record<string, unknown>).username
+      : undefined
+  const profileHref = activePersona
+    ? `/profile/${typeof activePersonaUsername === "string" && activePersonaUsername
+        ? activePersonaUsername
+        : activePersona.id}`
+    : "/profile"
+  const profileAvatarSrc =
+    activePersona?.image || session?.user?.image || "/placeholder.svg?height=64&width=64"
+  const profileDisplayName = activePersona?.name || session?.user?.name || "User"
+
   useEffect(() => {
     if (open) loadPersonas()
   }, [open, loadPersonas])
@@ -87,21 +111,21 @@ export function UserMenu({ open, onClose }: UserMenuProps) {
           <div className="flex items-center gap-4 mb-4">
             <Avatar
               className="h-16 w-16 cursor-pointer hover:ring-2 hover:ring-primary transition-all"
-              onClick={() => handleNavigation("/profile")}
+              onClick={() => handleNavigation(profileHref)}
             >
-              <AvatarImage src={session?.user?.image || "/placeholder.svg?height=64&width=64"} alt={session?.user?.name || "User"} />
-              <AvatarFallback>{session?.user?.name?.substring(0, 2).toUpperCase() || "U"}</AvatarFallback>
+              <AvatarImage src={profileAvatarSrc} alt={profileDisplayName} />
+              <AvatarFallback>{profileDisplayName?.substring(0, 2).toUpperCase() || "U"}</AvatarFallback>
             </Avatar>
             <div>
-              <h3 className="font-medium text-lg">{session?.user?.name || "User"}</h3>
+              <h3 className="font-medium text-lg">{profileDisplayName}</h3>
               <p className="text-sm text-muted-foreground">{session?.user?.email || ""}</p>
             </div>
           </div>
           <Separator className="my-4" />
           <nav className="flex flex-col gap-2">
             <Link
-              href="/profile"
-              onClick={() => handleNavigation("/profile")}
+              href={profileHref}
+              onClick={() => handleNavigation(profileHref)}
               className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
             >
               <User className="h-5 w-5" />
