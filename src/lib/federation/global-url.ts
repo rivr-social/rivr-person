@@ -16,10 +16,10 @@ const REGISTRY_PATH_SUFFIX = "/api/federation/registry";
 
 /**
  * Canonical default when no env hints are available. Matches the workspace
- * CLAUDE.md / ticket #109 expectation that GLOBAL === `https://a.rivr.social`
- * (the primary development edge on the testA branch line).
+ * CLAUDE.md / ticket #109 expectation that GLOBAL === `https://app.rivr.social`
+ * (the production global).
  */
-const DEFAULT_GLOBAL_BASE_URL = "https://a.rivr.social";
+const DEFAULT_GLOBAL_BASE_URL = "https://app.rivr.social";
 
 /**
  * Derive the global (platform) instance base URL.
@@ -30,7 +30,7 @@ const DEFAULT_GLOBAL_BASE_URL = "https://a.rivr.social";
  * 2. NEXT_PUBLIC_GLOBAL_URL (legacy override still honored)
  * 3. REGISTRY_URL with the API path stripped
  * 4. NEXT_PUBLIC_BASE_URL (assumes this IS the global instance)
- * 5. DEFAULT_GLOBAL_BASE_URL — `https://a.rivr.social`
+ * 5. DEFAULT_GLOBAL_BASE_URL — `https://app.rivr.social`
  */
 export function getGlobalBaseUrl(): string {
   // Ticket #109: prefer the canonical identity-authority env used across
