@@ -26,6 +26,7 @@ import {
   bigint,
   integer,
   doublePrecision,
+  serial,
   vector,
   index,
   uniqueIndex,
@@ -595,6 +596,99 @@ export const resources = pgTable(
 );
 
 /**
+ * kg_documents — local per-scope knowledge graph document ledger.
+ *
+ * This stores the canonical KG surface for the person instance itself. Each
+ * scope is isolated by scope_type + scope_id so personas keep their own KG.
+ */
+export const kgDocuments = pgTable(
+  "kg_documents",
+  {
+    id: serial("id").primaryKey(),
+    title: text("title").notNull(),
+    docType: text("doc_type").notNull().default("document"),
+    scopeType: text("scope_type").notNull(),
+    scopeId: text("scope_id").notNull(),
+    status: text("status").notNull().default("pending"),
+    content: text("content"),
+    contentHash: text("content_hash"),
+    sourceUri: text("source_uri"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }),
+    tripleCount: integer("triple_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("kg_documents_scope_idx").on(table.scopeType, table.scopeId),
+    index("kg_documents_scope_status_idx").on(table.scopeType, table.scopeId, table.status),
+    index("kg_documents_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export type KgDocumentRecord = typeof kgDocuments.$inferSelect;
+export type NewKgDocumentRecord = typeof kgDocuments.$inferInsert;
+
+/**
+ * kg_entities — extracted or curated entities inside a KG scope.
+ */
+export const kgEntities = pgTable(
+  "kg_entities",
+  {
+    id: serial("id").primaryKey(),
+    scopeType: text("scope_type").notNull(),
+    scopeId: text("scope_id").notNull(),
+    docId: integer("doc_id").references(() => kgDocuments.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    entityType: text("entity_type").notNull().default("entity"),
+    canonicalName: text("canonical_name").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("kg_entities_scope_idx").on(table.scopeType, table.scopeId),
+    index("kg_entities_doc_idx").on(table.docId),
+    index("kg_entities_name_idx").on(table.name),
+    index("kg_entities_canonical_idx").on(table.canonicalName),
+  ],
+);
+
+export type KgEntityRecord = typeof kgEntities.$inferSelect;
+export type NewKgEntityRecord = typeof kgEntities.$inferInsert;
+
+/**
+ * kg_triples — extracted triples for a local KG scope.
+ */
+export const kgTriples = pgTable(
+  "kg_triples",
+  {
+    id: serial("id").primaryKey(),
+    scopeType: text("scope_type").notNull(),
+    scopeId: text("scope_id").notNull(),
+    docId: integer("doc_id").references(() => kgDocuments.id, { onDelete: "cascade" }),
+    subject: text("subject").notNull(),
+    subjectType: text("subject_type").notNull().default("entity"),
+    predicate: text("predicate").notNull(),
+    object: text("object").notNull(),
+    objectType: text("object_type").notNull().default("text"),
+    confidence: doublePrecision("confidence").notNull().default(1),
+    sourceDocTitle: text("source_doc_title"),
+    extractionMethod: text("extraction_method").notNull().default("local-rules"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("kg_triples_scope_idx").on(table.scopeType, table.scopeId),
+    index("kg_triples_doc_idx").on(table.docId),
+    index("kg_triples_subject_idx").on(table.subject),
+    index("kg_triples_predicate_idx").on(table.predicate),
+  ],
+);
+
+export type KgTripleRecord = typeof kgTriples.$inferSelect;
+export type NewKgTripleRecord = typeof kgTriples.$inferInsert;
+
+/**
  * Ledger table - immutable log of all actions and transactions
  * Stores the complete history of agent interactions with resources
  */
@@ -936,6 +1030,15 @@ export const federationEntityMap = pgTable(
     externalEntityId: text('external_entity_id').notNull(),
     localEntityId: uuid('local_entity_id').notNull(),
     entityType: text('entity_type', { enum: ['agent', 'resource'] }).notNull(),
+    /**
+     * Direction of the mapping. mirrored_remote = local id is a projection of
+     * a remote canonical actor; resolveViaEntityMap forwards writes to the
+     * remote home. local_alias = local id is canonical and just has a known
+     * alias on the remote; resolveViaEntityMap leaves it local.
+     */
+    relationship: text('relationship', {
+      enum: ['mirrored_remote', 'local_alias'],
+    }).notNull().default('mirrored_remote'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -947,6 +1050,7 @@ export const federationEntityMap = pgTable(
     ),
     index('federation_entity_map_local_entity_idx').on(table.localEntityId),
     index('federation_entity_map_origin_node_idx').on(table.originNodeId),
+    index('federation_entity_map_relationship_idx').on(table.relationship),
   ]
 );
 
@@ -2192,3 +2296,91 @@ export const peerSmtpConfig = pgTable(
 
 export type PeerSmtpConfigRecord = typeof peerSmtpConfig.$inferSelect;
 export type NewPeerSmtpConfigRecord = typeof peerSmtpConfig.$inferInsert;
+
+/**
+ * mcp_tokens — scoped MCP bearer token ledger.
+ *
+ * Issued by /api/mcp/token and the device-flow redemption path. Each token
+ * carries a jti recorded here so the token can be revoked by id without
+ * invalidating other tokens the user holds.
+ */
+export const mcpTokens = pgTable(
+  "mcp_tokens",
+  {
+    jti: uuid("jti").primaryKey(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    parentAgentId: uuid("parent_agent_id").references(() => agents.id, {
+      onDelete: "cascade",
+    }),
+    issuedAt: timestamp("issued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    userAgent: text("user_agent"),
+    scopes: jsonb("scopes").$type<string[]>().notNull().default([]),
+  },
+  (table) => [
+    index("mcp_tokens_agent_id_idx").on(table.agentId),
+    index("mcp_tokens_parent_agent_id_idx").on(table.parentAgentId),
+    index("mcp_tokens_expires_at_idx").on(table.expiresAt),
+    index("mcp_tokens_revoked_at_idx").on(table.revokedAt),
+  ],
+);
+
+export const mcpTokensRelations = relations(mcpTokens, ({ one }) => ({
+  agent: one(agents, {
+    fields: [mcpTokens.agentId],
+    references: [agents.id],
+    relationName: "mcp_tokens_agent",
+  }),
+  parentAgent: one(agents, {
+    fields: [mcpTokens.parentAgentId],
+    references: [agents.id],
+    relationName: "mcp_tokens_parent_agent",
+  }),
+}));
+
+export type McpTokenRecord = typeof mcpTokens.$inferSelect;
+export type NewMcpTokenRecord = typeof mcpTokens.$inferInsert;
+
+/**
+ * mcp_device_codes — RFC 8628 device authorization grant records.
+ *
+ * Created when a headless CLI / agent calls POST /api/mcp/device/code.
+ * The user visits /mcp/authorize, enters the user_code, logs in if needed,
+ * and approves or denies the request. Once approved, a real MCP token is
+ * minted against the approving session's agent_id and the token_jti is
+ * stamped onto the device-code row so the polling CLI can redeem it.
+ */
+export const mcpDeviceCodes = pgTable(
+  "mcp_device_codes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    deviceCode: text("device_code").notNull().unique(),
+    userCode: text("user_code").notNull().unique(),
+    clientName: text("client_name"),
+    scopes: jsonb("scopes").$type<string[]>().notNull().default([]),
+    status: text("status").notNull().default("pending"),
+    agentId: uuid("agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
+    tokenJti: uuid("token_jti"),
+    issuedAt: timestamp("issued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("mcp_device_codes_status_idx").on(table.status),
+    index("mcp_device_codes_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
+export type McpDeviceCodeRecord = typeof mcpDeviceCodes.$inferSelect;
+export type NewMcpDeviceCodeRecord = typeof mcpDeviceCodes.$inferInsert;
