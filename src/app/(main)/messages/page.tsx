@@ -26,6 +26,11 @@ import {
   leaveRoom,
 } from "@/lib/matrix-client";
 import {
+  onMatrixSyncRepair,
+  MATRIX_SYNC_REPAIR_EXHAUSTED,
+} from "@/lib/matrix-sync-events";
+import { toast } from "@/components/ui/use-toast";
+import {
   getMatrixCredentials,
   getDmRoomForListing,
   getDmRoomForUser,
@@ -181,6 +186,25 @@ export default function MessagesPage() {
   );
 
   /**
+   * Subscribe to Matrix sync-repair events. We surface the "exhausted"
+   * state to users as a toast so they aren't silently stuck with stale
+   * DM mappings after a Synapse hiccup.
+   */
+  useEffect(() => {
+    const unsubscribe = onMatrixSyncRepair((evt) => {
+      if (evt.type === MATRIX_SYNC_REPAIR_EXHAUSTED) {
+        toast({
+          title: "Could not sync direct-message list",
+          description:
+            "Your conversation list may be stale. Refresh to retry; messages already received are safe.",
+          variant: "destructive",
+        });
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  /**
    * Initialize Matrix client, start sync, populate conversations.
    */
   useEffect(() => {
@@ -285,10 +309,13 @@ export default function MessagesPage() {
           : await getDmRoomForListing(listingIdParam!);
         if (cancelled || !result) return;
 
-        // Find or create a DM room with that Matrix user
+        // Find or create a DM room with that Matrix user. Pass the agent id
+        // (only when we got here via `?user=` deep-link, not via the listing
+        // path) so the dm_rooms mirror is populated.
         const roomId = await getOrCreateDmRoom(
           matrixClient,
-          result.targetMatrixUserId
+          result.targetMatrixUserId,
+          userIdParam ?? undefined,
         );
         if (cancelled) return;
 
@@ -340,13 +367,18 @@ export default function MessagesPage() {
         let roomId: string;
 
         if (agentIds.length === 1) {
-          // Single user — find or create 1-on-1 DM
+          // Single user — find or create 1-on-1 DM. Passing the agent id
+          // lets the helper mirror the room into RIVR's dm_rooms table.
           const result = await getDmRoomForUser(agentIds[0]);
           if (!result) {
             console.error("[messages] Could not resolve Matrix user ID for agent");
             return;
           }
-          roomId = await getOrCreateDmRoom(matrixClient, result.targetMatrixUserId);
+          roomId = await getOrCreateDmRoom(
+            matrixClient,
+            result.targetMatrixUserId,
+            agentIds[0],
+          );
         } else {
           // Multiple users — create a group DM
           const matrixUserIds = await getMatrixUserIdsForAgents(agentIds);
@@ -354,7 +386,12 @@ export default function MessagesPage() {
             console.error("[messages] No Matrix user IDs resolved for selected agents");
             return;
           }
-          roomId = await createGroupDmRoom(matrixClient, matrixUserIds);
+          roomId = await createGroupDmRoom(
+            matrixClient,
+            matrixUserIds,
+            undefined,
+            agentIds,
+          );
         }
 
         // Refresh conversations to include the new room
@@ -368,6 +405,25 @@ export default function MessagesPage() {
       }
     },
     [matrixClient, refreshConversations]
+  );
+
+  /**
+   * Handle add-to-chat side effects from MatrixChatPanel.
+   *
+   * If the action promoted a 1:1 DM into a fresh group room, the server has
+   * already created the new room + force-joined participants; we just need
+   * to refresh the conversation list and navigate to the new room.
+   */
+  const handleParticipantsAdded = useCallback(
+    (result: { promotedRoomId: string | null }) => {
+      if (!matrixClient) return;
+      refreshConversations(matrixClient);
+      if (result.promotedRoomId) {
+        setActiveRoomId(result.promotedRoomId);
+        setShowConversationList(false);
+      }
+    },
+    [matrixClient, refreshConversations],
   );
 
   /** Handle deleting a conversation: leave the Matrix room and remove from list. */
@@ -441,6 +497,7 @@ export default function MessagesPage() {
               matrixRoomId={activeRoomId}
               currentUserId={currentUserId}
               onBack={handleBack}
+              onParticipantsAdded={handleParticipantsAdded}
             />
           ) : (
             <MatrixChatPanel
@@ -450,6 +507,7 @@ export default function MessagesPage() {
               roomName={activeConversation.name}
               roomAvatarUrl={activeConversation.avatarUrl}
               onBack={handleBack}
+              onParticipantsAdded={handleParticipantsAdded}
             />
           )
         ) : (
