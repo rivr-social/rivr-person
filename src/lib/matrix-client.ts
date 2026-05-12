@@ -17,9 +17,105 @@
  * - `matrix-js-sdk` for the underlying Matrix protocol client.
  */
 import { ClientEvent, createClient, EventType, MatrixClient, MsgType, Preset, Room } from "matrix-js-sdk";
-import { ensureUserJoinedRoom } from "@/app/actions/matrix";
+import { ensureUserJoinedRoom, recordDmRoomMirror } from "@/app/actions/matrix";
+import {
+  emitMatrixSyncRepair,
+  MATRIX_SYNC_REPAIR_EXHAUSTED,
+  MATRIX_SYNC_REPAIR_FAILED,
+  MATRIX_SYNC_REPAIR_SUCCEEDED,
+} from "@/lib/matrix-sync-events";
 
 let matrixClient: MatrixClient | null = null;
+
+// ─── Retry tuning for m.direct repair ───────────────────────────────────────
+// Repair runs once during startSync. Network blips and Synapse rate-limits
+// are short-lived; bounded exponential backoff catches them without looping
+// forever on a misconfigured server.
+const M_DIRECT_REPAIR_MAX_ATTEMPTS = 4;
+const M_DIRECT_REPAIR_BASE_DELAY_MS = 400;
+const M_DIRECT_REPAIR_BACKOFF_FACTOR = 2;
+const M_DIRECT_REPAIR_MAX_DELAY_MS = 5_000;
+
+/**
+ * Error thrown when m.direct repair fails for every retry attempt during
+ * `startSync()`. The sync proceeds, but the caller knows the DM mirror is
+ * potentially stale until the user refreshes or the next sync runs.
+ */
+export class MatrixDirectRepairError extends Error {
+  public readonly attempts: number;
+  public readonly lastErrorMessage: string;
+  constructor(attempts: number, lastErrorMessage: string) {
+    super(
+      `Failed to persist m.direct after ${attempts} attempts: ${lastErrorMessage}`,
+    );
+    this.name = "MatrixDirectRepairError";
+    this.attempts = attempts;
+    this.lastErrorMessage = lastErrorMessage;
+  }
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return String(err);
+}
+
+function computeBackoffMs(attemptIndex: number): number {
+  // Exponential backoff capped at M_DIRECT_REPAIR_MAX_DELAY_MS so the worst
+  // case stays bounded even if the constants are tuned upward later.
+  const raw = M_DIRECT_REPAIR_BASE_DELAY_MS * Math.pow(M_DIRECT_REPAIR_BACKOFF_FACTOR, attemptIndex);
+  return Math.min(raw, M_DIRECT_REPAIR_MAX_DELAY_MS);
+}
+
+/**
+ * Persist `m.direct` account data with bounded exponential backoff.
+ *
+ * On every failure, emits `MATRIX_SYNC_REPAIR_FAILED`. On success, emits
+ * `MATRIX_SYNC_REPAIR_SUCCEEDED`. If every attempt fails, emits
+ * `MATRIX_SYNC_REPAIR_EXHAUSTED` and throws `MatrixDirectRepairError`.
+ *
+ * Exported for tests; production callers go through `startSync`.
+ */
+export async function persistMDirectWithRetry(
+  client: MatrixClient,
+  directContent: Record<string, string[]>,
+): Promise<void> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= M_DIRECT_REPAIR_MAX_ATTEMPTS; attempt++) {
+    try {
+      await client.setAccountData(EventType.Direct, directContent);
+      emitMatrixSyncRepair({ type: MATRIX_SYNC_REPAIR_SUCCEEDED, attempt });
+      return;
+    } catch (err) {
+      lastError = err;
+      const isFinalAttempt = attempt === M_DIRECT_REPAIR_MAX_ATTEMPTS;
+      const nextRetryMs = isFinalAttempt ? null : computeBackoffMs(attempt - 1);
+      emitMatrixSyncRepair({
+        type: MATRIX_SYNC_REPAIR_FAILED,
+        attempt,
+        maxAttempts: M_DIRECT_REPAIR_MAX_ATTEMPTS,
+        nextRetryMs,
+        message: describeError(err),
+      });
+      console.error(
+        `[matrix] m.direct repair failed (attempt ${attempt}/${M_DIRECT_REPAIR_MAX_ATTEMPTS}):`,
+        err,
+      );
+      if (!isFinalAttempt && nextRetryMs !== null) {
+        await new Promise((resolve) => setTimeout(resolve, nextRetryMs));
+      }
+    }
+  }
+
+  const finalMessage = describeError(lastError);
+  emitMatrixSyncRepair({
+    type: MATRIX_SYNC_REPAIR_EXHAUSTED,
+    attempts: M_DIRECT_REPAIR_MAX_ATTEMPTS,
+    message: finalMessage,
+  });
+  throw new MatrixDirectRepairError(M_DIRECT_REPAIR_MAX_ATTEMPTS, finalMessage);
+}
 
 /**
  * Creates or returns the cached MatrixClient instance.
@@ -115,12 +211,24 @@ export async function startSync(client: MatrixClient): Promise<void> {
     }
   }
 
-  // Persist updated m.direct if we found new DM rooms
+  // Persist updated m.direct if we found new DM rooms.
+  // Failures are emitted via matrix-sync-events so the UI can surface them;
+  // we don't rethrow here because the sync itself succeeded — we just couldn't
+  // mirror the discovered DM rooms back to the account data.
   if (directContentChanged) {
     try {
-      await client.setAccountData(EventType.Direct, directContent as Record<string, string[]>);
+      await persistMDirectWithRetry(
+        client,
+        directContent as Record<string, string[]>,
+      );
     } catch (err) {
-      console.error("[matrix] Failed to update m.direct account data:", err);
+      // Already emitted MATRIX_SYNC_REPAIR_EXHAUSTED inside the helper.
+      // Swallow here so startSync() resolves; subscribers receive the
+      // exhausted event and can prompt the user.
+      if (!(err instanceof MatrixDirectRepairError)) {
+        // Should not happen, but be defensive about unexpected errors.
+        console.error("[matrix] Unexpected error from persistMDirectWithRetry:", err);
+      }
     }
   }
 }
@@ -167,7 +275,14 @@ export async function sendMessage(
  */
 export async function getOrCreateDmRoom(
   client: MatrixClient,
-  targetUserId: string
+  targetUserId: string,
+  /**
+   * Optional RIVR agent id for the target user. If supplied, the new room
+   * is mirrored into the `dm_rooms` table via `recordDmRoomMirror` so the
+   * pairing survives a homeserver migration. The caller already knows this
+   * id because it just resolved the targetUserId from `getDmRoomForUser`.
+   */
+  targetAgentId?: string,
 ): Promise<string> {
   // Check existing DM rooms
   const rooms = client.getRooms();
@@ -207,6 +322,17 @@ export async function getOrCreateDmRoom(
   ];
   await client.setAccountData(EventType.Direct, directContent as Record<string, string[]>);
 
+  // Mirror the room to RIVR's dm_rooms table for migration survival.
+  // Best-effort: a failure here is logged server-side and recovered by
+  // the reconcile job; the DM itself is still usable client-side.
+  if (targetAgentId) {
+    try {
+      await recordDmRoomMirror(result.room_id, [targetAgentId]);
+    } catch (err) {
+      console.error("[matrix] getOrCreateDmRoom mirror write failed:", err);
+    }
+  }
+
   return result.room_id;
 }
 
@@ -223,7 +349,13 @@ export async function getOrCreateDmRoom(
 export async function createGroupDmRoom(
   client: MatrixClient,
   targetUserIds: string[],
-  roomName?: string
+  roomName?: string,
+  /**
+   * Optional RIVR agent ids matching `targetUserIds` (same order or any
+   * order — we just record the set). When supplied, the new room is
+   * mirrored into the `dm_rooms` table for migration survival.
+   */
+  targetAgentIds?: string[],
 ): Promise<string> {
   const result = await client.createRoom({
     is_direct: true,
@@ -247,6 +379,15 @@ export async function createGroupDmRoom(
     ];
   }
   await client.setAccountData(EventType.Direct, directContent as Record<string, string[]>);
+
+  // Mirror the room to RIVR's dm_rooms table for migration survival.
+  if (targetAgentIds && targetAgentIds.length > 0) {
+    try {
+      await recordDmRoomMirror(result.room_id, targetAgentIds);
+    } catch (err) {
+      console.error("[matrix] createGroupDmRoom mirror write failed:", err);
+    }
+  }
 
   return result.room_id;
 }

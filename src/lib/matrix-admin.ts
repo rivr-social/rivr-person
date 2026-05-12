@@ -1,5 +1,7 @@
 "use server";
 
+import { MatrixProvisioningError } from "./matrix-errors";
+
 /**
  * Server-side Matrix Synapse Admin API client.
  *
@@ -18,6 +20,7 @@
  * - `@/lib/env` for `MATRIX_HOMESERVER_URL`, `MATRIX_ADMIN_TOKEN`, `MATRIX_SERVER_NAME`.
  */
 import { getEnv } from "@/lib/env";
+
 
 /**
  * Makes an authenticated request to the Synapse Admin API.
@@ -69,31 +72,62 @@ export async function provisionMatrixUser(params: {
   const serverName = getEnv("MATRIX_SERVER_NAME");
   const matrixUserId = `@${params.localpart}:${serverName}`;
 
-  // Register user via admin API v2
-  await synapseAdminRequest(
-    `/_synapse/admin/v2/users/${encodeURIComponent(matrixUserId)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({
-        displayname: params.displayName,
-        admin: false,
-        deactivated: false,
-      }),
-    }
-  );
+  // Register user via admin API v2.
+  // PUT is idempotent — Synapse returns 200 if the user already exists, 201 if newly
+  // created. Either is fine for our flow; we just need the row to exist before login.
+  try {
+    await synapseAdminRequest(
+      `/_synapse/admin/v2/users/${encodeURIComponent(matrixUserId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          displayname: params.displayName,
+          admin: false,
+          deactivated: false,
+        }),
+      }
+    );
+  } catch (error) {
+    throw new MatrixProvisioningError(
+      "user_create",
+      error instanceof Error ? error.message : String(error),
+      error,
+    );
+  }
 
-  // Get access token for the user
-  const loginResult = await synapseAdminRequest(
-    `/_synapse/admin/v1/users/${encodeURIComponent(matrixUserId)}/login`,
-    {
-      method: "POST",
-      body: JSON.stringify({}),
-    }
-  );
+  // Get an access token for the user. This path also covers re-provisioning
+  // when the caller knows the Synapse user already exists but the local
+  // `matrixAccessToken` column is null (admin login is repeatable).
+  let loginResult: { access_token?: unknown };
+  try {
+    loginResult = await synapseAdminRequest(
+      `/_synapse/admin/v1/users/${encodeURIComponent(matrixUserId)}/login`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      }
+    );
+  } catch (error) {
+    throw new MatrixProvisioningError(
+      "user_login",
+      error instanceof Error ? error.message : String(error),
+      error,
+    );
+  }
+
+  const accessToken = loginResult.access_token;
+  if (typeof accessToken !== "string" || accessToken.length === 0) {
+    // Synapse returned 200 but didn't include a token. Treat as a hard failure
+    // so we never persist a half-provisioned row.
+    throw new MatrixProvisioningError(
+      "missing_token",
+      `Synapse /login returned no access_token for ${matrixUserId}`,
+    );
+  }
 
   return {
     matrixUserId,
-    accessToken: loginResult.access_token,
+    accessToken,
   };
 }
 
@@ -186,4 +220,115 @@ export async function createDirectMessageRoom(params: {
   );
 
   return { roomId: result.room_id };
+}
+
+/**
+ * Lists current room members via the Synapse Admin API.
+ *
+ * Used by `addParticipantsToRoom` to decide whether the target room is a
+ * 1:1 DM (2 members) that should be promoted to a group room when extra
+ * participants are added.
+ *
+ * @param roomId - Synapse room ID (must start with `!`)
+ * @returns Array of full Matrix user IDs currently joined to the room
+ */
+export async function getRoomMembers(roomId: string): Promise<string[]> {
+  if (!roomId.startsWith("!")) {
+    throw new Error(`Invalid Matrix roomId: ${roomId}`);
+  }
+  const result = await synapseAdminRequest(
+    `/_synapse/admin/v1/rooms/${encodeURIComponent(roomId)}/members`,
+    { method: "GET" },
+  );
+  const members = (result?.members as unknown) ?? [];
+  if (!Array.isArray(members)) return [];
+  return members.filter((m): m is string => typeof m === "string");
+}
+
+/**
+ * Creates a new Matrix room with multiple invitees via Synapse Admin API.
+ * Used when promoting a 1:1 DM to a group chat — the original two members
+ * plus the new participants are all invited into a fresh room.
+ *
+ * @param params.creatorUserId - Full Matrix user ID who will be the room creator
+ * @param params.inviteeUserIds - Full Matrix user IDs to invite (creator excluded)
+ * @param params.name - Optional room display name
+ * @returns The newly created Matrix room ID
+ */
+export async function createGroupRoomAsAdmin(params: {
+  creatorUserId: string;
+  inviteeUserIds: string[];
+  name?: string;
+}): Promise<{ roomId: string }> {
+  const result = await synapseAdminRequest(`/_synapse/admin/v1/rooms`, {
+    method: "POST",
+    body: JSON.stringify({
+      creator: params.creatorUserId,
+      invite: params.inviteeUserIds,
+      // `is_direct` stays false here: the room is a group chat even if the
+      // promotion path originated from a DM. The DM-specific m.direct
+      // mirror tracking is removed by the caller after promotion.
+      is_direct: false,
+      preset: "trusted_private_chat",
+      name: params.name,
+    }),
+  });
+  return { roomId: result.room_id };
+}
+
+/**
+ * Posts a server-side system message via the Synapse client API using the
+ * admin token. We don't have the sender's per-user access token here, so
+ * we impersonate via the admin endpoint and use the special m.notice msg
+ * type to render as a system event rather than a user-typed message.
+ *
+ * @param params.senderUserId - Full Matrix user ID to attribute the post to
+ * @param params.roomId - Target Matrix room ID
+ * @param params.body - Text body of the notice
+ */
+export async function postSystemNotice(params: {
+  senderUserId: string;
+  roomId: string;
+  body: string;
+}): Promise<{ eventId: string }> {
+  if (!params.roomId.startsWith("!")) {
+    throw new Error(`Invalid Matrix roomId: ${params.roomId}`);
+  }
+  if (!params.senderUserId.startsWith("@")) {
+    throw new Error(`Invalid Matrix userId: ${params.senderUserId}`);
+  }
+
+  const homeserverUrl = getEnv("MATRIX_HOMESERVER_URL");
+  const adminToken = getEnv("MATRIX_ADMIN_TOKEN");
+  const txnId = `system-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  // `user_id` query parameter lets the admin token impersonate the user
+  // for sending the event. Supported by Synapse admin API.
+  const url = new URL(
+    `${homeserverUrl}/_matrix/client/v3/rooms/${encodeURIComponent(params.roomId)}/send/m.room.message/${encodeURIComponent(txnId)}`,
+  );
+  url.searchParams.set("user_id", params.senderUserId);
+
+  const response = await fetch(url.toString(), {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${adminToken}`,
+    },
+    body: JSON.stringify({
+      msgtype: "m.notice",
+      body: params.body,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(
+      `Synapse send error: ${response.status} - ${JSON.stringify(errBody)}`,
+    );
+  }
+
+  const result = await response.json().catch(() => ({}));
+  const eventId = typeof result?.event_id === "string" ? result.event_id : "";
+  return { eventId };
 }

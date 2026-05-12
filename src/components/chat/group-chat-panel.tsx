@@ -33,6 +33,8 @@ interface GroupChatPanelProps {
   ledgerFeedContent?: React.ReactNode;
   /** Callback when back button is pressed */
   onBack?: () => void;
+  /** Forwarded to MatrixChatPanel so the parent can react to add-to-chat events. */
+  onParticipantsAdded?: (result: { promotedRoomId: string | null }) => void;
 }
 
 type ActiveTab = "chat" | "feed";
@@ -46,6 +48,7 @@ export function GroupChatPanel({
   currentUserId,
   ledgerFeedContent,
   onBack,
+  onParticipantsAdded,
 }: GroupChatPanelProps) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
 
@@ -88,6 +91,7 @@ export function GroupChatPanel({
         roomName={groupName}
         roomAvatarUrl={groupAvatarUrl}
         onBack={onBack}
+        onParticipantsAdded={onParticipantsAdded}
       />
     );
   }
