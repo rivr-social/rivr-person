@@ -38,11 +38,30 @@ vi.mock("@/lib/matrix-admin", () => ({
     accessToken: "syt_test_token",
   }),
   adminJoinRoom: vi.fn().mockResolvedValue(undefined),
+  getRoomMembers: vi.fn().mockResolvedValue([]),
+  createGroupRoomAsAdmin: vi.fn().mockResolvedValue({ roomId: "!newgroup:matrix.local" }),
+  postSystemNotice: vi.fn().mockResolvedValue({ eventId: "$evt:matrix.local" }),
+}));
+
+vi.mock("@/lib/matrix-errors", () => ({
+  MatrixProvisioningError: class MatrixProvisioningError extends Error {
+    public readonly stage: string;
+    constructor(stage: string, message: string) {
+      super(message);
+      this.stage = stage;
+    }
+  },
 }));
 
 // Import AFTER all mocks
 import { auth } from "@/auth";
-import { provisionMatrixUser, adminJoinRoom } from "@/lib/matrix-admin";
+import {
+  provisionMatrixUser,
+  adminJoinRoom,
+  getRoomMembers,
+  createGroupRoomAsAdmin,
+  postSystemNotice,
+} from "@/lib/matrix-admin";
 import {
   getMatrixCredentials,
   getDmRoomForUser,
@@ -50,6 +69,7 @@ import {
   ensureUserJoinedRoom,
   getDmRoomForListing,
   getUserGroupRooms,
+  addParticipantsToRoom,
 } from "../matrix";
 
 // =============================================================================
@@ -377,6 +397,174 @@ describe("matrix actions", () => {
 
         const result = await getUserGroupRooms();
         expect(result).toEqual([]);
+      }));
+  });
+
+  // ===========================================================================
+  // addParticipantsToRoom
+  // ===========================================================================
+
+  describe("addParticipantsToRoom", () => {
+    beforeEach(() => {
+      vi.mocked(getRoomMembers).mockReset().mockResolvedValue([]);
+      vi.mocked(createGroupRoomAsAdmin)
+        .mockReset()
+        .mockResolvedValue({ roomId: "!newgroup:matrix.local" });
+      vi.mocked(postSystemNotice)
+        .mockReset()
+        .mockResolvedValue({ eventId: "$evt:matrix.local" });
+      vi.mocked(adminJoinRoom).mockReset().mockResolvedValue(undefined);
+    });
+
+    it("rejects every agent with 'Not authenticated' when no session", () =>
+      withTestTransaction(async () => {
+        vi.mocked(auth).mockResolvedValue(mockUnauthenticated());
+        const result = await addParticipantsToRoom("!room:matrix.local", ["a", "b"]);
+        expect(result.added).toEqual([]);
+        expect(result.failed).toEqual([
+          { agentId: "a", reason: "Not authenticated" },
+          { agentId: "b", reason: "Not authenticated" },
+        ]);
+        expect(result.promotedToRoomId).toBeNull();
+      }));
+
+    it("returns invalid-roomId failures for malformed room IDs", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db);
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+        const result = await addParticipantsToRoom("bad-room", ["x"]);
+        expect(result.added).toEqual([]);
+        expect(result.failed[0].reason).toMatch(/must start with !/);
+      }));
+
+    it("force-joins each agent into the room when it has 3+ members", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db, {
+          matrixUserId: "@me:matrix.local",
+          matrixAccessToken: "syt_me",
+        });
+        const target = await createTestAgent(db, {
+          matrixUserId: "@target:matrix.local",
+          matrixAccessToken: "syt_target",
+        });
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+        vi.mocked(getRoomMembers).mockResolvedValueOnce([
+          "@me:matrix.local",
+          "@a:matrix.local",
+          "@b:matrix.local",
+        ]);
+
+        const result = await addParticipantsToRoom(
+          "!group:matrix.local",
+          [target.id],
+        );
+
+        expect(result.added).toEqual([target.id]);
+        expect(result.failed).toEqual([]);
+        expect(result.promotedToRoomId).toBeNull();
+        expect(vi.mocked(adminJoinRoom)).toHaveBeenCalledWith({
+          userId: "@target:matrix.local",
+          roomId: "!group:matrix.local",
+        });
+        expect(vi.mocked(createGroupRoomAsAdmin)).not.toHaveBeenCalled();
+      }));
+
+    it("promotes a 1:1 DM to a new group room and force-joins everyone", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db, {
+          matrixUserId: "@me:matrix.local",
+          matrixAccessToken: "syt_me",
+        });
+        const partner = await createTestAgent(db, {
+          matrixUserId: "@partner:matrix.local",
+          matrixAccessToken: "syt_partner",
+        });
+        const newAgent = await createTestAgent(db, {
+          matrixUserId: "@newcomer:matrix.local",
+          matrixAccessToken: "syt_newcomer",
+        });
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+        vi.mocked(getRoomMembers).mockResolvedValueOnce([
+          "@me:matrix.local",
+          "@partner:matrix.local",
+        ]);
+
+        const result = await addParticipantsToRoom(
+          "!dm:matrix.local",
+          [newAgent.id],
+        );
+
+        expect(result.promotedToRoomId).toBe("!newgroup:matrix.local");
+        expect(result.added).toEqual([newAgent.id]);
+        expect(vi.mocked(createGroupRoomAsAdmin)).toHaveBeenCalledTimes(1);
+        const createCall = vi.mocked(createGroupRoomAsAdmin).mock.calls[0][0];
+        expect(createCall.creatorUserId).toBe("@me:matrix.local");
+        // The partner from the original DM + the newcomer should be invited.
+        expect(createCall.inviteeUserIds).toContain("@partner:matrix.local");
+        expect(createCall.inviteeUserIds).toContain("@newcomer:matrix.local");
+        expect(vi.mocked(postSystemNotice)).toHaveBeenCalled();
+      }));
+
+    it("captures per-agent failures from adminJoinRoom without aborting the batch", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db, {
+          matrixUserId: "@me:matrix.local",
+          matrixAccessToken: "syt_me",
+        });
+        const good = await createTestAgent(db, {
+          matrixUserId: "@good:matrix.local",
+          matrixAccessToken: "syt_good",
+        });
+        const bad = await createTestAgent(db, {
+          matrixUserId: "@bad:matrix.local",
+          matrixAccessToken: "syt_bad",
+        });
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+        vi.mocked(getRoomMembers).mockResolvedValueOnce([
+          "@me:matrix.local",
+          "@a:matrix.local",
+          "@b:matrix.local",
+        ]);
+        vi.mocked(adminJoinRoom).mockImplementation(async (params) => {
+          if (params.userId === "@bad:matrix.local") {
+            throw new Error("kicked-banned");
+          }
+        });
+
+        const result = await addParticipantsToRoom(
+          "!group:matrix.local",
+          [good.id, bad.id],
+        );
+
+        expect(result.added).toEqual([good.id]);
+        expect(result.failed).toEqual([
+          { agentId: bad.id, reason: "kicked-banned" },
+        ]);
+      }));
+
+    it("dedupes the agent list and caps at 50", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db, {
+          matrixUserId: "@me:matrix.local",
+          matrixAccessToken: "syt_me",
+        });
+        const target = await createTestAgent(db, {
+          matrixUserId: "@target:matrix.local",
+          matrixAccessToken: "syt_target",
+        });
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+        vi.mocked(getRoomMembers).mockResolvedValueOnce([
+          "@me:matrix.local",
+          "@a:matrix.local",
+          "@b:matrix.local",
+        ]);
+
+        const dupes = [target.id, target.id, target.id];
+        const result = await addParticipantsToRoom("!group:matrix.local", dupes);
+
+        // Even though the input had 3 entries, only one join was attempted.
+        expect(result.added).toEqual([target.id]);
+        expect(vi.mocked(adminJoinRoom)).toHaveBeenCalledTimes(1);
       }));
   });
 });

@@ -26,6 +26,7 @@ const {
   updateMatrixProfile,
   createDirectMessageRoom,
 } = await import("@/lib/matrix-admin");
+const { MatrixProvisioningError } = await import("@/lib/matrix-errors");
 
 describe("matrix-admin", () => {
   beforeEach(() => {
@@ -77,19 +78,104 @@ describe("matrix-admin", () => {
       expect(loginOpts.method).toBe("POST");
     });
 
-    it("throws on Synapse API failure", async () => {
+    it("throws MatrixProvisioningError with stage=user_create on PUT failure", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 500,
         json: () => Promise.resolve({ errcode: "M_UNKNOWN" }),
       });
 
-      await expect(
-        provisionMatrixUser({
+      let caught: unknown = null;
+      try {
+        await provisionMatrixUser({
           localpart: "fail_user",
           displayName: "Fail",
-        })
-      ).rejects.toThrow("Synapse admin API error: 500");
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(MatrixProvisioningError);
+      expect((caught as InstanceType<typeof MatrixProvisioningError>).stage).toBe(
+        "user_create",
+      );
+    });
+
+    it("throws MatrixProvisioningError with stage=user_login when /login fails after PUT succeeds", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ errcode: "M_LIMIT_EXCEEDED" }),
+      });
+
+      let caught: unknown = null;
+      try {
+        await provisionMatrixUser({
+          localpart: "login_fail",
+          displayName: "LoginFail",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(MatrixProvisioningError);
+      expect((caught as InstanceType<typeof MatrixProvisioningError>).stage).toBe(
+        "user_login",
+      );
+    });
+
+    it("throws MatrixProvisioningError with stage=missing_token when Synapse returns no access_token", async () => {
+      // PUT user succeeds
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+      // Login returns 200 but with no access_token in the body
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ access_token: "" }),
+      });
+
+      let caught: unknown = null;
+      try {
+        await provisionMatrixUser({
+          localpart: "empty_token",
+          displayName: "EmptyToken",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(MatrixProvisioningError);
+      expect((caught as InstanceType<typeof MatrixProvisioningError>).stage).toBe(
+        "missing_token",
+      );
+    });
+
+    it("supports re-provisioning when Synapse user already exists (PUT idempotent)", async () => {
+      // First PUT — Synapse returns 200 (existing user updated)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+      // Login issues a fresh token even though the user already existed
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({ access_token: "syt_reissued_token_456" }),
+      });
+
+      const result = await provisionMatrixUser({
+        localpart: "existing_user",
+        displayName: "Existing User",
+      });
+
+      expect(result.matrixUserId).toBe("@existing_user:test.local");
+      expect(result.accessToken).toBe("syt_reissued_token_456");
     });
   });
 
