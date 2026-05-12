@@ -204,6 +204,27 @@
       "when": 1777118400000,
       "tag": "0043_peer_smtp_config",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1778198400000,
+      "tag": "0048_federation_entity_map_relationship",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1778832000000,
+      "tag": "0049_group_matrix_rooms_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1778832060000,
+      "tag": "0050_dm_rooms_mirror",
+      "breakpoints": true
     }
   ]
 }

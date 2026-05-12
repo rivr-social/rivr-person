@@ -1411,10 +1411,19 @@ export const groupMatrixRooms = pgTable(
     chatMode: chatModeEnum('chat_mode').notNull().default('both'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Soft-delete marker: set when the underlying Synapse room is purged so we
+    // can keep the historical mapping without blocking creation of a new room.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex('group_matrix_rooms_group_agent_id_idx').on(table.groupAgentId),
-    uniqueIndex('group_matrix_rooms_matrix_room_id_idx').on(table.matrixRoomId),
+    // Partial unique indexes keep one live row per group and per matrix room,
+    // while tombstoned rows are exempt from the constraint.
+    uniqueIndex('group_matrix_rooms_group_agent_id_idx')
+      .on(table.groupAgentId)
+      .where(sql`${table.deletedAt} IS NULL`),
+    uniqueIndex('group_matrix_rooms_matrix_room_id_idx')
+      .on(table.matrixRoomId)
+      .where(sql`${table.deletedAt} IS NULL`),
   ]
 );
 
@@ -1424,6 +1433,33 @@ export const groupMatrixRoomsRelations = relations(groupMatrixRooms, ({ one }) =
     references: [agents.id],
   }),
 }));
+
+/**
+ * RIVR-side mirror for Matrix DM rooms (1:1 and group DMs).
+ *
+ * Survives a homeserver migration by preserving the (matrixRoomId,
+ * participants) tuple so the UI can fall back to this list when Matrix
+ * sync is degraded and rebuild the m.direct mapping after re-host.
+ */
+export const dmRooms = pgTable(
+  'dm_rooms',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    matrixRoomId: text('matrix_room_id').notNull(),
+    participants: jsonb('participants').$type<string[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('dm_rooms_matrix_room_id_idx')
+      .on(table.matrixRoomId)
+      .where(sql`${table.deletedAt} IS NULL`),
+  ]
+);
+
+export type DmRoom = typeof dmRooms.$inferSelect;
+export type NewDmRoom = typeof dmRooms.$inferInsert;
 
 /**
  * Contract action shape stored in the actions JSONB array.
