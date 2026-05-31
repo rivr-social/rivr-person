@@ -160,9 +160,17 @@ export function generatePeerSecret(): { secret: string; hash: string } {
  * ```
  */
 export async function authorizeFederationRequest(request: Request): Promise<FederationAuthResult> {
-  // 1. Session auth — only the owner of a hosted local node gets session-based access.
+  // 1. Session auth — the owner of a hosted local node gets session-based access.
+  //    On a sovereign person instance the primary agent owns the instance even
+  //    when no `nodes` row has been provisioned yet (e.g. before the first
+  //    federation handshake), so the configured primary agent is also trusted.
   const session = await auth();
   if (session?.user?.id) {
+    const primaryAgentId = getInstanceConfig().primaryAgentId;
+    if (primaryAgentId && session.user.id === primaryAgentId) {
+      return { authorized: true, actorId: session.user.id };
+    }
+
     const hostedNode = await db.query.nodes.findFirst({
       where: and(
         eq(nodes.ownerAgentId, session.user.id),

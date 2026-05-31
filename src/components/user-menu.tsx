@@ -148,8 +148,8 @@ export function UserMenu({ open, onClose }: UserMenuProps) {
               <span>Profile Settings</span>
             </Link>
             <Link
-              href="/groups"
-              onClick={() => handleNavigation("/groups")}
+              href="/?tab=groups"
+              onClick={() => handleNavigation("/?tab=groups")}
               className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
             >
               <Users className="h-5 w-5" />

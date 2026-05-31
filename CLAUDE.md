@@ -94,13 +94,19 @@ See `docs/AUTOBOT_MCP_SETUP.md` for integration details.
 These are copied components that reference routes this app does not have.
 **Fix the components — don't add global-only routes.**
 
-| Component | Broken Link | Issue |
-| --- | --- | --- |
-| `src/components/CommandBar.tsx` | `/marketplace` (index) | [#27](https://github.com/rivr-social/rivr-person/issues/27) |
-| `src/components/user-menu.tsx` | `/groups` (index) | [#27](https://github.com/rivr-social/rivr-person/issues/27) |
-| `src/components/persona-creator.tsx` | `/personas` (index) | [#27](https://github.com/rivr-social/rivr-person/issues/27) |
-| `src/components/search-bar.tsx`, `search-header.tsx` | `/explore` | [#28](https://github.com/rivr-social/rivr-person/issues/28) |
-| `src/components/location-autocomplete-input.tsx` | `/api/locations/suggest` (global only) | [#29](https://github.com/rivr-social/rivr-person/issues/29) |
+All previously-tracked drift items below have been resolved; the table is kept
+as a record of what was fixed and how.
+
+| Component | Broken Link | Issue | Status |
+| --- | --- | --- | --- |
+| `src/components/CommandBar.tsx` | `/marketplace` (index) | [#27](https://github.com/rivr-social/rivr-person/issues/27) | Fixed — now points at `/?tab=marketplace` (home Mart tab). |
+| `src/components/user-menu.tsx` | `/groups` (index) | [#27](https://github.com/rivr-social/rivr-person/issues/27) | Fixed — now points at `/?tab=groups` (home Groups tab). |
+| `src/components/persona-creator.tsx` | `/personas` (index) | [#27](https://github.com/rivr-social/rivr-person/issues/27) | Not drift — `/personas` exists locally under `(main)/personas`. |
+| `src/components/search-bar.tsx`, `search-header.tsx` | `/explore` | [#28](https://github.com/rivr-social/rivr-person/issues/28) | Fixed — "search/see all" now routes to `/?tab=posts&q=…` (home feed is the canonical browse surface); eliminates the 404 + retry loop. |
+| `src/components/location-autocomplete-input.tsx` | `/api/locations/suggest` (global only) | [#29](https://github.com/rivr-social/rivr-person/issues/29) | Fixed — added a local `src/app/api/locations/suggest/route.ts` that serves suggestions from local place/locale graph nodes (no global call); degrades to an empty list. |
+
+The home feed (`/`) reads a `tab` query param (`posts`/`events`/`groups`/
+`people`/`gigs`/`marketplace`) so the above deep links land on the right tab.
 
 ### Other Known Issues
 

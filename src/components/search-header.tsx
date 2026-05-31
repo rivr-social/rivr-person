@@ -367,7 +367,9 @@ export function SearchHeader({ selectedChapter, onChapterChange }: SearchHeaderP
                     <button
                       className="w-full text-center text-sm text-primary hover:underline"
                       onClick={() => {
-                        router.push(`/explore?q=${encodeURIComponent(searchQuery)}&chapter=${selectedChapter}`)
+                        // No dedicated /explore surface on this sovereign instance;
+                        // the home feed is the canonical browse/search surface.
+                        router.push(`/?tab=posts&q=${encodeURIComponent(searchQuery)}&chapter=${selectedChapter}`)
                         setIsSearchOpen(false)
                       }}
                     >

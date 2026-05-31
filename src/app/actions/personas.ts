@@ -373,6 +373,9 @@ export async function createPersona(input: CreatePersonaInput): Promise<{
 
   const metadata: Record<string, unknown> = {
     isPersona: true,
+    // Mirror the parent link into metadata so consumers that only read the
+    // serialized metadata blob (rather than the column) still resolve the owner.
+    parentAgentId: userId,
     bio: bio || undefined,
     username: username || undefined,
     tagline: tagline || undefined,
@@ -399,7 +402,11 @@ export async function createPersona(input: CreatePersonaInput): Promise<{
     .values({
       name,
       type: 'person',
+      // Set both parent columns: `parentAgentId` is the canonical persona→owner
+      // link consumed by listMyPersonas/federation; `parentId` is the generic
+      // hierarchy column that graph serializers and resolution also read.
       parentAgentId: userId,
+      parentId: userId,
       visibility: 'public',
       image: image || null,
       metadata,

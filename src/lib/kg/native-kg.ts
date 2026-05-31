@@ -50,6 +50,23 @@ const MAX_SUBJECT_LEN = 120;
 const MAX_OBJECT_LEN = 200;
 const MIN_TERM_LEN = 2;
 
+/** Fallback (noun-phrase "mentions") extraction tuning. */
+const FALLBACK_MIN_TERM_LEN = 3;
+const FALLBACK_MAX_MENTIONS = 50;
+const FALLBACK_PREDICATE = "mentions";
+
+/**
+ * Common capitalized sentence-leading words that are not meaningful entities.
+ * Used to reduce noise in the noun-phrase fallback extractor.
+ */
+const FALLBACK_STOPWORDS = new Set([
+  "the", "a", "an", "this", "that", "these", "those", "it", "we", "they",
+  "he", "she", "i", "you", "our", "their", "his", "her", "its", "my", "your",
+  "and", "or", "but", "so", "if", "then", "when", "while", "after", "before",
+  "today", "yesterday", "tomorrow", "here", "there", "now", "also", "however",
+  "meanwhile", "therefore", "thus", "meeting", "notes", "note",
+]);
+
 /** Rivr-object snippet sizing for linked-object context. */
 const MAX_LINKED_OBJECTS = 25;
 const LINKED_SNIPPET_CHARS = 300;
@@ -275,10 +292,61 @@ function isUsableTerm(term: string, maxLen: number): boolean {
 }
 
 /**
+ * Deterministic fallback extractor: pulls capitalized multi-word noun phrases
+ * (proper nouns like "Acme Corp", "Boulder Commons") and links each to the
+ * document via a `mentions` predicate. This guarantees that ordinary prose
+ * lacking colons and copula verbs (e.g. "Meeting notes from today. We discussed
+ * the roadmap and budget.") still yields entities and triples instead of zero.
+ *
+ * Only runs when the primary patterns produce nothing, so it never dilutes the
+ * higher-confidence structured/copula extractions.
+ */
+function extractMentionTriples(
+  content: string,
+  docTitle: string,
+): ExtractedTriple[] {
+  const triples: ExtractedTriple[] = [];
+  const seen = new Set<string>();
+  const docSubject = docTitle.slice(0, MAX_SUBJECT_LEN);
+
+  // Match runs of Capitalized words (allowing internal lowercase connectors like
+  // "of"/"and") — captures multi-word proper nouns as a single phrase.
+  const nounPhrasePattern =
+    /\b([A-Z][a-zA-Z0-9]+(?:\s+(?:of|the|and|for|de|von|van)\s+[A-Z][a-zA-Z0-9]+|\s+[A-Z][a-zA-Z0-9]+)*)/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = nounPhrasePattern.exec(content)) !== null) {
+    if (triples.length >= FALLBACK_MAX_MENTIONS) break;
+    const phrase = match[1].trim();
+    const firstWord = phrase.split(/\s+/)[0] ?? "";
+    // Skip single common words that merely start a sentence.
+    const isMultiWord = /\s/.test(phrase);
+    if (!isMultiWord && FALLBACK_STOPWORDS.has(firstWord.toLowerCase())) continue;
+    if (phrase.length < FALLBACK_MIN_TERM_LEN || phrase.length > MAX_OBJECT_LEN) continue;
+    const canonical = phrase.toLowerCase();
+    if (canonical === docTitle.toLowerCase()) continue;
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    triples.push({
+      subject: docSubject,
+      subjectType: "document",
+      predicate: FALLBACK_PREDICATE,
+      object: phrase.slice(0, MAX_OBJECT_LEN),
+      objectType: "entity",
+      confidence: 0.4,
+    });
+  }
+
+  return triples;
+}
+
+/**
  * Extracts subject-predicate-object triples from free text using deterministic
- * local rules (no LLM). Two patterns are recognized:
+ * local rules (no LLM). Three patterns are recognized:
  *   1. "Key: Value" lines      -> (docTitle, key, value)
  *   2. "Subject <copula> Rest" -> (subject, copula, rest)
+ *   3. Capitalized noun phrases -> (docTitle, "mentions", phrase) as a fallback
+ *      when neither (1) nor (2) matched, so ordinary prose is never empty.
  */
 function extractTriplesFromContent(
   content: string,
@@ -343,6 +411,12 @@ function extractTriplesFromContent(
     }
   }
 
+  // Pattern 3 (fallback): if nothing structured was found, link capitalized
+  // noun phrases to the document so plain prose still produces a graph.
+  if (triples.length === 0) {
+    triples.push(...extractMentionTriples(content, docTitle));
+  }
+
   return { triples, suppressed };
 }
 
@@ -365,12 +439,16 @@ export async function ingestDoc(
   await db.delete(kgTriples).where(eq(kgTriples.docId, docId));
   await db.delete(kgEntities).where(eq(kgEntities.docId, docId));
 
-  // Distinct entity names: the doc itself plus every triple subject.
+  // Distinct entity names: the doc itself, every entity-typed triple subject,
+  // and every entity-typed object (e.g. fallback "mentions" noun phrases).
   const entityNames = new Map<string, string>();
   entityNames.set(docTitle.toLowerCase(), docTitle);
   for (const t of triples) {
     if (t.subjectType === "entity") {
       entityNames.set(t.subject.toLowerCase(), t.subject);
+    }
+    if (t.objectType === "entity") {
+      entityNames.set(t.object.toLowerCase(), t.object);
     }
   }
 
