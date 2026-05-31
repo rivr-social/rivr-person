@@ -31,6 +31,7 @@ import { db } from "@/db";
 import { agents, resources } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import * as kg from "@/lib/kg/autobot-kg-client";
+import { nativeCloudChat, DEFAULT_MODEL } from "@/lib/ai/native-chat";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import { getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
 import { getProvenanceLog } from "@/lib/federation/mcp-provenance";
@@ -765,31 +766,21 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
 
       const { context: kgContext } = await kg.buildContext(scopeType, scopeId, maxChars);
 
-      const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
       const kgSystemPrompt = kgContext
         ? `You have access to a knowledge graph for this ${scopeType}. Use these facts to inform your answers:\n\n${kgContext}\n\n`
         : "";
 
-      const openclawRes = await fetch(`${OPENCLAW_URL}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: context.actorId,
-          message: `${kgSystemPrompt}User question: ${message}`,
-          history: [],
-          channel: `kg-chat:${scopeType}:${scopeId}`,
-        }),
+      const result = await nativeCloudChat({
+        selectedModel: DEFAULT_MODEL,
+        systemPrompt: kgSystemPrompt || null,
+        history: [],
+        message,
       });
 
-      if (!openclawRes.ok) {
-        const errText = await openclawRes.text();
-        throw new Error(`OpenClaw error: ${openclawRes.status} — ${errText}`);
-      }
-
-      const data = await openclawRes.json();
       return {
         success: true,
-        ...data,
+        reply: result.reply,
+        model: result.model,
         kg_context_length: kgContext.length,
         scope: { type: scopeType, id: scopeId },
       };

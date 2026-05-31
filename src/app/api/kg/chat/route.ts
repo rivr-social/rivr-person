@@ -1,19 +1,39 @@
 /**
  * POST /api/kg/chat — Chat with scoped KG context
  *
- * Fetches KG context for the given scope, prepends it to the message,
- * and proxies to OpenClaw for response.
+ * Fetches KG context for the given scope, injects it as a system prompt, and
+ * answers natively via the configured cloud provider (OpenClaw retired).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import * as kg from "@/lib/kg/autobot-kg-client";
 import { isPersonaOf } from "@/lib/persona";
+import {
+  nativeCloudChat,
+  DEFAULT_MODEL,
+  type HistoryMessage,
+} from "@/lib/ai/native-chat";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
+const DEFAULT_MAX_CONTEXT_CHARS = 3000;
+
+function sanitizeHistory(history: unknown): HistoryMessage[] {
+  if (!Array.isArray(history)) return [];
+  const out: HistoryMessage[] = [];
+  for (const msg of history) {
+    if (
+      msg &&
+      (msg.role === "user" || msg.role === "assistant") &&
+      typeof msg.content === "string"
+    ) {
+      out.push({ role: msg.role, content: msg.content });
+    }
+  }
+  return out;
+}
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -43,36 +63,28 @@ export async function POST(req: NextRequest) {
 
   try {
     // Fetch KG context for this scope
-    const { context } = await kg.buildContext(scopeType, scopeId, max_context_chars || 3000);
+    const { context } = await kg.buildContext(
+      scopeType,
+      scopeId,
+      max_context_chars || DEFAULT_MAX_CONTEXT_CHARS,
+      session.user.id,
+    );
 
-    // Build the system context with KG facts
+    // Build the system prompt with KG facts
     const kgSystemPrompt = context
       ? `You have access to a knowledge graph for this ${scopeType}. Use these facts to inform your answers:\n\n${context}\n\n`
       : "";
 
-    // Proxy to OpenClaw with KG context prepended
-    const openclawRes = await fetch(`${OPENCLAW_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: session.user.name || "user",
-        message: `${kgSystemPrompt}User question: ${message}`,
-        history: history || [],
-        channel: `kg-chat:${scopeType}:${scopeId}`,
-      }),
+    const result = await nativeCloudChat({
+      selectedModel: DEFAULT_MODEL,
+      systemPrompt: kgSystemPrompt || null,
+      history: sanitizeHistory(history),
+      message,
     });
 
-    if (!openclawRes.ok) {
-      const errText = await openclawRes.text();
-      return NextResponse.json(
-        { error: `OpenClaw error: ${openclawRes.status}`, detail: errText },
-        { status: openclawRes.status },
-      );
-    }
-
-    const data = await openclawRes.json();
     return NextResponse.json({
-      ...data,
+      reply: result.reply,
+      model: result.model,
       kg_context_length: context.length,
       scope: { type: scopeType, id: scopeId },
     });

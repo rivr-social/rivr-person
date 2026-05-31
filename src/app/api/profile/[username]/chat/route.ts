@@ -4,7 +4,7 @@
  * Public persona chat endpoint. Allows authenticated visitors to chat with
  * a user's autobot persona from their public profile. Looks up the target
  * user by username, verifies their agent has autobotEnabled in metadata,
- * builds a persona-aware system prompt, and proxies to OpenClaw.
+ * builds a persona-aware system prompt, and answers natively via Anthropic.
  */
 
 import { NextResponse } from "next/server";
@@ -13,6 +13,17 @@ import { resolvePublicProfileAgent } from "@/lib/bespoke/modules/public-profile"
 import { findAutobotEnabledPersona } from "@/app/actions/personas";
 import { fetchProfileData, fetchUserGroups } from "@/app/actions/graph";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
+import {
+  nativeCloudChat,
+  type HistoryMessage,
+} from "@/lib/ai/native-chat";
+import { buildContext } from "@/lib/kg/native-kg";
+import {
+  readAgentRole,
+  readAgentChatVisibility,
+  evaluateChatAccess,
+  type AgentRoleFlags,
+} from "@/lib/agent-roles";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -21,20 +32,15 @@ export const maxDuration = 60;
 // Constants
 // ---------------------------------------------------------------------------
 
-const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
 const MAX_HISTORY_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 4000;
+const KG_CONTEXT_MAX_CHARS = 3000;
 
 const PERSONA_CHAT_MODEL = "anthropic/claude-sonnet-4-6";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface HistoryMessage {
-  role: "user" | "assistant";
-  content: string;
-}
 
 interface PersonaChatRequestBody {
   message: string;
@@ -148,6 +154,47 @@ export async function POST(
   const metadata = (agent.metadata ?? {}) as Record<string, unknown>;
   const personaMetadata = (persona.metadata ?? {}) as Record<string, unknown>;
 
+  // -------------------------------------------------------------------------
+  // Enforce per-persona role + chat-visibility scope.
+  //
+  // Backward-compat: personas created before the role model existed have no
+  // `agentRole` key. Since this route only runs for autobot-enabled personas,
+  // we treat a missing role as "public agent" so existing public chat keeps
+  // working; once an owner sets explicit flags, those are honored verbatim.
+  // -------------------------------------------------------------------------
+  const isOwner = session.user.id === agent.id;
+  const role: AgentRoleFlags =
+    personaMetadata.agentRole !== undefined
+      ? readAgentRole(personaMetadata)
+      : { privateAgent: false, publicAgent: true };
+  const chatVisibility = readAgentChatVisibility(personaMetadata);
+
+  let askerGroupIds: string[] = [];
+  if (!isOwner && role.publicAgent && chatVisibility.level === "members") {
+    const askerGroups = await fetchUserGroups(session.user.id, 100).catch(
+      () => [] as Array<{ id?: string }>,
+    );
+    askerGroupIds = askerGroups
+      .map((g) => g.id)
+      .filter((id): id is string => typeof id === "string");
+  }
+
+  const access = evaluateChatAccess({
+    role,
+    visibility: chatVisibility,
+    isOwner,
+    askerId: session.user.id,
+    askerGroupIds,
+  });
+
+  if (!access.allowed) {
+    const errorMessage =
+      access.reason === "private-only"
+        ? "This persona is private — only its owner can chat with it."
+        : "You don't have access to chat with this persona.";
+    return NextResponse.json({ error: errorMessage }, { status: 403 });
+  }
+
   // Parse and validate the request body
   let body: PersonaChatRequestBody;
   try {
@@ -209,7 +256,7 @@ export async function POST(
 
   const config = getInstanceConfig();
 
-  const systemPrompt = buildPersonaSystemPrompt(
+  let systemPrompt = buildPersonaSystemPrompt(
     ownerName,
     ownerUsername,
     bio,
@@ -219,8 +266,22 @@ export async function POST(
     config.baseUrl,
   );
 
-  // Build a session key scoped to visitor + target persona agent
-  const visitorName = session.user.name || session.user.email || "visitor";
+  // Inject the persona's hand-picked knowledge graph, scoped to what THIS asker
+  // is allowed to see. Passing the visitor's id ensures owner-private linked
+  // objects are excluded for guests (no private-object leakage via public chat).
+  const { context: kgContext } = await buildContext(
+    "persona",
+    persona.id,
+    KG_CONTEXT_MAX_CHARS,
+    session.user.id,
+  ).catch(() => ({ context: "", length: 0 }));
+
+  if (kgContext) {
+    systemPrompt += `\n\n## Knowledge\nThe following facts come from ${ownerName}'s knowledge graph. Use them to answer, but never reveal anything beyond what they contain:\n\n${kgContext}\n`;
+  }
+
+  // Session key scoped to visitor + target persona agent (kept for parity with
+  // the prior contract / client logging).
   const sessionKey = [
     "persona-chat",
     sanitizeSessionSegment(persona.id),
@@ -228,39 +289,17 @@ export async function POST(
   ].join(":");
 
   try {
-    const openClawResponse = await fetch(`${OPENCLAW_URL}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-openclaw-model": PERSONA_CHAT_MODEL,
-        "x-rivr-user-id": persona.id,
-      },
-      body: JSON.stringify({
-        username: visitorName,
-        message,
-        history: sanitizedHistory,
-        model: PERSONA_CHAT_MODEL,
-        sessionKey,
-        systemPrompt,
-      }),
+    const result = await nativeCloudChat({
+      selectedModel: PERSONA_CHAT_MODEL,
+      systemPrompt,
+      history: sanitizedHistory,
+      message,
     });
 
-    if (!openClawResponse.ok) {
-      const errorText = await openClawResponse.text().catch(() => "");
-      console.error(
-        `[persona-chat] OpenClaw error: ${openClawResponse.status}`,
-        errorText,
-      );
-      return NextResponse.json(
-        { error: `AI service returned ${openClawResponse.status}` },
-        { status: 502 },
-      );
-    }
-
-    const data = await openClawResponse.json();
     return NextResponse.json({
-      reply: data.reply || "...",
-      model: data.model || PERSONA_CHAT_MODEL,
+      reply: result.reply || "...",
+      model: result.model || PERSONA_CHAT_MODEL,
+      sessionKey,
       personaName: ownerName,
       personaUsername: ownerUsername,
       personaImage: persona.image || agent.image || null,
