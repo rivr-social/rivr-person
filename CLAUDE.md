@@ -110,8 +110,10 @@ The home feed (`/`) reads a `tab` query param (`posts`/`events`/`groups`/
 
 ### Other Known Issues
 
-- [#30](https://github.com/rivr-social/rivr-person/issues/30): Jobs detail uses
-  hardcoded `currentUserId = "user1"`
+- [#30](https://github.com/rivr-social/rivr-person/issues/30): RESOLVED
+  2026-06-01 — jobs detail page now resolves the real `auth()` session user and
+  threads it (or `null` for anonymous) through `JobDetailClient` and its tabs;
+  no more hardcoded `currentUserId = "user1"`.
 - [#31](https://github.com/rivr-social/rivr-person/issues/31): Federation
   mutation handlers return `accepted: true` for mutations not actually forwarded
 - [#32](https://github.com/rivr-social/rivr-person/issues/32): Recovery SMS MFA
