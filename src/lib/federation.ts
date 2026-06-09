@@ -63,6 +63,31 @@ const EXPORTABLE_VISIBILITIES = new Set<VisibilityLevel>(["public", "locale", "m
 /** Maximum age (in milliseconds) for accepted federation events. Events older than this are rejected. */
 const EVENT_REPLAY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+/**
+ * Event types that the resource materializer treats as upsert-equivalent.
+ *
+ * `upsert` is the legacy/local export verb; `*.created` and `*.updated`
+ * are emitted by global and sovereign apps. Person instances accept the
+ * full canonical verb set so real-time creates from global materialize.
+ */
+const RESOURCE_UPSERT_EVENT_TYPES = new Set<string>([
+  "upsert",
+  "resource.created",
+  "resource.updated",
+  "post.created",
+  "post.updated",
+  "event.created",
+  "event.updated",
+]);
+
+/** Event types that the resource materializer treats as soft-delete. */
+const RESOURCE_DELETE_EVENT_TYPES = new Set<string>([
+  "resource.deleted",
+  "post.deleted",
+  "event.deleted",
+  "delete",
+]);
+
 function normalizeAuthorityUrl(value: string): string | null {
   try {
     const url = new URL(value);
@@ -772,6 +797,43 @@ async function resolveLocalEntityId(
 }
 
 /**
+ * Ensures a local `agents` row exists for a mapped remote agent id.
+ *
+ * Real-time resource events can arrive before the owning agent's upsert
+ * event from the same peer. Instead of silently dropping the resource
+ * (the historical behavior), project a minimal private placeholder agent.
+ * The next agent upsert for the same entity from that peer upgrades the
+ * placeholder in place via the materializer's placeholder-upgrade path.
+ */
+async function ensureProjectedAgent(params: {
+  localAgentId: string;
+  externalAgentId: string;
+  peerNode: { id: string; slug: string };
+}): Promise<void> {
+  const existing = await db.query.agents.findFirst({
+    where: eq(agents.id, params.localAgentId),
+    columns: { id: true },
+  });
+  if (existing) return;
+
+  await db
+    .insert(agents)
+    .values({
+      id: params.localAgentId,
+      name: `Federated agent (${params.peerNode.slug})`,
+      type: "person",
+      visibility: "private",
+      metadata: {
+        federatedPlaceholder: true,
+        sourceNodeId: params.peerNode.id,
+        sourceNodeSlug: params.peerNode.slug,
+        externalEntityId: params.externalAgentId,
+      },
+    })
+    .onConflictDoNothing({ target: agents.id });
+}
+
+/**
  * Import inbound federation events from a trusted peer, enforcing signature,
  * replay, version, and age checks before persistence.
  *
@@ -803,6 +865,17 @@ export async function importFederationEvents(params: {
     eventVersion?: number;
     createdAt?: string;
   }>;
+  /**
+   * Accept events older than EVENT_REPLAY_WINDOW_MS. Only the locally
+   * initiated cursor-based pull sync may set this: the pull path fetches
+   * directly from the trusted peer over HTTPS and is already protected by
+   * signature verification + nonce dedup, and without it any downtime
+   * longer than the window permanently skips the backlog (the cursor
+   * advances past events the import rejected as expired). Inbound push
+   * routes must NEVER set this — the strict window bounds replay of
+   * intercepted signed events there.
+   */
+  allowHistorical?: boolean;
 }) {
   // Peer slug is treated as identity input; unknown peers are rejected before any writes.
   const peerNode = await db.query.nodes.findFirst({ where: eq(nodes.slug, params.fromPeerSlug) });
@@ -901,8 +974,9 @@ export async function importFederationEvents(params: {
       }
     }
 
-    // Time window check: reject events older than the replay window
-    if (event.createdAt) {
+    // Time window check: reject events older than the replay window.
+    // Skipped for the locally initiated pull sync (see allowHistorical).
+    if (!params.allowHistorical && event.createdAt) {
       const eventTime = new Date(event.createdAt).getTime();
       const cutoff = Date.now() - EVENT_REPLAY_WINDOW_MS;
       // Reject events outside the replay window to reduce delayed replay attack surface.
@@ -915,7 +989,7 @@ export async function importFederationEvents(params: {
       }
     }
 
-    imports.push({
+    const importRecord: NewFederationEventRecord = {
       originNodeId: peerNode.id,
       targetNodeId: params.localNodeId,
       entityType: event.entityType,
@@ -927,9 +1001,13 @@ export async function importFederationEvents(params: {
       nonce: event.nonce ?? null,
       eventVersion: event.eventVersion ?? null,
       status: "imported",
+      // Bound to the materialized local agent below (agent upserts bind the
+      // agent itself; resource upserts bind the local owner). Stays null for
+      // events that don't materialize a local row.
       actorId: null,
       processedAt: new Date(),
-    });
+    };
+    imports.push(importRecord);
 
     // Best-effort materialization into local read model with namespace mapping.
     // Remote entity IDs are mapped to local UUIDs via federation_entity_map
@@ -957,26 +1035,58 @@ export async function importFederationEvents(params: {
           externalEntityId: externalId,
         };
 
-        await db
-          .insert(agents)
-          .values({
-            id: localId,
-            name,
-            type: type as typeof agents.$inferInsert.type,
-            visibility: event.visibility,
-            description: typeof payload.description === "string" ? payload.description : null,
-            image: typeof payload.image === "string" ? payload.image : null,
-            metadata: metadataWithAttribution,
-            parentId: typeof payload.parentId === "string" ? payload.parentId : null,
-            pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
-          })
-          .onConflictDoNothing({ target: agents.id });
+        const existingAgent = await db.query.agents.findFirst({
+          where: eq(agents.id, localId),
+          columns: { id: true, metadata: true },
+        });
+        const isPlaceholder =
+          existingAgent != null &&
+          (existingAgent.metadata as Record<string, unknown> | null)?.federatedPlaceholder === true;
+
+        if (!existingAgent) {
+          await db
+            .insert(agents)
+            .values({
+              id: localId,
+              name,
+              type: type as typeof agents.$inferInsert.type,
+              visibility: event.visibility,
+              description: typeof payload.description === "string" ? payload.description : null,
+              image: typeof payload.image === "string" ? payload.image : null,
+              metadata: metadataWithAttribution,
+              parentId: typeof payload.parentId === "string" ? payload.parentId : null,
+              pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
+            })
+            .onConflictDoNothing({ target: agents.id });
+        } else if (isPlaceholder) {
+          // Upgrade auto-projected placeholder agents (created by
+          // ensureProjectedAgent when a resource arrived before its owner)
+          // with the real remote profile. Locally merged/owned agents are
+          // never overwritten by inbound federation events.
+          await db
+            .update(agents)
+            .set({
+              name,
+              type: type as typeof agents.$inferInsert.type,
+              visibility: event.visibility,
+              description: typeof payload.description === "string" ? payload.description : null,
+              image: typeof payload.image === "string" ? payload.image : null,
+              metadata: metadataWithAttribution,
+              parentId: typeof payload.parentId === "string" ? payload.parentId : null,
+              pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, localId));
+        }
+
+        // Bind the imported event to the materialized local agent for audit.
+        importRecord.actorId = localId;
       }
     }
 
     if (
       event.entityType === "resource" &&
-      (event.eventType === "resource.updated" || event.eventType === "post.updated") &&
+      RESOURCE_UPSERT_EVENT_TYPES.has(event.eventType) &&
       (event.payload.visibility === "private" || event.payload.visibility === "hidden")
     ) {
       const externalId = eventEntityId;
@@ -996,12 +1106,10 @@ export async function importFederationEvents(params: {
             .where(eq(resources.id, mapped.localEntityId));
         }
       }
+      continue;
     }
 
-    if (
-      event.entityType === "resource" &&
-      (event.eventType === "resource.deleted" || event.eventType === "post.deleted" || event.eventType === "delete")
-    ) {
+    if (event.entityType === "resource" && RESOURCE_DELETE_EVENT_TYPES.has(event.eventType)) {
       const externalId = eventEntityId;
       if (externalId) {
         const mapped = await db.query.federationEntityMap.findFirst({
@@ -1021,7 +1129,7 @@ export async function importFederationEvents(params: {
       }
     }
 
-    if (event.entityType === "resource" && event.eventType === "upsert") {
+    if (event.entityType === "resource" && RESOURCE_UPSERT_EVENT_TYPES.has(event.eventType)) {
       const payload = event.payload;
       if (!payloadSourceMatchesPeer(payload, peerNode)) {
         rejected.push({ index: i, reason: "source authority mismatch" });
@@ -1036,13 +1144,15 @@ export async function importFederationEvents(params: {
       const externalOwnerId = typeof payload.ownerId === "string" ? payload.ownerId : null;
 
       if (externalId && name && type && externalOwnerId) {
-        // Resolve the owner's local ID via the entity map
+        // Resolve the owner's local ID via the entity map. If the owning
+        // agent hasn't been imported yet (real-time create arrived first),
+        // project a placeholder agent so the resource still materializes.
         const localOwnerId = await resolveLocalEntityId(peerNode.id, externalOwnerId, "agent");
-        const owner = await db.query.agents.findFirst({ where: eq(agents.id, localOwnerId) });
-        if (!owner) {
-          // Skip orphaned resources until their owner has been imported.
-          continue;
-        }
+        await ensureProjectedAgent({
+          localAgentId: localOwnerId,
+          externalAgentId: externalOwnerId,
+          peerNode,
+        });
 
         const localId = await resolveLocalEntityId(peerNode.id, externalId, "resource");
 
@@ -1084,6 +1194,9 @@ export async function importFederationEvents(params: {
               updatedAt: new Date(),
             },
           });
+
+        // Bind the imported event to the local owner agent for audit.
+        importRecord.actorId = localOwnerId;
       }
     }
   }

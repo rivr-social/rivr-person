@@ -228,6 +228,10 @@ export async function GET(request: NextRequest) {
             eventVersion: e.eventVersion ?? undefined,
             createdAt: e.createdAt,
           })),
+          // Locally initiated cursor pull: accept events older than the
+          // replay window so this instance can catch up after extended
+          // downtime (signature + nonce dedup still apply).
+          allowHistorical: true,
         });
 
         // Advance the per-peer cursor only after successful persistence.

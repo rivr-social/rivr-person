@@ -114,8 +114,10 @@ The home feed (`/`) reads a `tab` query param (`posts`/`events`/`groups`/
   2026-06-01 — jobs detail page now resolves the real `auth()` session user and
   threads it (or `null` for anonymous) through `JobDetailClient` and its tabs;
   no more hardcoded `currentUserId = "user1"`.
-- [#31](https://github.com/rivr-social/rivr-person/issues/31): Federation
-  mutation handlers return `accepted: true` for mutations not actually forwarded
+- [#31](https://github.com/rivr-social/rivr-person/issues/31): RESOLVED
+  2026-06-09 — unimplemented mutation types now return
+  `accepted: false` with `MUTATION_NOT_IMPLEMENTED` (501) or
+  `UNKNOWN_MUTATION_TYPE` (400) instead of claiming success.
 - [#32](https://github.com/rivr-social/rivr-person/issues/32): Recovery SMS MFA
   is stubbed; some Autobot providers lack dispatch/test support
 - [#33](https://github.com/rivr-social/rivr-person/issues/33): Generated
@@ -125,11 +127,23 @@ The home feed (`/`) reads a `tab` query param (`posts`/`events`/`groups`/
 
 ### Federation Gaps
 
-- **Materializer parity:** Same as group — only handles `upsert` events, not
-  the wider set global emits. Real-time creates from global won't materialize.
-- **Auto-projected agents:** `resolveLocalEntityId` creates entity_map rows
-  without agents rows — materializer silently drops resources from unknown peers.
-- **Forwarding stubs:** Some mutation types return success without forwarding.
+Resolved 2026-06-09 (coordinated parity sweep with global + group):
+
+- **Materializer parity:** RESOLVED — the importer now handles the full
+  upsert/delete event-type sets (`resource.created`, `post.created`,
+  `event.created`, etc.) via `RESOURCE_UPSERT_EVENT_TYPES` /
+  `RESOURCE_DELETE_EVENT_TYPES`.
+- **Auto-projected agents:** RESOLVED — resources arriving before their
+  owner's agent event project a minimal private placeholder agent
+  (`metadata.federatedPlaceholder: true`); the next agent upsert from the same
+  peer upgrades it in place. Locally owned agents are never overwritten.
+- **Forwarding stubs:** RESOLVED — see #31 above.
+- **Replay-window catch-up:** RESOLVED — the pull-sync cron passes
+  `allowHistorical: true` so this instance can catch up after >7-day downtime
+  (signature + nonce dedup still apply); push routes remain strict.
+
+Still open:
+
 - **Sovereign-merge:** The connect-to-sovereign flow requires 7 manual fixes
   before it works for new users without hand-intervention.
 
