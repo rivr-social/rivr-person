@@ -1920,6 +1920,12 @@ export default function ProfilePage() {
                 <History className="h-4 w-4 mr-2" />
                 Transaction History
               </Button>
+              <Button size="sm" variant="outline" asChild>
+                <Link href="/profile/purchases">
+                  <CreditCard className="h-4 w-4 mr-2" />
+                  All Purchases
+                </Link>
+              </Button>
             </div>
             <WalletDepositDialog
               open={depositDialogOpen}

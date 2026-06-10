@@ -5,30 +5,27 @@
  *
  * 4-item layout:
  * - Home (local)
- * - Map (links to global instance)
+ * - Agent HQ (local — the sovereign instance's control plane)
  * - Create (local, scope-aware)
  * - Profile (local — routes to the active persona's public profile when one is
  *   active, otherwise to `/profile` for the controller).
  *
- * Builder and Autobot are accessed from the Profile page or Command Bar.
+ * Map (global) and Builder are accessed from the Command Bar.
  */
 
 import { useEffect, useState } from "react"
-import { Home, Map, PlusSquare, User } from "lucide-react"
+import { Bot, Home, PlusSquare, User } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { getGlobalUrl } from "@/lib/federation/global-url"
 import { getActivePersonaInfo } from "@/app/actions/personas"
 
 /**
- * Renders fixed bottom navigation with federation-aware routing.
- * Map links to the global instance; other items stay local.
+ * Renders fixed bottom navigation with the sovereign instance's primary
+ * destinations. Agent HQ is first-class — it is the app's differentiator.
  */
 export function BottomNav() {
   const pathname = usePathname()
-
-  const globalMapUrl = getGlobalUrl("/map")
 
   // Mirror the persona-banner pattern: read the active-persona cookie via a
   // server action and route the profile button to the persona's public
@@ -61,7 +58,7 @@ export function BottomNav() {
 
   const navItems = [
     { name: "Home", href: "/", icon: Home, active: pathname === "/", external: false },
-    { name: "Map", href: globalMapUrl, icon: Map, active: false, external: true },
+    { name: "Agent HQ", href: "/autobot", icon: Bot, active: pathname.startsWith("/autobot"), external: false },
     { name: "Create", href: "/create", icon: PlusSquare, active: pathname.startsWith("/create"), external: false },
     { name: "Profile", href: profileHref, icon: User, active: pathname.startsWith("/profile"), external: false },
   ]

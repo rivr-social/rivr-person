@@ -251,13 +251,13 @@ const COMMANDS: CommandDefinition[] = [
     aliases: ["autobot", "/autobot", "open autobot"],
   },
   {
-    id: "claw",
-    label: "Claw Chat",
-    description: "Open OpenClaw chat with voice settings shown.",
-    path: "/autobot/chat?settings=voice",
+    id: "agent-chat",
+    label: "Agent Chat",
+    description: "Chat with your agent (voice, threads, personas).",
+    path: "/autobot/chat",
     group: "Tools",
     icon: Bot,
-    aliases: ["claw", "/claw", "open claw", "autobot chat", "/autobot/chat"],
+    aliases: ["chat", "agent chat", "claw", "/claw", "autobot chat", "/autobot/chat", "talk"],
   },
   {
     id: "create-post",
