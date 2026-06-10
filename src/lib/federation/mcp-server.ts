@@ -239,6 +239,94 @@ function toToolContent(result: unknown, isError = false) {
   };
 }
 
+export type McpToolCallFailureCode = "unknown_tool" | "not_enabled" | "execution_failed";
+
+export class McpToolCallError extends Error {
+  constructor(
+    message: string,
+    readonly code: McpToolCallFailureCode,
+  ) {
+    super(message);
+    this.name = "McpToolCallError";
+  }
+}
+
+/**
+ * Execute a single MCP tool call for an already-authorized actor context.
+ *
+ * This is the single execution path shared by the JSON-RPC `tools/call`
+ * handler and the in-process autobot chat tool-use loop. It enforces the
+ * tool's auth-mode gating, fills in persona context when the actor is a
+ * persona, routes through the approval policy engine, runs the handler
+ * inside the MCP execution context, and writes the provenance log entry.
+ *
+ * Throws {@link McpToolCallError} with `unknown_tool` / `not_enabled` for
+ * gating failures; handler errors are logged to provenance and rethrown as
+ * `execution_failed`.
+ */
+export async function executeMcpToolCall(
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+  authContext: McpToolCallContext,
+): Promise<{ result: unknown; executed: boolean }> {
+  const tool = getMcpToolDefinition(toolName);
+  if (!tool) {
+    throw new McpToolCallError(`Unknown tool: ${toolName}`, "unknown_tool");
+  }
+  if (!tool.enabledFor.includes(authContext.authMode)) {
+    throw new McpToolCallError(
+      `Tool ${toolName} is not enabled for this auth mode.`,
+      "not_enabled",
+    );
+  }
+
+  if (authContext.actorType === "persona" && !authContext.personaContext) {
+    authContext.personaContext =
+      (await fetchPersonaContext(authContext.actorId).catch(() => null)) ?? undefined;
+  }
+
+  const startTime = Date.now();
+  try {
+    const approvalResult = await withApprovalCheck({
+      toolName,
+      toolArgs,
+      context: authContext,
+      handler: () =>
+        runWithMcpExecutionContext(
+          {
+            actorId: authContext.actorId,
+            controllerId: authContext.controllerId,
+            actorType: authContext.actorType,
+            personaContext: authContext.personaContext,
+          },
+          async () => tool.handler(toolArgs, authContext),
+        ),
+    });
+
+    logMcpProvenance({
+      toolName,
+      context: authContext,
+      args: toolArgs,
+      resultStatus: "success",
+      durationMs: Date.now() - startTime,
+    }).catch(() => {});
+
+    return { result: approvalResult.result, executed: approvalResult.executed };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tool execution failed.";
+    logMcpProvenance({
+      toolName,
+      context: authContext,
+      args: toolArgs,
+      resultStatus: "error",
+      errorMessage: message,
+      durationMs: Date.now() - startTime,
+    }).catch(() => {});
+
+    throw new McpToolCallError(message, "execution_failed");
+  }
+}
+
 export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
   const id = body.id ?? null;
   const method = typeof body.method === "string" ? body.method : "";
@@ -306,55 +394,18 @@ export async function handleMcpRequest(request: Request, body: JsonRpcRequest) {
   if (method === "tools/call") {
     const toolName = typeof params.name === "string" ? params.name : "";
     const toolArgs = asObject(params.arguments);
-    const tool = getMcpToolDefinition(toolName);
-    if (!tool) {
-      return errorResponse(id, -32601, `Unknown tool: ${toolName}`);
-    }
 
-    if (!tool.enabledFor.includes(authContext.authMode)) {
-      return errorResponse(id, -32003, `Tool ${toolName} is not enabled for this auth mode.`);
-    }
-
-    const startTime = Date.now();
     try {
-      const approvalResult = await withApprovalCheck({
-        toolName,
-        toolArgs,
-        context: authContext,
-        handler: () =>
-          runWithMcpExecutionContext(
-            {
-              actorId: authContext.actorId,
-              controllerId: authContext.controllerId,
-              actorType: authContext.actorType,
-              personaContext: authContext.personaContext,
-            },
-            async () => tool.handler(toolArgs, authContext),
-          ),
-      });
-
-      const durationMs = Date.now() - startTime;
-      logMcpProvenance({
-        toolName,
-        context: authContext,
-        args: toolArgs,
-        resultStatus: approvalResult.executed ? "success" : "success",
-        durationMs,
-      }).catch(() => {});
-
-      return successResponse(id, toToolContent(approvalResult.result));
+      const { result } = await executeMcpToolCall(toolName, toolArgs, authContext);
+      return successResponse(id, toToolContent(result));
     } catch (error) {
+      if (error instanceof McpToolCallError && error.code === "unknown_tool") {
+        return errorResponse(id, -32601, error.message);
+      }
+      if (error instanceof McpToolCallError && error.code === "not_enabled") {
+        return errorResponse(id, -32003, error.message);
+      }
       const message = error instanceof Error ? error.message : "Tool execution failed.";
-      const durationMs = Date.now() - startTime;
-      logMcpProvenance({
-        toolName,
-        context: authContext,
-        args: toolArgs,
-        resultStatus: "error",
-        errorMessage: message,
-        durationMs,
-      }).catch(() => {});
-
       return successResponse(id, toToolContent({ success: false, error: message }, true));
     }
   }

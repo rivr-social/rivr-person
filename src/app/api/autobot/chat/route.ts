@@ -26,7 +26,10 @@ import {
   DEFAULT_MODEL,
   isRateLimitError,
   type HistoryMessage,
+  type NativeChatToolSpec,
 } from "@/lib/ai/native-chat";
+import { listMcpToolsForMode, type McpToolCallContext } from "@/lib/federation/mcp-tools";
+import { executeMcpToolCall, McpToolCallError } from "@/lib/federation/mcp-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -74,6 +77,45 @@ function sanitizeSessionSegment(value: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
+}
+
+/**
+ * Build the Anthropic tool specs and executor for the session actor.
+ *
+ * Anthropic tool names must match `[a-zA-Z0-9_-]{1,64}`, so dotted MCP names
+ * (`rivr.posts.create`) are exposed with underscores and mapped back to the
+ * real tool name on execution. Execution routes through executeMcpToolCall,
+ * which enforces auth-mode gating, the persona approval policy, the MCP
+ * execution context, and provenance logging — same path as POST /api/mcp.
+ */
+function buildChatToolBindings(authContext: McpToolCallContext): {
+  tools: NativeChatToolSpec[];
+  executeTool: (name: string, input: Record<string, unknown>) => Promise<unknown>;
+} {
+  const nameMap = new Map<string, string>();
+  const tools: NativeChatToolSpec[] = [];
+
+  for (const tool of listMcpToolsForMode("session")) {
+    const anthropicName = tool.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+    if (nameMap.has(anthropicName)) continue;
+    nameMap.set(anthropicName, tool.name);
+    tools.push({
+      name: anthropicName,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    });
+  }
+
+  const executeTool = async (name: string, input: Record<string, unknown>) => {
+    const realName = nameMap.get(name);
+    if (!realName) {
+      throw new McpToolCallError(`Unknown tool: ${name}`, "unknown_tool");
+    }
+    const { result } = await executeMcpToolCall(realName, input, authContext);
+    return result;
+  };
+
+  return { tools, executeTool };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,18 +284,33 @@ export async function POST(request: Request) {
   // Gemini-direct fallback on rate-limit baked into nativeCloudChat.
   // -------------------------------------------------------------------------
 
+  // Agentic tool support (Anthropic models): expose the session-mode MCP tool
+  // registry so the autobot can act, not just talk. Tool execution is scoped
+  // to the resolved actor and flows through the same approval-policy +
+  // provenance path as the /api/mcp endpoint.
+  const toolAuthContext: McpToolCallContext = {
+    actorId: promptActorId,
+    controllerId: ownerId,
+    actorType: resolvedPersonaId ? "persona" : "human",
+    authMode: "session",
+  };
+  const { tools, executeTool } = buildChatToolBindings(toolAuthContext);
+
   try {
     const result = await nativeCloudChat({
       selectedModel,
       systemPrompt,
       history: sanitizedHistory,
       message,
+      tools,
+      executeTool,
     });
 
     return NextResponse.json({
       reply: result.reply,
       model: result.model,
       sessionKey,
+      ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
     });
   } catch (error) {
     const errorMessage =

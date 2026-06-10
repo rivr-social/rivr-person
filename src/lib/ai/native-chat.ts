@@ -41,6 +41,11 @@ export const OPENAI_MAX_TOKENS = 4096;
 export const GEMINI_MAX_TOKENS = 4096;
 export const OLLAMA_TIMEOUT_MS = 90_000;
 
+/** Maximum tool-use round trips per chat turn before forcing a text reply. */
+export const TOOL_LOOP_MAX_ITERATIONS = 8;
+/** Tool results are truncated to this length before being sent back to the model. */
+export const TOOL_RESULT_MAX_CHARS = 20_000;
+
 export const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
 export const GEMINI_FALLBACK_MODEL = "gemini/gemini-2.0-flash";
 
@@ -53,9 +58,25 @@ export interface HistoryMessage {
   content: string;
 }
 
+/** Anthropic Messages API tool specification. */
+export interface NativeChatToolSpec {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/** Record of a single tool invocation made during a chat turn. */
+export interface NativeChatToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  ok: boolean;
+}
+
 export interface CloudChatResult {
   reply: string;
   model: string;
+  /** Tools invoked during this turn (Anthropic tool-use loop only). */
+  toolCalls?: NativeChatToolCall[];
 }
 
 export interface OllamaChatResult {
@@ -72,6 +93,15 @@ export interface NativeChatParams {
   systemPrompt: string | null;
   history: HistoryMessage[];
   message: string;
+  /**
+   * Optional agentic tool support (Anthropic models only — other providers
+   * ignore these and return a plain text completion). When both `tools` and
+   * `executeTool` are provided, chatViaAnthropic runs a tool-use loop:
+   * tool_use blocks are executed via `executeTool` and fed back as
+   * tool_result messages until the model ends its turn.
+   */
+  tools?: NativeChatToolSpec[];
+  executeTool?: (name: string, input: Record<string, unknown>) => Promise<unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +185,28 @@ export async function resolveClaudeOAuthToken(): Promise<string> {
 // Provider calls
 // ---------------------------------------------------------------------------
 
+type AnthropicContentBlock = {
+  type?: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+};
+
+type AnthropicMessage = {
+  role: "user" | "assistant";
+  content: string | Array<Record<string, unknown>>;
+};
+
+function extractTextReply(blocks: AnthropicContentBlock[] | undefined): string {
+  return (
+    blocks
+      ?.filter((block) => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("") || ""
+  );
+}
+
 export async function chatViaAnthropic(
   params: NativeChatParams,
 ): Promise<CloudChatResult> {
@@ -168,44 +220,94 @@ export async function chatViaAnthropic(
     systemBlocks.push({ type: "text", text: params.systemPrompt });
   }
 
-  const anthropicMessages = [
+  const messages: AnthropicMessage[] = [
     ...params.history.map((m) => ({ role: m.role, content: m.content })),
     { role: "user" as const, content: params.message },
   ];
 
-  const response = await fetch(ANTHROPIC_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      "anthropic-version": ANTHROPIC_VERSION,
-      "anthropic-beta": ANTHROPIC_OAUTH_BETA,
-    },
-    body: JSON.stringify({
-      model: modelId,
-      max_tokens: ANTHROPIC_MAX_TOKENS,
-      system: systemBlocks,
-      messages: anthropicMessages,
-    }),
-  });
+  const useTools = Boolean(
+    params.tools && params.tools.length > 0 && params.executeTool,
+  );
+  const toolCalls: NativeChatToolCall[] = [];
 
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    throw new Error(
-      `Anthropic API error (${response.status}): ${errorText.slice(0, 300)}`,
-    );
+  // Agentic loop: a plain chat resolves on the first pass; when tools are
+  // wired, tool_use responses execute locally and feed tool_result messages
+  // back until the model ends its turn (or the iteration budget runs out,
+  // after which tools are withheld to force a text reply).
+  for (let iteration = 0; ; iteration++) {
+    const toolsExhausted = iteration >= TOOL_LOOP_MAX_ITERATIONS;
+
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "anthropic-beta": ANTHROPIC_OAUTH_BETA,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: ANTHROPIC_MAX_TOKENS,
+        system: systemBlocks,
+        messages,
+        ...(useTools && !toolsExhausted ? { tools: params.tools } : {}),
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(
+        `Anthropic API error (${response.status}): ${errorText.slice(0, 300)}`,
+      );
+    }
+
+    const data = (await response.json()) as {
+      content?: AnthropicContentBlock[];
+      stop_reason?: string;
+    };
+
+    if (useTools && !toolsExhausted && data.stop_reason === "tool_use") {
+      const contentBlocks = data.content ?? [];
+      messages.push({
+        role: "assistant",
+        content: contentBlocks as Array<Record<string, unknown>>,
+      });
+
+      const toolResults: Array<Record<string, unknown>> = [];
+      for (const block of contentBlocks) {
+        if (block.type !== "tool_use" || !block.id || !block.name) continue;
+        const input = block.input ?? {};
+        let payload: unknown;
+        let isError = false;
+        try {
+          payload = await params.executeTool!(block.name, input);
+        } catch (error) {
+          isError = true;
+          payload = {
+            success: false,
+            error: error instanceof Error ? error.message : "Tool execution failed.",
+          };
+        }
+        toolCalls.push({ name: block.name, input, ok: !isError });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: JSON.stringify(payload ?? null).slice(0, TOOL_RESULT_MAX_CHARS),
+          is_error: isError,
+        });
+      }
+
+      messages.push({ role: "user", content: toolResults });
+      continue;
+    }
+
+    const reply = extractTextReply(data.content) || "...";
+    return {
+      reply,
+      model: params.selectedModel,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    };
   }
-
-  const data = (await response.json()) as {
-    content?: Array<{ type?: string; text?: string }>;
-  };
-  const reply =
-    data.content
-      ?.filter((block) => block.type === "text" && typeof block.text === "string")
-      .map((block) => block.text)
-      .join("") || "...";
-
-  return { reply, model: params.selectedModel };
 }
 
 export async function chatViaOpenAI(
