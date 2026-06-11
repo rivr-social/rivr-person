@@ -48,6 +48,8 @@ interface PersonaChatWidgetProps {
   personaName: string;
   /** Avatar image URL */
   personaImage: string | null;
+  /** Optional persona ID — when set, routes chat through autobot with persona context */
+  personaId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,7 @@ export function PersonaChatWidget({
   username,
   personaName,
   personaImage,
+  personaId,
 }: PersonaChatWidgetProps) {
   const { data: session } = useSession();
   const [widgetState, setWidgetState] = useState<WidgetState>("collapsed");
@@ -115,14 +118,22 @@ export function PersonaChatWidget({
     }));
 
     try {
-      const response = await fetch(
-        `/api/profile/${encodeURIComponent(username)}/chat`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: trimmed, history }),
-        },
-      );
+      // When personaId is provided (owner's self-view), use the full autobot
+      // chat endpoint which has tool-use, KG context, and persona scoping.
+      // Otherwise fall back to the public persona chat endpoint.
+      const isOwnerChat = Boolean(personaId) && isAuthenticated;
+      const chatUrl = isOwnerChat
+        ? "/api/autobot/chat"
+        : `/api/profile/${encodeURIComponent(username)}/chat`;
+      const chatBody = isOwnerChat
+        ? { message: trimmed, history, personaId, personaName }
+        : { message: trimmed, history };
+
+      const response = await fetch(chatUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chatBody),
+      });
 
       const data: PersonaChatResponse = await response.json();
 

@@ -35,6 +35,7 @@ import {
   resourceToPost,
 } from "@/lib/graph-adapters";
 import { PostFeed } from "@/components/post-feed";
+import { PersonaChatWidget } from "@/components/persona-chat-widget";
 import { CommentActivityFeed } from "@/components/comment-activity-feed";
 import { EventFeed } from "@/components/event-feed";
 import { ProfileGroupFeed } from "@/components/profile-group-feed";
@@ -2179,6 +2180,16 @@ export default function ProfilePage() {
         ) : null}
         {status === "authenticated" && !agent ? <div className="text-sm text-muted-foreground">Loading profile data...</div> : null}
       </div>
+
+      {/* AI Assistant chat widget — uses active persona if set, otherwise main account */}
+      {status === "authenticated" && (
+        <PersonaChatWidget
+          username={asString(metadata?.username) || session?.user?.email?.split("@")[0] || "user"}
+          personaName={effectiveName}
+          personaImage={effectiveImage}
+          personaId={activePersonaInfo?.id}
+        />
+      )}
     </div>
   );
 }
