@@ -79,7 +79,13 @@ The person app exposes an MCP server for AI agent access:
 
 - **Discovery:** `GET /.well-known/mcp`
 - **RPC endpoint:** `POST /api/mcp`
-- **Auth:** `AIAGENT_MCP_TOKEN` env var or Authorization header
+- **Auth:** `AIAGENT_MCP_TOKEN` env var, scoped MCP token (Bearer), or session
+- **Device flow (RFC 8628):**
+  - `POST /api/mcp/device/code` — request device code pair
+  - `GET /api/mcp/device/poll/[deviceCode]` — poll for approval
+  - `POST /api/mcp/device/approve` — approve/deny (session-authed)
+  - `/mcp/authorize?user_code=XXXX-XXXX` — browser approval page
+  - Pending codes also surface in the autobot dashboard Activity tab
 
 Current tools: `get_context`, `list_personas`, `get_my_profile`, `audit.recent`,
 `update_basic`, `create_post`, `create_live_invite`, `join_group`, `rsvp_event`,
