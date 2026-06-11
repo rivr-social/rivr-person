@@ -36,6 +36,7 @@ import {
 import { listMyPersonas } from "@/app/actions/personas";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
 import { DeviceApprovals } from "@/components/device-approvals";
+import { McpTokenCard } from "@/components/mcp-token-card";
 import { AgentIdentityTab } from "@/components/hub/agent-identity-tab";
 import { AgentRolesTab } from "@/components/hub/agent-roles-tab";
 import { AgentKnowledgeTab } from "@/components/hub/agent-knowledge-tab";
@@ -253,6 +254,7 @@ export function AutobotHub() {
             Connections follow your active operating identity. Switch personas
             from your profile to manage a persona&apos;s own connections.
           </p>
+          <McpTokenCard />
           <AutobotConnectionsPanel />
         </TabsContent>
 

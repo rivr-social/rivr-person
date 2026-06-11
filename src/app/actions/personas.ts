@@ -776,6 +776,16 @@ export async function switchActivePersona(
   }
 
   await setActivePersonaCookie(personaId);
+
+  // Auto-provision an MCP token for the persona so external tools can use it
+  // immediately without any manual token setup.
+  try {
+    const { getAutobotUserSettings } = await import("@/lib/autobot-user-settings");
+    await getAutobotUserSettings(personaId); // lazy-inits token
+  } catch {
+    // Non-critical — token will be provisioned on next settings access
+  }
+
   return { success: true };
 }
 
