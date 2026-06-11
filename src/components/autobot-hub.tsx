@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { listMyPersonas } from "@/app/actions/personas";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
+import { DeviceApprovals } from "@/components/device-approvals";
 import { AgentIdentityTab } from "@/components/hub/agent-identity-tab";
 import { AgentRolesTab } from "@/components/hub/agent-roles-tab";
 import { AgentKnowledgeTab } from "@/components/hub/agent-knowledge-tab";
@@ -255,7 +256,8 @@ export function AutobotHub() {
           <AutobotConnectionsPanel />
         </TabsContent>
 
-        <TabsContent value="activity" className="mt-4">
+        <TabsContent value="activity" className="mt-4 space-y-4">
+          <DeviceApprovals />
           <ActivityTab actorId={selected.id} />
         </TabsContent>
       </Tabs>
