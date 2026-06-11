@@ -1007,6 +1007,98 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       };
     },
   },
+
+  // ── Outbound Dispatch ─────────────────────────────────────────────────
+  {
+    name: "rivr.dispatch.send_message",
+    description:
+      "Send a message through a connected external service (Slack, Discord, or email). " +
+      "Requires the target service to be connected via autobot connectors. " +
+      "For Slack: provide channel name or ID. For Discord: provide channel ID. " +
+      "For email: provide recipient address, subject, and body.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: "string",
+          enum: ["slack", "discord", "email"],
+          description: "The connected service to send through.",
+        },
+        channel: {
+          type: "string",
+          description: "Slack channel name or ID (for Slack provider).",
+        },
+        channelId: {
+          type: "string",
+          description: "Discord channel ID (for Discord provider).",
+        },
+        text: {
+          type: "string",
+          description: "Message text (for Slack/Discord).",
+        },
+        threadTs: {
+          type: "string",
+          description: "Slack thread timestamp to reply in a thread (optional, Slack only).",
+        },
+        to: {
+          type: "string",
+          description: "Email recipient address (for email provider).",
+        },
+        subject: {
+          type: "string",
+          description: "Email subject line (for email provider).",
+        },
+        body: {
+          type: "string",
+          description: "Email body text (for email provider).",
+        },
+      },
+      required: ["provider"],
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const { dispatch } = await import("@/lib/autobot/outbound-dispatch");
+      const provider = args.provider as string;
+
+      if (provider === "slack") {
+        if (!args.channel || !args.text) {
+          return { success: false, error: "Slack dispatch requires 'channel' and 'text'." };
+        }
+        return dispatch(context.actorId, {
+          provider: "slack",
+          channel: args.channel as string,
+          text: args.text as string,
+          threadTs: args.threadTs as string | undefined,
+        });
+      }
+
+      if (provider === "discord") {
+        if (!args.channelId || !args.text) {
+          return { success: false, error: "Discord dispatch requires 'channelId' and 'text'." };
+        }
+        return dispatch(context.actorId, {
+          provider: "discord",
+          channelId: args.channelId as string,
+          content: args.text as string,
+        });
+      }
+
+      if (provider === "email") {
+        if (!args.to || !args.subject || !args.body) {
+          return { success: false, error: "Email dispatch requires 'to', 'subject', and 'body'." };
+        }
+        return dispatch(context.actorId, {
+          provider: "email",
+          to: args.to as string,
+          subject: args.subject as string,
+          body: args.body as string,
+        });
+      }
+
+      return { success: false, error: `Unsupported dispatch provider: ${provider}` };
+    },
+  },
 ];
 
 export function listMcpToolsForMode(mode: "session" | "token") {
