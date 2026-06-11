@@ -48,8 +48,10 @@ interface PersonaChatWidgetProps {
   personaName: string;
   /** Avatar image URL */
   personaImage: string | null;
-  /** Optional persona ID — when set, routes chat through autobot with persona context */
+  /** Optional persona ID — routes chat through autobot with persona context */
   personaId?: string;
+  /** When true, always use the autobot chat endpoint (MCP tools, KG, tool-use loop) */
+  useAutobotChat?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,7 @@ export function PersonaChatWidget({
   personaName,
   personaImage,
   personaId,
+  useAutobotChat = false,
 }: PersonaChatWidgetProps) {
   const { data: session } = useSession();
   const [widgetState, setWidgetState] = useState<WidgetState>("collapsed");
@@ -121,7 +124,7 @@ export function PersonaChatWidget({
       // When personaId is provided (owner's self-view), use the full autobot
       // chat endpoint which has tool-use, KG context, and persona scoping.
       // Otherwise fall back to the public persona chat endpoint.
-      const isOwnerChat = Boolean(personaId) && isAuthenticated;
+      const isOwnerChat = (useAutobotChat || Boolean(personaId)) && isAuthenticated;
       const chatUrl = isOwnerChat
         ? "/api/autobot/chat"
         : `/api/profile/${encodeURIComponent(username)}/chat`;

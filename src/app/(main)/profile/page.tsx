@@ -2188,6 +2188,7 @@ export default function ProfilePage() {
           personaName={effectiveName}
           personaImage={effectiveImage}
           personaId={activePersonaInfo?.id}
+          useAutobotChat
         />
       )}
     </div>
