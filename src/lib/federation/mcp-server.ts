@@ -303,11 +303,32 @@ export async function executeMcpToolCall(
         ),
     });
 
+    // Tool handlers signal failure two ways: by throwing (caught below) OR by
+    // returning an ActionResult-shaped `{ success: false, ... }` without
+    // throwing (e.g. FORBIDDEN/INVALID_INPUT from a server action). The
+    // provenance log must reflect the action's actual outcome — otherwise a
+    // blocked post is recorded as "success" and the audit trail lies about what
+    // the assistant accomplished.
+    const callResult = approvalResult.result as unknown;
+    const actionFailed =
+      approvalResult.executed === true &&
+      typeof callResult === "object" &&
+      callResult !== null &&
+      "success" in callResult &&
+      (callResult as { success?: unknown }).success === false;
+    const actionFailureMessage = actionFailed
+      ? (((callResult as { message?: unknown }).message as string | undefined) ??
+        ((callResult as { error?: { code?: unknown } }).error?.code as
+          | string
+          | undefined))
+      : undefined;
+
     logMcpProvenance({
       toolName,
       context: authContext,
       args: toolArgs,
-      resultStatus: "success",
+      resultStatus: actionFailed ? "error" : "success",
+      errorMessage: actionFailureMessage,
       durationMs: Date.now() - startTime,
     }).catch(() => {});
 
