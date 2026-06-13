@@ -4,6 +4,7 @@
   "description": "Standalone Rivr person-instance app",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.18.2",
   "scripts": {
     "dev": "next dev --port 3003",
     "build": "next build",
