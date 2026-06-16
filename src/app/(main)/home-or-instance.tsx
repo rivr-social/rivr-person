@@ -10,7 +10,7 @@ import { Suspense } from "react"
 import Link from "next/link"
 import { MessageSquare, Settings } from "lucide-react"
 import { auth } from "@/auth"
-import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicResources, fetchGroupDetail, fetchAgentFeed, fetchPublicAgentById } from "@/app/actions/graph"
+import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicResources, fetchGroupDetail, fetchAgentFeed, fetchPublicAgentById, fetchAgentsByIds } from "@/app/actions/graph"
 import {
   agentToUser,
   agentToGroup,
@@ -20,6 +20,7 @@ import {
   agentToLocale,
   resourceToMarketplaceListing,
   resourceToPost,
+  resolveEventWindow,
 } from "@/lib/graph-adapters"
 import type { SerializedResource } from "@/lib/graph-serializers"
 import { readGroupMembershipPlans } from "@/lib/group-memberships"
@@ -178,6 +179,41 @@ async function renderGroupPage(id: string) {
       && (typeof meta.listingType === "string" || String(meta.listingKind ?? "").toLowerCase() === "marketplace-listing")
     )
   })
+  // Resolve each event's canonical start/end window server-side (the helper is
+  // runtime-local and only correct on the server/UTC), so the card + calendar
+  // render the same schedule as the event-detail page instead of re-deriving
+  // from raw metadata and dropping the time / shifting the day in the browser.
+  const eventWindows: Record<string, { start: string; end: string }> = {}
+  for (const r of eventResources) {
+    const win = resolveEventWindow((r.metadata ?? {}) as Record<string, unknown>, r.createdAt)
+    if (win.start) {
+      eventWindows[r.id] = {
+        start: win.start.toISOString(),
+        end: (win.end ?? win.start).toISOString(),
+      }
+    }
+  }
+  // Hydrate owner agents for posts/events/listings whose authors are NOT in
+  // the member roster (marketplace-offer owners, federated authors, members
+  // missing from the roster). Without this the feed resolves authors only
+  // against members and falls back to "Unknown User" / /profile/unknown.
+  const memberIdSet = new Set(members.map((m) => m.id))
+  const authorIds = Array.from(
+    new Set(
+      [...groupPostResources, ...eventResources, ...listingResources]
+        .map((r) => r.ownerId)
+        .filter((ownerId): ownerId is string =>
+          typeof ownerId === "string" && ownerId.length > 0 && !memberIdSet.has(ownerId)
+        )
+    )
+  )
+  const authorAgents = authorIds.length > 0 ? await fetchAgentsByIds(authorIds).catch(() => []) : []
+  const authors = authorAgents.map(agentToUser).map((u) => ({
+    id: u.id,
+    name: u.name,
+    username: u.username,
+    image: u.avatar,
+  }))
   const governanceItems = [
     ...(((groupMeta.proposals as unknown[]) ?? []) as unknown[]),
     ...(((groupMeta.polls as unknown[]) ?? []) as unknown[]),
@@ -332,8 +368,10 @@ async function renderGroupPage(id: string) {
         currentUserId={currentUserId}
         membershipPlans={membershipPlans}
         members={members.map((m) => ({ id: m.id, name: m.name, username: m.username, image: m.avatar }))}
+        authors={authors}
         groupPostResources={groupPostResources}
         eventResources={eventResources}
+        eventWindows={eventWindows}
         domainGroups={domainGroups.map((d) => ({ id: d.id, name: d.name, description: d.description }))}
         affiliatedGroups={[]}
         projectJobTrees={projectJobTrees}
