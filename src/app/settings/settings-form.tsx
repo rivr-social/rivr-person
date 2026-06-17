@@ -35,8 +35,6 @@ import type { FederationIdentityStatus } from "@/lib/federation-identities";
 import type { AppReleaseStatus } from "@/lib/app-release";
 import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { DomainSettings } from "@/components/domain-settings";
-import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
-import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
 import { RecoverySeedPanel } from "@/components/recovery-seed-panel";
 
 export type SettingsInitialData = {
@@ -724,8 +722,6 @@ export function SettingsForm({
           <TabsTrigger value="privacy">Privacy</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
-          <TabsTrigger value="agent-hq">Agent HQ</TabsTrigger>
-          <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="seller">Seller</TabsTrigger>
           <TabsTrigger value="federation">Federation</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -1787,33 +1783,6 @@ export function SettingsForm({
         </TabsContent>
         <TabsContent value="seller" className="space-y-4">
           <SellerAccountSection />
-        </TabsContent>
-
-        <TabsContent value="agent-hq" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Brain className="h-5 w-5" />
-                Agent HQ
-              </CardTitle>
-              <CardDescription>
-                Agent HQ has moved to its own full-screen page with a filesystem explorer, hierarchical pane graph, and executive chat.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <a
-                href="/autobot"
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-              >
-                <Brain className="h-4 w-4" />
-                Open Agent HQ
-              </a>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="connections" className="space-y-4">
-          <AutobotConnectionsPanel />
         </TabsContent>
 
         <TabsContent value="federation" className="space-y-4">

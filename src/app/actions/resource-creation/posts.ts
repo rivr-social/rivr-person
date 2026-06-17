@@ -239,7 +239,17 @@ export async function createPostResource(input: {
   const authorAgent = await getAgent(userId);
 
   // Scope tags encode chapter/group visibility hints used by feed and discovery queries.
-  const targetAgentId = input.groupId || userId;
+  //
+  // A post is the AUTHOR'S content placed into a group — not the group's own
+  // content. It is homed on the author's instance (canonical home) and surfaced
+  // in the group + global via the POST_CREATED domain event below. It must NOT
+  // be routed to the group's home instance: a federated group whose home
+  // resolves to global (no local node, no parent) sent the post off-box to a
+  // mutation endpoint that never durably materialized it, so the author kept no
+  // copy and the group feed never showed it (while the facade still reported
+  // success). Offerings already home on the author (`targetAgentId = ownerId`);
+  // posts now match. Group write access was already enforced above.
+  const targetAgentId = userId;
   const facadeResult = await updateFacade.execute(
     {
       type: "createPostResource",
@@ -685,7 +695,10 @@ export async function createPostCommerceResource(input: {
     }
   }
 
-  const commerceTargetAgentId = input.groupId || userId;
+  // Author-homed, group-federated — see createPostResource. The post (and any
+  // inline offering) belongs to the author and is federated into the group, not
+  // routed to the group's home instance.
+  const commerceTargetAgentId = userId;
   const commerceFacadeResult = await updateFacade.execute(
     {
       type: "createPostCommerceResource",

@@ -27,13 +27,14 @@ import {
  * Checks the ledger for 'earn'/'assign' verbs targeting the user with badge resources.
  */
 export async function fetchUserBadges(userId: string): Promise<SerializedResource[]> {
+  if (!userId) return [];
   const result = await db.execute(sql`
     SELECT r.*
     FROM resources r
-    JOIN ledger l ON l.object_id = r.id::text
+    JOIN ledger l ON l.object_id = r.id
     WHERE r.type = 'badge'
       AND r.deleted_at IS NULL
-      AND l.subject_id = ${userId}
+      AND l.subject_id = ${userId}::uuid
       AND l.verb IN ('earn', 'assign')
       AND l.is_active = true
     ORDER BY l.timestamp DESC
@@ -76,11 +77,12 @@ export async function fetchVouchersForGroup(groupId: string): Promise<Serialized
  * Returns ledger entries representing claims against a specific voucher resource.
  */
 export async function fetchVoucherClaims(voucherId: string) {
+  if (!voucherId) return [];
   const result = await db.execute(sql`
     SELECT l.*, a.name as claimer_name, a.image as claimer_image
     FROM ledger l
-    JOIN agents a ON l.subject_id = a.id::text
-    WHERE l.object_id = ${voucherId}
+    JOIN agents a ON l.subject_id = a.id
+    WHERE l.object_id = ${voucherId}::uuid
       AND l.verb IN ('redeem', 'claim')
       AND l.is_active = true
     ORDER BY l.timestamp DESC

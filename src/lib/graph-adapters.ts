@@ -333,6 +333,34 @@ function resolveEventEnd(
   return fallback;
 }
 
+/**
+ * Resolves an event's canonical start/end window from its metadata using the
+ * SAME contract as {@link agentToEvent} (`resolveEventStart`/`resolveEventEnd`),
+ * so list/card/calendar surfaces render the same schedule as the event-detail
+ * page. Returns `Date` objects (or nulls when no usable start exists).
+ *
+ * Run this on the server (the wall-clock convention is runtime-local, and the
+ * server runs in UTC); list surfaces render the returned instants back in UTC.
+ */
+export function resolveEventWindow(
+  meta: Record<string, unknown>,
+  fallback?: string,
+): { start: Date | null; end: Date | null } {
+  const hasStart =
+    (typeof meta.startDate === "string" && meta.startDate.length > 0) ||
+    (typeof meta.date === "string" && meta.date.length > 0);
+  if (!hasStart && !fallback) return { start: null, end: null };
+  const fb = fallback ?? new Date().toISOString();
+  const startIso = resolveEventStart(meta, fb);
+  const endIso = resolveEventEnd(meta, fb, startIso);
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  return {
+    start: Number.isNaN(start.getTime()) ? null : start,
+    end: Number.isNaN(end.getTime()) ? null : end,
+  };
+}
+
 export function agentToEvent(agent: SerializedAgent) {
   const meta = agent.metadata ?? {};
   const scopeTags = toStringArray(

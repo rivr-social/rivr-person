@@ -1102,8 +1102,8 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
       </div>
 
       {open ? (
-        <div className="fixed inset-0 z-50 sm:inset-x-auto sm:bottom-24 sm:right-6 sm:top-auto sm:w-[28rem] sm:max-h-[calc(100dvh-8rem)] overflow-y-auto overscroll-contain bg-background/80 backdrop-blur-sm sm:bg-transparent sm:backdrop-blur-0">
-          <Card className="min-h-dvh rounded-none border-0 shadow-none sm:min-h-0 sm:overflow-hidden sm:border sm:shadow-2xl sm:rounded-xl">
+        <div className="fixed inset-0 z-50 sm:inset-x-auto sm:bottom-24 sm:right-6 sm:top-auto sm:w-[28rem] sm:max-h-[calc(100dvh-8rem)] overflow-hidden bg-background/80 backdrop-blur-sm sm:bg-transparent sm:backdrop-blur-0">
+          <Card className="flex flex-col min-h-dvh rounded-none border-0 shadow-none sm:min-h-0 sm:max-h-[calc(100dvh-8rem)] sm:overflow-hidden sm:border sm:shadow-2xl sm:rounded-xl">
             <CardHeader className="sticky top-0 z-10 flex flex-row items-start justify-between gap-4 border-b bg-muted/95 backdrop-blur px-5 py-3">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
@@ -1140,7 +1140,7 @@ export function ExecutiveLauncher({ personas: externalPersonas, groups: external
               </div>
             </CardHeader>
 
-            <CardContent className="space-y-4 px-5 py-4">
+            <CardContent className="flex-1 min-h-0 overflow-y-auto space-y-4 px-5 py-4">
               {!executiveSession ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/20 px-3 py-3">
                   <Button

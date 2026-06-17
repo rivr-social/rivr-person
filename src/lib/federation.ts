@@ -21,6 +21,12 @@ import {
 } from "@/lib/federation-crypto";
 import { generatePeerSecret } from "@/lib/federation-auth";
 import { logFederationAudit } from "@/lib/federation-audit";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
+import {
+  buildResourceManifestReferenceInput,
+  tombstoneManifestReference,
+  upsertManifestReference,
+} from "@/lib/federation/manifest-references";
 
 /**
  * Core federation orchestration for node lifecycle, peer trust, event export/import,
@@ -63,6 +69,31 @@ const EXPORTABLE_VISIBILITIES = new Set<VisibilityLevel>(["public", "locale", "m
 /** Maximum age (in milliseconds) for accepted federation events. Events older than this are rejected. */
 const EVENT_REPLAY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+/**
+ * Event types that the resource materializer treats as upsert-equivalent.
+ *
+ * `upsert` is the legacy/local export verb; `*.created` and `*.updated`
+ * are emitted by global and sovereign apps. Person instances accept the
+ * full canonical verb set so real-time creates from global materialize.
+ */
+const RESOURCE_UPSERT_EVENT_TYPES = new Set<string>([
+  "upsert",
+  "resource.created",
+  "resource.updated",
+  "post.created",
+  "post.updated",
+  "event.created",
+  "event.updated",
+]);
+
+/** Event types that the resource materializer treats as soft-delete. */
+const RESOURCE_DELETE_EVENT_TYPES = new Set<string>([
+  "resource.deleted",
+  "post.deleted",
+  "event.deleted",
+  "delete",
+]);
+
 function normalizeAuthorityUrl(value: string): string | null {
   try {
     const url = new URL(value);
@@ -102,14 +133,43 @@ function payloadSourceMatchesPeer(
   return true;
 }
 
+/**
+ * Map an instance-config `instanceType` to the `node_role` vocabulary.
+ *
+ * The two enums diverge: instance types are
+ * global/person/group/locale/region while node roles are
+ * group/locale/basin/global. Region instances federate as `basin`-role
+ * nodes, and person instances (which have no dedicated node role) federate
+ * under the `group` role.
+ */
+function instanceTypeToNodeRole(instanceType: string): NodeRole {
+  switch (instanceType) {
+    case "global":
+      return "global";
+    case "locale":
+      return "locale";
+    case "group":
+      return "group";
+    case "region":
+      return "basin";
+    case "person":
+      return "group";
+    default:
+      return DEFAULT_NODE_ROLE;
+  }
+}
+
 function getNodeSlug(): string {
-  // Slug is a stable node identifier used in routing and peer lookup.
-  return process.env.NODE_SLUG?.trim() || "global-host";
+  // Slug is a stable node identifier used in routing and peer lookup. It must
+  // agree with the instance identity (`INSTANCE_SLUG`) so that the local node
+  // row created/looked-up here matches the slug peers use in x-peer-slug and
+  // the slug the registry advertises. `NODE_SLUG` remains an explicit override.
+  return process.env.NODE_SLUG?.trim() || getInstanceConfig().instanceSlug;
 }
 
 function getNodeDisplayName(): string {
   // Human-readable display value shown in federation admin views.
-  return process.env.NODE_DISPLAY_NAME?.trim() || "Global Host";
+  return process.env.NODE_DISPLAY_NAME?.trim() || getInstanceConfig().instanceSlug;
 }
 
 function getNodeRole(): NodeRole {
@@ -118,7 +178,10 @@ function getNodeRole(): NodeRole {
   if (role && ["group", "locale", "basin", "global"].includes(role)) {
     return role;
   }
-  return DEFAULT_NODE_ROLE;
+  // Derive from the configured instance type so the local node row's role
+  // reflects what kind of instance this actually is, instead of defaulting
+  // every unconfigured sovereign to "global".
+  return instanceTypeToNodeRole(getInstanceConfig().instanceType);
 }
 
 function getBaseUrl(): string {
@@ -139,20 +202,70 @@ function getBaseUrl(): string {
  */
 export async function ensureLocalNode(ownerAgentId?: string) {
   const slug = getNodeSlug();
+  const configuredInstanceId = getInstanceConfig().instanceId;
 
-  const existing = await db.query.nodes.findFirst({
+  // Resolve the local self-node row. Prefer the slug match, but fall back to
+  // the row anchored on the configured instance id. A self-node bootstrapped
+  // before NODE_SLUG/INSTANCE_SLUG agreed (e.g. under the legacy "global-host"
+  // default, or seeded with a basin slug while INSTANCE_SLUG names the
+  // instance) carries the configured id but a stale slug; without this
+  // fallback ensureLocalNode would miss it and attempt an insert that collides
+  // on the primary key (nodes_pkey), 500ing every federation export.
+  const bySlug = await db.query.nodes.findFirst({
     where: eq(nodes.slug, slug),
   });
+  const existing =
+    bySlug ??
+    (await db.query.nodes.findFirst({
+      where: eq(nodes.id, configuredInstanceId),
+    }));
 
   if (existing) {
+    if (existing.id !== configuredInstanceId) {
+      // The signers (SSO, authority events, recovery) and the write-router
+      // all look the local node up by config.instanceId. A slug-matched row
+      // with a different id means this instance was bootstrapped before
+      // INSTANCE_ID was configured; signing and local-write resolution will
+      // fail until the operator reconciles the nodes row id with INSTANCE_ID.
+      console.error(
+        `[federation] Local node slug "${slug}" exists with id ${existing.id}, ` +
+          `but INSTANCE_ID is ${configuredInstanceId}. Migrate the nodes row id ` +
+          `(and its FK references) to match INSTANCE_ID, or fix the env.`,
+      );
+    }
+
+    // Reconcile the id-anchored self-node's external identity to the configured
+    // values when it has drifted (stale slug/role/displayName/baseUrl from an
+    // earlier bootstrap). Only the row that already owns the configured id is
+    // safe to relabel this way; a slug-only match with a foreign id is left
+    // for the operator (logged above).
+    const needsIdentityReconcile =
+      existing.id === configuredInstanceId &&
+      (existing.slug !== slug ||
+        existing.role !== getNodeRole() ||
+        existing.baseUrl !== getBaseUrl());
     // Backfill keys for legacy nodes so all exported events can be signed.
-    if (!existing.privateKey || !existing.publicKey) {
-      const keyPair = generateNodeKeyPair();
+    const needsKeys = !existing.privateKey || !existing.publicKey;
+
+    if (needsIdentityReconcile || needsKeys) {
+      const keyPair = needsKeys ? generateNodeKeyPair() : null;
       const [updated] = await db
         .update(nodes)
         .set({
-          publicKey: keyPair.publicKey,
-          privateKey: keyPair.privateKey,
+          ...(needsIdentityReconcile
+            ? {
+                slug,
+                role: getNodeRole(),
+                displayName: getNodeDisplayName(),
+                baseUrl: getBaseUrl(),
+              }
+            : {}),
+          ...(keyPair
+            ? {
+                publicKey: keyPair.publicKey,
+                privateKey: keyPair.privateKey,
+              }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(nodes.id, existing.id))
@@ -165,6 +278,9 @@ export async function ensureLocalNode(ownerAgentId?: string) {
   const keyPair = generateNodeKeyPair();
 
   const values: NewNodeRecord = {
+    // Anchor the bootstrap row to the configured instance id so id-based
+    // lookups (signers, resolution, write-router) agree with slug-based ones.
+    id: configuredInstanceId,
     slug,
     displayName: getNodeDisplayName(),
     role: getNodeRole(),
@@ -772,6 +888,43 @@ async function resolveLocalEntityId(
 }
 
 /**
+ * Ensures a local `agents` row exists for a mapped remote agent id.
+ *
+ * Real-time resource events can arrive before the owning agent's upsert
+ * event from the same peer. Instead of silently dropping the resource
+ * (the historical behavior), project a minimal private placeholder agent.
+ * The next agent upsert for the same entity from that peer upgrades the
+ * placeholder in place via the materializer's placeholder-upgrade path.
+ */
+async function ensureProjectedAgent(params: {
+  localAgentId: string;
+  externalAgentId: string;
+  peerNode: { id: string; slug: string };
+}): Promise<void> {
+  const existing = await db.query.agents.findFirst({
+    where: eq(agents.id, params.localAgentId),
+    columns: { id: true },
+  });
+  if (existing) return;
+
+  await db
+    .insert(agents)
+    .values({
+      id: params.localAgentId,
+      name: `Federated agent (${params.peerNode.slug})`,
+      type: "person",
+      visibility: "private",
+      metadata: {
+        federatedPlaceholder: true,
+        sourceNodeId: params.peerNode.id,
+        sourceNodeSlug: params.peerNode.slug,
+        externalEntityId: params.externalAgentId,
+      },
+    })
+    .onConflictDoNothing({ target: agents.id });
+}
+
+/**
  * Import inbound federation events from a trusted peer, enforcing signature,
  * replay, version, and age checks before persistence.
  *
@@ -803,6 +956,17 @@ export async function importFederationEvents(params: {
     eventVersion?: number;
     createdAt?: string;
   }>;
+  /**
+   * Accept events older than EVENT_REPLAY_WINDOW_MS. Only the locally
+   * initiated cursor-based pull sync may set this: the pull path fetches
+   * directly from the trusted peer over HTTPS and is already protected by
+   * signature verification + nonce dedup, and without it any downtime
+   * longer than the window permanently skips the backlog (the cursor
+   * advances past events the import rejected as expired). Inbound push
+   * routes must NEVER set this — the strict window bounds replay of
+   * intercepted signed events there.
+   */
+  allowHistorical?: boolean;
 }) {
   // Peer slug is treated as identity input; unknown peers are rejected before any writes.
   const peerNode = await db.query.nodes.findFirst({ where: eq(nodes.slug, params.fromPeerSlug) });
@@ -901,8 +1065,9 @@ export async function importFederationEvents(params: {
       }
     }
 
-    // Time window check: reject events older than the replay window
-    if (event.createdAt) {
+    // Time window check: reject events older than the replay window.
+    // Skipped for the locally initiated pull sync (see allowHistorical).
+    if (!params.allowHistorical && event.createdAt) {
       const eventTime = new Date(event.createdAt).getTime();
       const cutoff = Date.now() - EVENT_REPLAY_WINDOW_MS;
       // Reject events outside the replay window to reduce delayed replay attack surface.
@@ -915,7 +1080,7 @@ export async function importFederationEvents(params: {
       }
     }
 
-    imports.push({
+    const importRecord: NewFederationEventRecord = {
       originNodeId: peerNode.id,
       targetNodeId: params.localNodeId,
       entityType: event.entityType,
@@ -927,9 +1092,13 @@ export async function importFederationEvents(params: {
       nonce: event.nonce ?? null,
       eventVersion: event.eventVersion ?? null,
       status: "imported",
+      // Bound to the materialized local agent below (agent upserts bind the
+      // agent itself; resource upserts bind the local owner). Stays null for
+      // events that don't materialize a local row.
       actorId: null,
       processedAt: new Date(),
-    });
+    };
+    imports.push(importRecord);
 
     // Best-effort materialization into local read model with namespace mapping.
     // Remote entity IDs are mapped to local UUIDs via federation_entity_map
@@ -957,26 +1126,58 @@ export async function importFederationEvents(params: {
           externalEntityId: externalId,
         };
 
-        await db
-          .insert(agents)
-          .values({
-            id: localId,
-            name,
-            type: type as typeof agents.$inferInsert.type,
-            visibility: event.visibility,
-            description: typeof payload.description === "string" ? payload.description : null,
-            image: typeof payload.image === "string" ? payload.image : null,
-            metadata: metadataWithAttribution,
-            parentId: typeof payload.parentId === "string" ? payload.parentId : null,
-            pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
-          })
-          .onConflictDoNothing({ target: agents.id });
+        const existingAgent = await db.query.agents.findFirst({
+          where: eq(agents.id, localId),
+          columns: { id: true, metadata: true },
+        });
+        const isPlaceholder =
+          existingAgent != null &&
+          (existingAgent.metadata as Record<string, unknown> | null)?.federatedPlaceholder === true;
+
+        if (!existingAgent) {
+          await db
+            .insert(agents)
+            .values({
+              id: localId,
+              name,
+              type: type as typeof agents.$inferInsert.type,
+              visibility: event.visibility,
+              description: typeof payload.description === "string" ? payload.description : null,
+              image: typeof payload.image === "string" ? payload.image : null,
+              metadata: metadataWithAttribution,
+              parentId: typeof payload.parentId === "string" ? payload.parentId : null,
+              pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
+            })
+            .onConflictDoNothing({ target: agents.id });
+        } else if (isPlaceholder) {
+          // Upgrade auto-projected placeholder agents (created by
+          // ensureProjectedAgent when a resource arrived before its owner)
+          // with the real remote profile. Locally merged/owned agents are
+          // never overwritten by inbound federation events.
+          await db
+            .update(agents)
+            .set({
+              name,
+              type: type as typeof agents.$inferInsert.type,
+              visibility: event.visibility,
+              description: typeof payload.description === "string" ? payload.description : null,
+              image: typeof payload.image === "string" ? payload.image : null,
+              metadata: metadataWithAttribution,
+              parentId: typeof payload.parentId === "string" ? payload.parentId : null,
+              pathIds: Array.isArray(payload.pathIds) ? (payload.pathIds as string[]) : null,
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, localId));
+        }
+
+        // Bind the imported event to the materialized local agent for audit.
+        importRecord.actorId = localId;
       }
     }
 
     if (
       event.entityType === "resource" &&
-      (event.eventType === "resource.updated" || event.eventType === "post.updated") &&
+      RESOURCE_UPSERT_EVENT_TYPES.has(event.eventType) &&
       (event.payload.visibility === "private" || event.payload.visibility === "hidden")
     ) {
       const externalId = eventEntityId;
@@ -996,12 +1197,10 @@ export async function importFederationEvents(params: {
             .where(eq(resources.id, mapped.localEntityId));
         }
       }
+      continue;
     }
 
-    if (
-      event.entityType === "resource" &&
-      (event.eventType === "resource.deleted" || event.eventType === "post.deleted" || event.eventType === "delete")
-    ) {
+    if (event.entityType === "resource" && RESOURCE_DELETE_EVENT_TYPES.has(event.eventType)) {
       const externalId = eventEntityId;
       if (externalId) {
         const mapped = await db.query.federationEntityMap.findFirst({
@@ -1018,10 +1217,33 @@ export async function importFederationEvents(params: {
             .set({ deletedAt: new Date(), updatedAt: new Date() })
             .where(eq(resources.id, mapped.localEntityId));
         }
+
+        // Universal Manifest v0.4: tombstone the reference-mode pointer so
+        // discovery surfaces and origin-redirects stop resolving the removed
+        // resource, independent of whether a local mirror existed.
+        const tombstoneResult = await tombstoneManifestReference({
+          originNodeId: peerNode.id,
+          externalEntityId: externalId,
+          entityType: "resource",
+          manifestVersion: event.eventVersion ?? null,
+          sourceFederationEventId: null,
+        }).catch((error) => {
+          console.warn(
+            `[federation] manifest_reference tombstone failed for resource=${externalId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return undefined;
+        });
+        if (tombstoneResult?.status === "stale") {
+          console.warn(
+            `[federation] skipped stale manifest_reference tombstone for resource=${externalId}: ${tombstoneResult.reason}`,
+          );
+        }
       }
     }
 
-    if (event.entityType === "resource" && event.eventType === "upsert") {
+    if (event.entityType === "resource" && RESOURCE_UPSERT_EVENT_TYPES.has(event.eventType)) {
       const payload = event.payload;
       if (!payloadSourceMatchesPeer(payload, peerNode)) {
         rejected.push({ index: i, reason: "source authority mismatch" });
@@ -1036,13 +1258,15 @@ export async function importFederationEvents(params: {
       const externalOwnerId = typeof payload.ownerId === "string" ? payload.ownerId : null;
 
       if (externalId && name && type && externalOwnerId) {
-        // Resolve the owner's local ID via the entity map
+        // Resolve the owner's local ID via the entity map. If the owning
+        // agent hasn't been imported yet (real-time create arrived first),
+        // project a placeholder agent so the resource still materializes.
         const localOwnerId = await resolveLocalEntityId(peerNode.id, externalOwnerId, "agent");
-        const owner = await db.query.agents.findFirst({ where: eq(agents.id, localOwnerId) });
-        if (!owner) {
-          // Skip orphaned resources until their owner has been imported.
-          continue;
-        }
+        await ensureProjectedAgent({
+          localAgentId: localOwnerId,
+          externalAgentId: externalOwnerId,
+          peerNode,
+        });
 
         const localId = await resolveLocalEntityId(peerNode.id, externalId, "resource");
 
@@ -1084,45 +1308,71 @@ export async function importFederationEvents(params: {
               updatedAt: new Date(),
             },
           });
+
+        // Bind the imported event to the local owner agent for audit.
+        importRecord.actorId = localOwnerId;
+
+        // Universal Manifest v0.4: record a reference-mode pointer beside the
+        // mirror row so this instance participates in reference-mode discovery
+        // and resource detail/checkout pages can redirect to the sovereign
+        // origin. Best-effort — a failure here never blocks the mirror import.
+        const remoteOwnerName =
+          (typeof payload.authorName === "string" && payload.authorName.trim()) ||
+          (typeof payload.ownerName === "string" && payload.ownerName.trim()) ||
+          null;
+        const referenceResult = await upsertManifestReference(
+          buildResourceManifestReferenceInput({
+            originNodeId: peerNode.id,
+            originBaseUrl: peerNode.baseUrl,
+            originNodeSlug: peerNode.slug,
+            externalEntityId: externalId,
+            localEntityId: localId,
+            // The federation_events row is bulk-inserted after this loop, so it
+            // does not exist yet — leave the FK null rather than reference an
+            // unsaved row.
+            sourceFederationEventId: null,
+            manifestVersion: event.eventVersion ?? null,
+            payload: payload as Record<string, unknown>,
+            resourceType: type,
+            visibility: event.visibility,
+            title: name,
+            description: typeof payload.description === "string" ? payload.description : null,
+            tags: Array.isArray(payload.tags) ? (payload.tags as string[]) : [],
+            ownerId: externalOwnerId,
+            ownerName: remoteOwnerName,
+          }),
+        ).catch((error) => {
+          console.warn(
+            `[federation] manifest_reference upsert failed for resource=${externalId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return undefined;
+        });
+        if (referenceResult?.status === "stale") {
+          console.warn(
+            `[federation] skipped stale manifest_reference upsert for resource=${externalId}: ${referenceResult.reason}`,
+          );
+        }
       }
     }
   }
 
-  // Store rejected events as dead letters in the federation_events table.
-  // Nullify the nonce for dead-letter records to avoid unique constraint
-  // violations (the original nonce may already exist for "duplicate nonce" rejections).
-  for (const rejection of rejected) {
-    const event = params.events[rejection.index];
-    const [deadLetterEvent] = await db
-      .insert(federationEvents)
-      .values({
-        originNodeId: peerNode.id,
-        targetNodeId: params.localNodeId,
-        entityType: event.entityType,
-        eventType: event.eventType,
-        visibility: event.visibility,
-        payload: event.payload,
-        signature: event.signature ?? null,
-        nonce: null,
-        eventVersion: event.eventVersion ?? null,
-        status: "failed",
-        error: rejection.reason,
-      })
-      .returning();
-
-    await logFederationAudit({
-      eventType: "import",
-      nodeId: params.localNodeId,
-      peerNodeId: peerNode.id,
-      federationEventId: deadLetterEvent.id,
-      status: "rejected",
-      detail: {
-        reason: rejection.reason,
-        eventIndex: rejection.index,
-        entityType: event.entityType,
-        originalNonce: event.nonce,
-      },
-    });
+  // Log rejected events as a summary warning — do NOT persist them as dead
+  // letters in the database. The old pattern of inserting a `status='failed'`
+  // row per rejection caused unbounded DB growth (2M+ rows on one instance)
+  // when historical pull replayed unsigned events every sync cycle.
+  if (rejected.length > 0) {
+    const reasonCounts = new Map<string, number>();
+    for (const r of rejected) {
+      reasonCounts.set(r.reason, (reasonCounts.get(r.reason) ?? 0) + 1);
+    }
+    const summary = Array.from(reasonCounts.entries())
+      .map(([reason, count]) => `${reason}: ${count}`)
+      .join(", ");
+    console.warn(
+      `[federation] Rejected ${rejected.length} events from ${peerNode.slug}: ${summary}`,
+    );
   }
 
   if (imports.length === 0) {

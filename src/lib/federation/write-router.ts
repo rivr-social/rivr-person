@@ -29,6 +29,43 @@ const STATUS_MISDIRECTED = 421;
 /** Standard federation mutation endpoint path */
 const FEDERATION_MUTATIONS_PATH = "/api/federation/mutations";
 
+/**
+ * Bilateral interaction verbs. A like / reaction / thank / comment / RSVP /
+ * follow is simultaneously an *action by the actor* AND an *attribute of the
+ * object* it targets. The surface where the actor is authenticated already
+ * holds a local copy of the object (a federated mirror of the owner's
+ * post/event/agent), so the edge is committed locally and synchronously: the
+ * click always lands and the on-screen count updates immediately. The
+ * interaction can never be gated on instance-to-instance peer auth — a
+ * missing/rotated `FEDERATION_PEER_SECRET` or an unreachable owner instance
+ * must not make a Like silently fail or surface a misleading "Authentication
+ * required".
+ *
+ * Cross-instance delivery to the object's home instance is NOT done here as a
+ * blocking forward. Each of these actions emits a signed domain event into the
+ * durable federation queue, which the federation-sync dispatcher pushes to
+ * peers best-effort with retry. That queue is the authoritative, non-blocking
+ * propagation channel for bilateral edges.
+ */
+const BILATERAL_INTERACTION_TYPES = new Set<string>([
+  "toggleLikeOnTarget",
+  "setReactionOnTarget",
+  "toggleThankOnTarget",
+  "postCommentAction",
+  "setEventRsvp",
+  "toggleFollowAgent",
+]);
+
+/** Home-instance descriptor used when a write is forced to execute locally. */
+const LOCAL_HOME_INSTANCE: HomeInstanceInfo = {
+  nodeId: "",
+  instanceType: "local",
+  slug: "local",
+  baseUrl: "",
+  isLocal: true,
+  migrationStatus: "active",
+};
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 /**
@@ -126,6 +163,16 @@ export async function routeWrite<T, R = unknown>(
   write: RoutedWrite<T>,
   localExecutor: () => Promise<R>,
 ): Promise<WriteRouterResult<R>> {
+  // Bilateral interaction edges (like/reaction/thank/comment/rsvp/follow)
+  // commit on the authenticated viewing surface and propagate to the object's
+  // home via the durable signed-event queue. They are never gated on a
+  // synchronous peer-auth forward, so the click always lands even when the
+  // owner's instance is unreachable or the peer secret is absent. See
+  // BILATERAL_INTERACTION_TYPES for the full rationale.
+  if (BILATERAL_INTERACTION_TYPES.has(write.type)) {
+    return executeLocally(localExecutor, LOCAL_HOME_INSTANCE);
+  }
+
   let homeInstance: HomeInstanceInfo;
 
   try {

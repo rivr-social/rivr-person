@@ -48,6 +48,10 @@ interface PersonaChatWidgetProps {
   personaName: string;
   /** Avatar image URL */
   personaImage: string | null;
+  /** Optional persona ID — routes chat through autobot with persona context */
+  personaId?: string;
+  /** When true, always use the autobot chat endpoint (MCP tools, KG, tool-use loop) */
+  useAutobotChat?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +62,8 @@ export function PersonaChatWidget({
   username,
   personaName,
   personaImage,
+  personaId,
+  useAutobotChat = false,
 }: PersonaChatWidgetProps) {
   const { data: session } = useSession();
   const [widgetState, setWidgetState] = useState<WidgetState>("collapsed");
@@ -115,14 +121,22 @@ export function PersonaChatWidget({
     }));
 
     try {
-      const response = await fetch(
-        `/api/profile/${encodeURIComponent(username)}/chat`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: trimmed, history }),
-        },
-      );
+      // When personaId is provided (owner's self-view), use the full autobot
+      // chat endpoint which has tool-use, KG context, and persona scoping.
+      // Otherwise fall back to the public persona chat endpoint.
+      const isOwnerChat = (useAutobotChat || Boolean(personaId)) && isAuthenticated;
+      const chatUrl = isOwnerChat
+        ? "/api/autobot/chat"
+        : `/api/profile/${encodeURIComponent(username)}/chat`;
+      const chatBody = isOwnerChat
+        ? { message: trimmed, history, personaId, personaName }
+        : { message: trimmed, history };
+
+      const response = await fetch(chatUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chatBody),
+      });
 
       const data: PersonaChatResponse = await response.json();
 
@@ -183,7 +197,7 @@ export function PersonaChatWidget({
   // Expanded state: chat panel
   return (
     <div className="fixed bottom-6 right-6 z-[120] w-[360px] max-w-[calc(100vw-2rem)]">
-      <Card className="flex flex-col shadow-2xl border overflow-hidden max-h-[520px]">
+      <Card className="flex flex-col shadow-2xl border overflow-hidden" style={{ maxHeight: "min(520px, calc(100dvh - 6rem))" }}>
         {/* Header */}
         <CardHeader className="flex flex-row items-center gap-3 px-4 py-3 border-b bg-muted/30">
           <div className="relative h-9 w-9 rounded-full bg-muted overflow-hidden flex-shrink-0">
@@ -248,8 +262,8 @@ export function PersonaChatWidget({
           </div>
 
           {/* Message area */}
-          <ScrollArea className="flex-1 min-h-0" style={{ maxHeight: "340px" }}>
-            <div ref={scrollRef} className="px-3 py-3 space-y-3">
+          <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" style={{ maxHeight: "340px" }}>
+            <div className="px-3 py-3 space-y-3">
               {messages.length === 0 ? (
                 <div className="text-center py-8 space-y-2">
                   <Bot className="h-8 w-8 mx-auto text-muted-foreground/50" />
@@ -304,7 +318,7 @@ export function PersonaChatWidget({
                 </div>
               ) : null}
             </div>
-          </ScrollArea>
+          </div>
 
           {/* Error display */}
           {error ? (

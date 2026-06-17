@@ -126,6 +126,56 @@ export function signPayload(
  * const valid = verifyPayloadSignature(payload, signature, publicKeyPem);
  * ```
  */
+/**
+ * Sign a Universal Manifest v0.3 document per Signature Profile A.
+ *
+ * Per UM v0.3: the `signature` property is stripped before canonicalization,
+ * then the remaining JSON is canonicalized via JCS (RFC 8785) and signed
+ * with Ed25519. The resulting signature is base64url-encoded.
+ */
+export function signUniversalManifest(
+  manifest: Record<string, unknown>,
+  privateKeyPem: string,
+  keyRef: string,
+  publicKeySpkiB64?: string,
+): {
+  algorithm: string;
+  canonicalization: string;
+  keyRef: string;
+  value: string;
+  publicKeySpkiB64?: string;
+  created: string;
+} {
+  const { signature: _, ...signingInput } = manifest;
+  const canonical = canonicalize(signingInput);
+  const key = createPrivateKey(privateKeyPem);
+  const sig = sign(null, Buffer.from(canonical), key);
+
+  const base64urlSig = sig
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  return {
+    algorithm: "Ed25519",
+    canonicalization: "JCS-RFC8785",
+    keyRef,
+    value: base64urlSig,
+    ...(publicKeySpkiB64 ? { publicKeySpkiB64 } : {}),
+    created: new Date().toISOString(),
+  };
+}
+
+/**
+ * Extract the base64-encoded SPKI public key from a PEM-encoded Ed25519 public key.
+ */
+export function publicKeyPemToSpkiB64(publicKeyPem: string): string {
+  const key = createPublicKey(publicKeyPem);
+  const spkiDer = key.export({ type: "spki", format: "der" });
+  return Buffer.from(spkiDer).toString("base64");
+}
+
 export function verifyPayloadSignature(
   payload: Record<string, unknown>,
   signature: string,

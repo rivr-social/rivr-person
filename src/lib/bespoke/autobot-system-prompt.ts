@@ -353,6 +353,12 @@ export async function buildAutobotSystemPrompt(
     ? await buildPersonaKgContext(explicitActivePersonaId)
     : "";
 
+  // Person-scope KG context — includes data ingested from connector syncs
+  // (Notion docs, Google Docs, Slack threads, etc.) plus any manually
+  // ingested documents. This gives the autobot access to the user's
+  // external knowledge alongside their Rivr data.
+  const personKgContext = await buildPersonKgContext(promptActorId);
+
   // Build the prompt — soul identity first, then structured context
   return `${soul.content}
 
@@ -454,7 +460,7 @@ If the user asks for modifications ("change the price to $420", "make it 24 hour
 - Show enthusiasm for the user's activities.
 - When suggesting, explain your reasoning briefly ("I see you're in the Boulder Bikers group, which would be a great place to list this").
 - If you're unsure about something, ask rather than guess.
-${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}`;
+${personKgContext}${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +472,23 @@ const PERSONA_KG_MAX_CONTEXT_CHARS = 4000;
 // ---------------------------------------------------------------------------
 // Persona KG Context Builder
 // ---------------------------------------------------------------------------
+
+/**
+ * Builds a KG context block for the person's own scope.
+ * Includes triples extracted from connector-synced documents (Notion, Google Docs,
+ * Slack, etc.) and any manually ingested content.
+ * Returns an empty string if no KG data exists or the fetch fails.
+ */
+async function buildPersonKgContext(actorId: string): Promise<string> {
+  try {
+    const { context } = await kgClient.buildContext("person", actorId, PERSONA_KG_MAX_CONTEXT_CHARS);
+    if (!context || context.length === 0) return "";
+
+    return `\n## Personal Knowledge Graph\nThe following facts are from your synced external data and ingested documents. Use them to inform your responses:\n\n${context}\n`;
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Builds a KG context block for a specific persona scope.

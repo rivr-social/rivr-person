@@ -225,6 +225,13 @@
       "when": 1778832060000,
       "tag": "0050_dm_rooms_mirror",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1781913600000,
+      "tag": "0052_manifest_references",
+      "breakpoints": true
     }
   ]
 }

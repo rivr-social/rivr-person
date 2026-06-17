@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import Image from "next/image"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Search, ChevronRight } from "lucide-react"
 import Link from "next/link"
 import { MarketplaceFeed } from "@/components/marketplace-feed"
@@ -53,12 +53,19 @@ export default function HomeClient({
   initialLocales,
 }: HomeClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { toast } = useToast()
   const { state: appState } = useAppContext()
   const { currentUser } = useUser()
   const isAuthenticated = !!currentUser
   const selectedLocale = appState.selectedChapter || "all"
-  const [activeTab, setActiveTab] = useState("posts")
+  const VALID_HOME_TABS = ["posts", "events", "groups", "people", "gigs", "marketplace"] as const
+  const requestedTab = searchParams.get("tab")
+  const initialTab =
+    requestedTab && (VALID_HOME_TABS as readonly string[]).includes(requestedTab)
+      ? requestedTab
+      : "posts"
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [groupTypeFilter, setGroupTypeFilter] = useState<string>("all")
   const [groupSearchQuery, setGroupSearchQuery] = useState("")
   const [savedListings, setSavedListings] = useState<string[]>([])

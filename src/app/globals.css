@@ -104,7 +104,7 @@
   --glass-tint-color: rgba(255, 255, 255, 0.14);
   --glass-shine-light: rgba(255, 255, 255, 0.06);
   --glass-shine-dark: rgba(255, 255, 255, 0.04);
-  overflow: hidden;
+  overflow: visible;
   background: var(--glass-surface-bg);
   box-shadow: none;
 }

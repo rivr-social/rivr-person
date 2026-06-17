@@ -22,6 +22,7 @@ import { syncSlackConnection } from "@/lib/autobot-slack-sync";
 import { syncDiscordConnection } from "@/lib/autobot-discord-sync";
 import { syncDropboxConnection } from "@/lib/autobot-dropbox-sync";
 import { syncZoomConnection } from "@/lib/autobot-zoom-sync";
+import { ingestSyncedResources } from "@/lib/kg/connector-ingest";
 
 export const dynamic = "force-dynamic";
 
@@ -94,6 +95,19 @@ export async function POST(_request: Request, context: RouteContext) {
       );
     }
 
+    // Bridge: ingest synced resources into the Knowledge Graph so the autobot
+    // can reason over connector data. Runs async — sync success is not gated
+    // on KG ingest success.
+    let kgIngest = null;
+    try {
+      kgIngest = await ingestSyncedResources(actorId, provider);
+    } catch (kgErr) {
+      console.warn(
+        `[connector-sync] KG ingest for ${provider} failed:`,
+        kgErr instanceof Error ? kgErr.message : kgErr,
+      );
+    }
+
     const nextConnections = updateConnectionState(settings.connections, connection.provider, {
       status: "connected",
       error: undefined,
@@ -108,6 +122,7 @@ export async function POST(_request: Request, context: RouteContext) {
 
     return NextResponse.json({
       result,
+      kgIngest,
       connections: nextSettings.connections,
       subject,
     });

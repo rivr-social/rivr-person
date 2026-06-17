@@ -169,7 +169,10 @@ export function SearchBar({
 
   const handleSearch = () => {
     if (query.trim()) {
-      router.push(`/explore?q=${encodeURIComponent(query)}&chapter=${selectedChapter}`)
+      // This sovereign instance has no dedicated /explore surface; the home feed
+      // is the canonical browse/search surface. Route there with the query so the
+      // navigation always resolves locally (no 404 / retry loop).
+      router.push(`/?tab=posts&q=${encodeURIComponent(query)}&chapter=${selectedChapter}`)
       setIsOpen(false)
     }
   }
@@ -187,7 +190,7 @@ export function SearchBar({
   return (
     <div className="relative w-full">
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-[4]" />
         <Input
           ref={inputRef}
           type="text"
@@ -201,7 +204,13 @@ export function SearchBar({
         />
         {query && (
           <button
-            className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-primary hover:underline"
+            type="button"
+            className="absolute right-3 top-1/2 transform -translate-y-1/2 z-[4] text-sm text-primary hover:underline"
+            onMouseDown={(e) => {
+              // Prevent the input's onBlur from closing the dropdown before the
+              // click handler runs, which previously made the button feel unclickable.
+              e.preventDefault()
+            }}
             onClick={handleSearch}
           >
             Search

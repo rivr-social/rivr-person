@@ -79,6 +79,9 @@ export interface FederationAuthResult {
   authorized: boolean;
   actorId?: string;
   peerNodeId?: string;
+  /** When true, the request was authenticated via peer-secret (server-to-server).
+   *  The originating instance is trusted to have authenticated the human actor. */
+  peerTrusted?: boolean;
   reason?: string;
 }
 
@@ -160,9 +163,17 @@ export function generatePeerSecret(): { secret: string; hash: string } {
  * ```
  */
 export async function authorizeFederationRequest(request: Request): Promise<FederationAuthResult> {
-  // 1. Session auth — only the owner of a hosted local node gets session-based access.
+  // 1. Session auth — the owner of a hosted local node gets session-based access.
+  //    On a sovereign person instance the primary agent owns the instance even
+  //    when no `nodes` row has been provisioned yet (e.g. before the first
+  //    federation handshake), so the configured primary agent is also trusted.
   const session = await auth();
   if (session?.user?.id) {
+    const primaryAgentId = getInstanceConfig().primaryAgentId;
+    if (primaryAgentId && session.user.id === primaryAgentId) {
+      return { authorized: true, actorId: session.user.id };
+    }
+
     const hostedNode = await db.query.nodes.findFirst({
       where: and(
         eq(nodes.ownerAgentId, session.user.id),
@@ -219,6 +230,12 @@ export function bindAuthorizedFederationActor(
 
   if (!requestedActorId) {
     return { authorized: false, reason: "actorId is required" };
+  }
+
+  // Peer-secret auth (server-to-server): the originating instance already
+  // authenticated the human user. Accept the body-provided actorId on trust.
+  if (authorization.peerTrusted) {
+    return { authorized: true, actorId: requestedActorId };
   }
 
   if (!authorization.actorId) {
@@ -289,7 +306,11 @@ async function authorizePeerSecret(
     return { authorized: false, reason: "Invalid peer credentials" };
   }
 
-  return { authorized: true, peerNodeId: peerNode.id };
+  // Peer-secret auth is server-to-server: the originating instance already
+  // authenticated the human actor. Return peerNodeId so the mutations endpoint
+  // can accept the body-provided actorId on trust (the forwarding instance is
+  // accountable for the identity claim).
+  return { authorized: true, peerNodeId: peerNode.id, peerTrusted: true };
 }
 
 export interface FederationConfigValidation {

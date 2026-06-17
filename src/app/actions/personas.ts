@@ -50,6 +50,24 @@ import {
   PERSONA_SKILL_KEYS,
   type AutobotControlMode,
 } from '@/lib/persona-config';
+import {
+  sanitizeAgentRole,
+  sanitizeAgentChatVisibility,
+  sanitizeKgObjects,
+  readAgentRole,
+  readAgentChatVisibility,
+  readKgObjects,
+  type AgentRoleFlags,
+  type AgentChatVisibility,
+  type KgObjectRef,
+} from '@/lib/agent-roles';
+import {
+  getScopeStats,
+  listDocs,
+  createDoc,
+  ingestDoc,
+  type KgDoc,
+} from '@/lib/kg/native-kg';
 
 const SKILL_KEY_SET = new Set<string>(PERSONA_SKILL_KEYS);
 const SKILL_VALUE_MIN = 0;
@@ -355,6 +373,9 @@ export async function createPersona(input: CreatePersonaInput): Promise<{
 
   const metadata: Record<string, unknown> = {
     isPersona: true,
+    // Mirror the parent link into metadata so consumers that only read the
+    // serialized metadata blob (rather than the column) still resolve the owner.
+    parentAgentId: userId,
     bio: bio || undefined,
     username: username || undefined,
     tagline: tagline || undefined,
@@ -381,7 +402,11 @@ export async function createPersona(input: CreatePersonaInput): Promise<{
     .values({
       name,
       type: 'person',
+      // Set both parent columns: `parentAgentId` is the canonical persona→owner
+      // link consumed by listMyPersonas/federation; `parentId` is the generic
+      // hierarchy column that graph serializers and resolution also read.
       parentAgentId: userId,
+      parentId: userId,
       visibility: 'public',
       image: image || null,
       metadata,
@@ -751,6 +776,16 @@ export async function switchActivePersona(
   }
 
   await setActivePersonaCookie(personaId);
+
+  // Auto-provision an MCP token for the persona so external tools can use it
+  // immediately without any manual token setup.
+  try {
+    const { getAutobotUserSettings } = await import("@/lib/autobot-user-settings");
+    await getAutobotUserSettings(personaId); // lazy-inits token
+  } catch {
+    // Non-critical — token will be provisioned on next settings access
+  }
+
   return { success: true };
 }
 
@@ -923,4 +958,240 @@ export async function findAutobotEnabledPersona(
     .limit(1);
 
   return selfRows[0] ? serializeAgent(selfRows[0]) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Agent roles / chat visibility / KG-object selection
+//
+// These apply to BOTH the controller's own agent and any persona it owns, so
+// the owner can configure their main "controller" agent and each persona
+// independently. Config is stored in `agents.metadata` (no migration).
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the agent row the caller is allowed to configure: either the
+ * caller's own account agent (`agentId === userId`) or a persona they own
+ * (`parent_agent_id === userId`). Returns the current metadata blob, or an
+ * error when the target is not configurable by the caller.
+ */
+async function loadConfigurableAgent(
+  agentId: string,
+  userId: string,
+): Promise<
+  | { ok: true; metadata: Record<string, unknown> }
+  | { ok: false; error: string }
+> {
+  if (!agentId || !UUID_RE.test(agentId)) {
+    return { ok: false, error: 'Invalid agent ID.' };
+  }
+
+  const [row] = await db
+    .select({
+      id: agents.id,
+      parentAgentId: agents.parentAgentId,
+      metadata: agents.metadata,
+    })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+    .limit(1);
+
+  if (!row) {
+    return { ok: false, error: 'Agent not found.' };
+  }
+
+  const isSelf = row.id === userId;
+  const isOwnedPersona = row.parentAgentId === userId;
+  if (!isSelf && !isOwnedPersona) {
+    return { ok: false, error: 'Agent not found or not owned by you.' };
+  }
+
+  return { ok: true, metadata: (row.metadata ?? {}) as Record<string, unknown> };
+}
+
+/** Persists `metadataUpdates` onto an agent row the caller owns. */
+async function writeAgentMetadata(
+  agentId: string,
+  metadataUpdates: Record<string, unknown>,
+): Promise<void> {
+  await db
+    .update(agents)
+    .set({
+      metadata: metadataUpdates,
+      updatedAt: new Date(),
+    } as Partial<typeof agents.$inferInsert>)
+    .where(eq(agents.id, agentId));
+}
+
+/**
+ * Sets the `{ privateAgent, publicAgent }` role flags for an agent/persona.
+ */
+export async function setAgentRole(input: {
+  agentId: string;
+  role: Partial<AgentRoleFlags>;
+}): Promise<{ success: boolean; error?: string }> {
+  const userId = await requireUserId();
+  const loaded = await loadConfigurableAgent(input.agentId, userId);
+  if (!loaded.ok) return { success: false, error: loaded.error };
+
+  const current = readAgentRole(loaded.metadata);
+  const merged = sanitizeAgentRole({ ...current, ...input.role });
+
+  await writeAgentMetadata(input.agentId, {
+    ...loaded.metadata,
+    agentRole: merged,
+  });
+  return { success: true };
+}
+
+/**
+ * Sets the public-chat visibility scope for an agent/persona.
+ */
+export async function setAgentChatVisibility(input: {
+  agentId: string;
+  visibility: AgentChatVisibility;
+}): Promise<{ success: boolean; error?: string }> {
+  const userId = await requireUserId();
+  const loaded = await loadConfigurableAgent(input.agentId, userId);
+  if (!loaded.ok) return { success: false, error: loaded.error };
+
+  const visibility = sanitizeAgentChatVisibility(input.visibility);
+
+  await writeAgentMetadata(input.agentId, {
+    ...loaded.metadata,
+    agentChatVisibility: visibility,
+  });
+  return { success: true };
+}
+
+/**
+ * Replaces the hand-picked KG object set for an agent/persona.
+ */
+export async function setAgentKgObjects(input: {
+  agentId: string;
+  objects: KgObjectRef[];
+}): Promise<{ success: boolean; error?: string; count?: number }> {
+  const userId = await requireUserId();
+  const loaded = await loadConfigurableAgent(input.agentId, userId);
+  if (!loaded.ok) return { success: false, error: loaded.error };
+
+  const objects = sanitizeKgObjects(input.objects);
+
+  await writeAgentMetadata(input.agentId, {
+    ...loaded.metadata,
+    kgObjects: objects,
+  });
+  return { success: true, count: objects.length };
+}
+
+/**
+ * Reads the full role/visibility/KG configuration for an agent/persona the
+ * caller owns. Used to hydrate the Agent HQ hub tabs.
+ */
+export async function getAgentRoleConfig(agentId: string): Promise<{
+  success: boolean;
+  error?: string;
+  role?: AgentRoleFlags;
+  visibility?: AgentChatVisibility;
+  kgObjects?: KgObjectRef[];
+}> {
+  const userId = await requireUserId();
+  const loaded = await loadConfigurableAgent(agentId, userId);
+  if (!loaded.ok) return { success: false, error: loaded.error };
+
+  return {
+    success: true,
+    role: readAgentRole(loaded.metadata),
+    visibility: readAgentChatVisibility(loaded.metadata),
+    kgObjects: readKgObjects(loaded.metadata),
+  };
+}
+
+/**
+ * Resolves the native-KG scope for a configurable agent. The controller (the
+ * signed-in user themselves) scopes to `person`; an owned persona scopes to
+ * `persona`. Both use the agent id as the scope id, matching how the chat and
+ * ingest routes already key the knowledge graph.
+ */
+function resolveKgScope(
+  agentId: string,
+  userId: string,
+): { scopeType: "person" | "persona"; scopeId: string } {
+  return {
+    scopeType: agentId === userId ? "person" : "persona",
+    scopeId: agentId,
+  };
+}
+
+/**
+ * Returns the native-KG summary (doc/entity/triple counts + docs) for an
+ * agent/persona the caller owns. Works for both the controller and personas,
+ * so the Agent HQ Knowledge tab can use one call regardless of selection.
+ */
+export async function getAgentKgSummary(agentId: string): Promise<{
+  success: boolean;
+  error?: string;
+  scopeType?: "person" | "persona";
+  docCount?: number;
+  entityCount?: number;
+  tripleCount?: number;
+  docs?: KgDoc[];
+}> {
+  const userId = await requireUserId();
+  const loaded = await loadConfigurableAgent(agentId, userId);
+  if (!loaded.ok) return { success: false, error: loaded.error };
+
+  const { scopeType, scopeId } = resolveKgScope(agentId, userId);
+  const [stats, docs] = await Promise.all([
+    getScopeStats(scopeType, scopeId),
+    listDocs(scopeType, scopeId),
+  ]);
+
+  return {
+    success: true,
+    scopeType,
+    docCount: stats.docCount,
+    entityCount: stats.entityCount,
+    tripleCount: stats.tripleCount,
+    docs,
+  };
+}
+
+/**
+ * Creates a KG doc from pasted text and ingests it (rule-based triple
+ * extraction) into the agent/persona's native knowledge graph. Works for both
+ * the controller and owned personas.
+ */
+export async function ingestAgentKgDoc(input: {
+  agentId: string;
+  title: string;
+  content: string;
+  docType?: string;
+}): Promise<{ success: boolean; error?: string; docId?: number; triplesExtracted?: number }> {
+  const userId = await requireUserId();
+  const loaded = await loadConfigurableAgent(input.agentId, userId);
+  if (!loaded.ok) return { success: false, error: loaded.error };
+
+  const title = input.title.trim();
+  const content = input.content.trim();
+  if (!title || !content) {
+    return { success: false, error: "Both title and content are required." };
+  }
+
+  const { scopeType, scopeId } = resolveKgScope(input.agentId, userId);
+  const doc = await createDoc({
+    title,
+    doc_type: input.docType || "note",
+    scope_type: scopeType,
+    scope_id: scopeId,
+    metadata: { ingestedBy: userId, ingestedAt: new Date().toISOString() },
+  });
+
+  const ingestResult = await ingestDoc(doc.id, content, "markdown", title);
+
+  return {
+    success: true,
+    docId: doc.id,
+    triplesExtracted:
+      ingestResult.regexTriplesExtracted + (ingestResult.llmChunksQueued ?? 0),
+  };
 }

@@ -162,12 +162,12 @@ export function TopBar({ selectedLocale, onLocaleChange }: TopBarProps) {
           </div>
           {session ? (
             <>
-              <Link href="/notifications" className="hidden sm:inline-flex">
+              <Link href="/notifications" className="inline-flex">
                 <Button variant="ghost" size="icon" className="h-8 w-8 sm:h-9 sm:w-9" aria-label="Notifications">
                   <Bell className="h-4 w-4 sm:h-5 sm:w-5" />
                 </Button>
               </Link>
-              <Link href="/messages" className="hidden sm:inline-flex">
+              <Link href="/messages" className="inline-flex">
                 <Button variant="ghost" size="icon" className="h-8 w-8 sm:h-9 sm:w-9" aria-label="Messages">
                   <MessageSquare className="h-4 w-4 sm:h-5 sm:w-5" />
                 </Button>

@@ -230,7 +230,109 @@ type ToolPreviewStatus = {
 
 const TOOL_PREVIEW_REGEX = /```tool-preview:([a-zA-Z0-9_.]+)\n([\s\S]*?)```/g;
 
-function parseMessageSegments(content: string): MessageSegment[] {
+/**
+ * Models frequently ignore the exact `tool-preview:<name>` fenced format and
+ * instead emit a raw tool call as JSON — either inside a ```json fence or as a
+ * bare object like `{"tool":"rivr.posts.create","params":{...}}`. Left alone
+ * these leak as ugly raw JSON in the chat. This normalizer rewrites those
+ * shapes into the canonical `tool-preview` fence so they flow through the
+ * existing preview/confirm/execute pipeline instead of leaking.
+ *
+ * Recognized object shapes (tool name + params):
+ *   { "tool": "<name>",  "params": { ... } }
+ *   { "tool": "<name>",  "arguments": { ... } }
+ *   { "name": "<name>",  "arguments": { ... } }
+ *   { "tool_name": "<name>", "input": { ... } }
+ */
+function normalizeToolCallSyntax(content: string): string {
+  const TOOL_NAME_KEYS = ["tool", "name", "tool_name", "toolName"];
+  const PARAM_KEYS = ["params", "arguments", "input", "parameters", "args"];
+
+  const toPreview = (raw: string): string | null => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const obj = parsed as Record<string, unknown>;
+
+    let toolName: string | null = null;
+    for (const key of TOOL_NAME_KEYS) {
+      if (typeof obj[key] === "string" && (obj[key] as string).trim()) {
+        toolName = (obj[key] as string).trim();
+        break;
+      }
+    }
+    if (!toolName || !/^[a-zA-Z0-9_.]+$/.test(toolName)) return null;
+
+    let params: Record<string, unknown> = {};
+    for (const key of PARAM_KEYS) {
+      const candidate = obj[key];
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        params = candidate as Record<string, unknown>;
+        break;
+      }
+    }
+
+    return `\`\`\`tool-preview:${toolName}\n${JSON.stringify(params, null, 2)}\n\`\`\``;
+  };
+
+  let next = content;
+
+  // 1. ```json fenced blocks that contain a tool call.
+  next = next.replace(/```json\s*\n([\s\S]*?)```/g, (whole, body: string) => {
+    const preview = toPreview(body.trim());
+    return preview ?? whole;
+  });
+
+  // 2. Bare top-level JSON objects mentioning a tool key. Scan for balanced
+  //    `{...}` spans so we don't trip over nested braces.
+  let result = "";
+  let i = 0;
+  while (i < next.length) {
+    if (next[i] === "{") {
+      let depth = 0;
+      let j = i;
+      let inString = false;
+      let escaped = false;
+      for (; j < next.length; j++) {
+        const ch = next[j];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === "\\") escaped = true;
+          else if (ch === '"') inString = false;
+          continue;
+        }
+        if (ch === '"') inString = true;
+        else if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            j++;
+            break;
+          }
+        }
+      }
+      const candidate = next.slice(i, j);
+      const looksLikeToolCall = /"(tool|tool_name|toolName|name)"\s*:/.test(candidate);
+      const preview = looksLikeToolCall ? toPreview(candidate) : null;
+      if (preview) {
+        result += preview;
+        i = j;
+        continue;
+      }
+    }
+    result += next[i];
+    i++;
+  }
+
+  return result;
+}
+
+function parseMessageSegments(rawContent: string): MessageSegment[] {
+  const content = normalizeToolCallSyntax(rawContent);
   const segments: MessageSegment[] = [];
   let lastIndex = 0;
   let toolIndex = 0;

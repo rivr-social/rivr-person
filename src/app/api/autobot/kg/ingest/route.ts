@@ -6,27 +6,14 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const AUTOBOT_KG_URL = process.env.AUTOBOT_KG_URL?.trim();
-
-// ---------------------------------------------------------------------------
 // POST /api/autobot/kg/ingest
-// Create a KG doc and ingest content into the Autobot knowledge graph.
+// Create a KG doc and ingest content into the native knowledge graph.
 // ---------------------------------------------------------------------------
 
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  }
-
-  if (!AUTOBOT_KG_URL) {
-    return NextResponse.json(
-      { error: "Autobot KG is not configured on this deployment." },
-      { status: 503 },
-    );
   }
 
   let body: Record<string, unknown>;

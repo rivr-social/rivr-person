@@ -31,6 +31,7 @@ import { db } from "@/db";
 import { agents, resources } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import * as kg from "@/lib/kg/autobot-kg-client";
+import { nativeCloudChat, DEFAULT_MODEL } from "@/lib/ai/native-chat";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import { getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
 import { getProvenanceLog } from "@/lib/federation/mcp-provenance";
@@ -765,31 +766,21 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
 
       const { context: kgContext } = await kg.buildContext(scopeType, scopeId, maxChars);
 
-      const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
       const kgSystemPrompt = kgContext
         ? `You have access to a knowledge graph for this ${scopeType}. Use these facts to inform your answers:\n\n${kgContext}\n\n`
         : "";
 
-      const openclawRes = await fetch(`${OPENCLAW_URL}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: context.actorId,
-          message: `${kgSystemPrompt}User question: ${message}`,
-          history: [],
-          channel: `kg-chat:${scopeType}:${scopeId}`,
-        }),
+      const result = await nativeCloudChat({
+        selectedModel: DEFAULT_MODEL,
+        systemPrompt: kgSystemPrompt || null,
+        history: [],
+        message,
       });
 
-      if (!openclawRes.ok) {
-        const errText = await openclawRes.text();
-        throw new Error(`OpenClaw error: ${openclawRes.status} — ${errText}`);
-      }
-
-      const data = await openclawRes.json();
       return {
         success: true,
-        ...data,
+        reply: result.reply,
+        model: result.model,
         kg_context_length: kgContext.length,
         scope: { type: scopeType, id: scopeId },
       };
@@ -1014,6 +1005,98 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
           ? `Operation "${operation}" is permitted on ${cap.isolationTier} instances.`
           : `Operation "${operation}" is denied on ${cap.isolationTier} instances.`,
       };
+    },
+  },
+
+  // ── Outbound Dispatch ─────────────────────────────────────────────────
+  {
+    name: "rivr.dispatch.send_message",
+    description:
+      "Send a message through a connected external service (Slack, Discord, or email). " +
+      "Requires the target service to be connected via autobot connectors. " +
+      "For Slack: provide channel name or ID. For Discord: provide channel ID. " +
+      "For email: provide recipient address, subject, and body.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: "string",
+          enum: ["slack", "discord", "email"],
+          description: "The connected service to send through.",
+        },
+        channel: {
+          type: "string",
+          description: "Slack channel name or ID (for Slack provider).",
+        },
+        channelId: {
+          type: "string",
+          description: "Discord channel ID (for Discord provider).",
+        },
+        text: {
+          type: "string",
+          description: "Message text (for Slack/Discord).",
+        },
+        threadTs: {
+          type: "string",
+          description: "Slack thread timestamp to reply in a thread (optional, Slack only).",
+        },
+        to: {
+          type: "string",
+          description: "Email recipient address (for email provider).",
+        },
+        subject: {
+          type: "string",
+          description: "Email subject line (for email provider).",
+        },
+        body: {
+          type: "string",
+          description: "Email body text (for email provider).",
+        },
+      },
+      required: ["provider"],
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const { dispatch } = await import("@/lib/autobot/outbound-dispatch");
+      const provider = args.provider as string;
+
+      if (provider === "slack") {
+        if (!args.channel || !args.text) {
+          return { success: false, error: "Slack dispatch requires 'channel' and 'text'." };
+        }
+        return dispatch(context.actorId, {
+          provider: "slack",
+          channel: args.channel as string,
+          text: args.text as string,
+          threadTs: args.threadTs as string | undefined,
+        });
+      }
+
+      if (provider === "discord") {
+        if (!args.channelId || !args.text) {
+          return { success: false, error: "Discord dispatch requires 'channelId' and 'text'." };
+        }
+        return dispatch(context.actorId, {
+          provider: "discord",
+          channelId: args.channelId as string,
+          content: args.text as string,
+        });
+      }
+
+      if (provider === "email") {
+        if (!args.to || !args.subject || !args.body) {
+          return { success: false, error: "Email dispatch requires 'to', 'subject', and 'body'." };
+        }
+        return dispatch(context.actorId, {
+          provider: "email",
+          to: args.to as string,
+          subject: args.subject as string,
+          body: args.body as string,
+        });
+      }
+
+      return { success: false, error: `Unsupported dispatch provider: ${provider}` };
     },
   },
 ];

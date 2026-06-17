@@ -16,7 +16,6 @@ import {
   User,
   Users,
   MessageSquare,
-  Pencil,
   Calendar,
   Drama,
   UserCheck,
@@ -136,20 +135,12 @@ export function UserMenu({ open, onClose }: UserMenuProps) {
               onClick={() => handleNavigation("/settings")}
               className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
             >
-              <Pencil className="h-5 w-5" />
-              <span>Edit Profile</span>
-            </Link>
-            <Link
-              href="/settings"
-              onClick={() => handleNavigation("/settings")}
-              className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
-            >
               <Settings className="h-5 w-5" />
-              <span>Profile Settings</span>
+              <span>Settings</span>
             </Link>
             <Link
-              href="/groups"
-              onClick={() => handleNavigation("/groups")}
+              href="/?tab=groups"
+              onClick={() => handleNavigation("/?tab=groups")}
               className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
             >
               <Users className="h-5 w-5" />

@@ -35,6 +35,7 @@ import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { verify } from "@node-rs/bcrypt";
 import type { NextAuthConfig } from "next-auth";
+import { verifyWithGlobalIdentityAuthority } from "@/lib/auth/global-credential-authority";
 
 /**
  * Minimum allowed password length per NIST SP 800-63B guidelines.
@@ -79,7 +80,7 @@ const authProviders: NonNullable<NextAuthConfig["providers"]> = [
         return null;
       }
 
-      const email = credentials.email as string;
+      const email = (credentials.email as string).trim().toLowerCase();
       const password = credentials.password as string;
 
       if (
@@ -89,6 +90,38 @@ const authProviders: NonNullable<NextAuthConfig["providers"]> = [
         return null;
       }
 
+      // Primary path: delegate credential verification to global's
+      // universal identity authority. This is the architectural rule —
+      // global is the credential register that survives the user losing
+      // their sovereign instance (recoverable via seed-phrase).
+      const verified = await verifyWithGlobalIdentityAuthority({ email, password });
+
+      if (verified) {
+        const [agent] = await db
+          .select()
+          .from(agents)
+          .where(eq(agents.email, email))
+          .limit(1);
+
+        if (agent) {
+          return {
+            id: agent.id,
+            name: agent.name ?? verified.name,
+            email: agent.email ?? verified.email,
+            image: agent.image ?? verified.image,
+          };
+        }
+
+        return {
+          id: verified.id,
+          name: verified.name,
+          email: verified.email ?? email,
+          image: verified.image,
+        };
+      }
+
+      // Fallback: local bcrypt for legacy/local-only accounts and for
+      // resilience if global is temporarily unreachable.
       const [agent] = await db
         .select()
         .from(agents)

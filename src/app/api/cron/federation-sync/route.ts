@@ -21,10 +21,10 @@
  *   deployment cannot accidentally expose unauthenticated polling.
  *
  * Outbound auth (peer feed):
- * - The peer's `/api/federation/events` GET is open by design (it
- *   filters by visibility and exposes `eventVersion`/`signature`/`nonce`
- *   for downstream verification). We pass our identity headers so a
- *   peer that adds auth later still sees who is polling.
+ * - Peers require federation auth on `/api/federation/events`
+ *   (`x-peer-slug` + `x-peer-secret`, admin-key fallback) — the same
+ *   credential scheme the deliver cron uses for the import endpoint.
+ *   Without these headers every pull returns 401.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -54,7 +54,40 @@ const CRON_SECRET_ENV = "FEDERATION_SYNC_CRON_SECRET";
 /** Trust state in `nodePeers` that gates inbound polling. */
 const TRUSTED_TRUST_STATE = "trusted" as const;
 
+/** Per-peer plaintext secret env prefix. Suffix is the peer slug, uppercased + non-alnum → `_`. */
+const PEER_SECRET_ENV_PREFIX = "FEDERATION_PEER_SECRET_";
+
+/** Fallback admin auth env name when no per-peer secret is configured. */
+const ADMIN_KEY_ENV = "NODE_ADMIN_KEY";
+
 const BEARER_PREFIX = "Bearer ";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve outbound auth headers for polling a peer's events feed.
+ *
+ * Mirrors the federation-deliver cron: per-peer plaintext secret when
+ * configured (`x-peer-slug` identifies US, the sender), otherwise the
+ * admin-key fallback, otherwise no auth headers (the peer will reject).
+ */
+function resolvePeerAuthHeaders(
+  peerSlug: string,
+  localSlug: string,
+): Record<string, string> {
+  const upperSlug = peerSlug.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const peerSecret = process.env[`${PEER_SECRET_ENV_PREFIX}${upperSlug}`]?.trim();
+  if (peerSecret) {
+    return { "x-peer-slug": localSlug, "x-peer-secret": peerSecret };
+  }
+  const adminKey = process.env[ADMIN_KEY_ENV]?.trim();
+  if (adminKey) {
+    return { "x-node-admin-key": adminKey };
+  }
+  return {};
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -164,6 +197,7 @@ export async function GET(request: NextRequest) {
             headers: {
               "X-Instance-Id": config.instanceId,
               "X-Instance-Slug": config.instanceSlug,
+              ...resolvePeerAuthHeaders(peer.peerSlug, config.instanceSlug),
             },
             signal: AbortSignal.timeout(PEER_FETCH_TIMEOUT_MS),
           },
@@ -228,6 +262,10 @@ export async function GET(request: NextRequest) {
             eventVersion: e.eventVersion ?? undefined,
             createdAt: e.createdAt,
           })),
+          // Locally initiated cursor pull: accept events older than the
+          // replay window so this instance can catch up after extended
+          // downtime (signature + nonce dedup still apply).
+          allowHistorical: true,
         });
 
         // Advance the per-peer cursor only after successful persistence.

@@ -5,6 +5,8 @@ import {
   sanitizeAutobotConnections,
   type AutobotConnection,
 } from "@/lib/autobot-connectors";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { signPackedPayload } from "@/lib/federation-remote-session";
 
 export type VoiceMode = "browser" | "clone";
 export type GpuProvider = "vast" | "local" | "custom";
@@ -67,6 +69,14 @@ export type DigitalTwinProfile = {
   updatedAt?: string;
 };
 
+/** Auto-provisioned scoped MCP token stored alongside settings. */
+export type AutobotMcpToken = {
+  token: string;
+  expiresAt: string;
+  scopes: string[];
+  issuedAt: string;
+};
+
 export type AutobotUserSettings = {
   selectedModel: string;
   ttsEnabled: boolean;
@@ -79,6 +89,8 @@ export type AutobotUserSettings = {
   connections: AutobotConnection[];
   customSoulMd: string;
   includedPersonaKgIds: string[];
+  /** Auto-provisioned MCP token for this actor. Lazily created on first access. */
+  mcpToken?: AutobotMcpToken | null;
   updatedAt?: string;
 };
 
@@ -310,6 +322,57 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
   };
 }
 
+/**
+ * Auto-provision a scoped MCP token for an actor.
+ * Called lazily on first settings access or on persona switch.
+ */
+const MCP_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MCP_TOKEN_SCOPES = [
+  "mcp:tools",
+  "profile:read",
+  "profile:write",
+  "post:create",
+  "event:create",
+  "offering:create",
+  "group:write",
+  "federation:write",
+];
+
+export function provisionMcpToken(actorId: string): AutobotMcpToken {
+  const config = getInstanceConfig();
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  const now = Date.now();
+  const payload = {
+    type: "rivr_mcp_token",
+    actorId,
+    controllerId: actorId,
+    actorType: "human",
+    issuer: baseUrl,
+    audience: baseUrl,
+    issuedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + MCP_TOKEN_TTL_MS).toISOString(),
+    scopes: MCP_TOKEN_SCOPES,
+  };
+
+  return {
+    token: signPackedPayload(payload as unknown as Record<string, unknown>),
+    expiresAt: payload.expiresAt,
+    scopes: MCP_TOKEN_SCOPES,
+    issuedAt: payload.issuedAt,
+  };
+}
+
+/**
+ * Check if a stored MCP token is still valid (not expired, with 1-day buffer).
+ */
+function isMcpTokenValid(mcpToken: AutobotMcpToken | null | undefined): boolean {
+  if (!mcpToken?.token || !mcpToken.expiresAt) return false;
+  const expiresAt = Date.parse(mcpToken.expiresAt);
+  if (!Number.isFinite(expiresAt)) return false;
+  // Refresh if less than 1 day remaining
+  return expiresAt > Date.now() + 24 * 60 * 60 * 1000;
+}
+
 export async function getAutobotUserSettings(agentId: string): Promise<AutobotUserSettings> {
   const [row] = await db
     .select({ metadata: agents.metadata })
@@ -318,7 +381,17 @@ export async function getAutobotUserSettings(agentId: string): Promise<AutobotUs
     .limit(1);
 
   const metadata = isRecord(row?.metadata) ? row.metadata : {};
-  return sanitizeSettings(metadata[SETTINGS_KEY]);
+  const settings = sanitizeSettings(metadata[SETTINGS_KEY]);
+
+  // Auto-provision MCP token if missing or expired
+  if (!isMcpTokenValid(settings.mcpToken)) {
+    const mcpToken = provisionMcpToken(agentId);
+    settings.mcpToken = mcpToken;
+    // Persist the token back (fire-and-forget — don't block on this)
+    saveAutobotUserSettings(agentId, { mcpToken }).catch(() => {});
+  }
+
+  return settings;
 }
 
 export async function saveAutobotUserSettings(
