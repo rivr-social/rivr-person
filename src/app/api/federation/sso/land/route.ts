@@ -19,11 +19,16 @@
  *   minted for another peer cannot be replayed here.
  * - Issuer is allow-listed to the configured global identity authority, so
  *   only global's signature is accepted even if another `nodes` row exists.
- * - On a person instance the landing actor must be the instance owner
- *   (`PRIMARY_AGENT_ID`); a handoff for anyone else is rejected.
+ * - The instance owner (`PRIMARY_AGENT_ID`) lands a full, unconstrained
+ *   session. Any other verified actor is auto-signed-in as a *visitor* with a
+ *   read-only-by-default capability scope the owner controls in
+ *   /settings/visitor-access; when visitor sign-in is disabled there, a
+ *   non-owner handoff falls through unauthenticated instead of authenticating.
+ * - The landing (referral path, home, issuer, user-agent, granted scope) is
+ *   recorded to `federated_visit_log` when the owner has visit recording on.
  * - Verification failure never strands the user on a JSON error when a safe
  *   local destination exists: it falls through to `next` unauthenticated so
- *   they can log in normally, except for owner-mismatch which is a hard 403.
+ *   they can log in normally.
  */
 
 import { NextResponse } from "next/server";
@@ -36,6 +41,15 @@ import {
   REMOTE_VIEWER_TTL_MS,
 } from "@/lib/federation-remote-session";
 import { verifySsoAssertion } from "@/lib/federation/sso-assertion";
+import {
+  resolveVisitorScope,
+  VISITOR_CAPABILITIES,
+  type VisitorCapability,
+} from "@/lib/federation/visitor-scope";
+import { recordFederatedVisit } from "@/lib/federation/visit-log";
+
+/** Milliseconds per minute, for converting the settings TTL to the cookie/token. */
+const MS_PER_MINUTE = 60 * 1000;
 
 /** Default post-landing destination when no (valid) `next` is supplied. */
 const DEFAULT_NEXT = "/";
@@ -66,13 +80,14 @@ function attachRemoteViewerCookie(
   response: NextResponse,
   requestUrl: URL,
   token: string,
+  ttlMs: number,
 ): void {
   response.cookies.set(REMOTE_VIEWER_COOKIE_NAME, token, {
     httpOnly: true,
     secure: requestUrl.protocol === "https:",
     sameSite: "lax",
     path: "/",
-    maxAge: Math.floor(REMOTE_VIEWER_TTL_MS / 1000),
+    maxAge: Math.floor(ttlMs / 1000),
   });
 }
 
@@ -107,28 +122,60 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const { claims } = result;
 
-  // On a person instance, the only actor who may land an authenticated
-  // session is the instance owner. A handoff minted for any other agent is
-  // a hard authorization failure (it should never happen, since global only
-  // ever mints a handoff for the user's OWN home).
-  if (config.instanceType === "person") {
-    if (!config.primaryAgentId || claims.actorId !== config.primaryAgentId) {
-      return NextResponse.json(
-        { error: "Actor is not authorized for this person instance" },
-        { status: 403, headers: { "Cache-Control": "no-store" } },
-      );
-    }
+  // Owner vs. visitor. The instance owner (`PRIMARY_AGENT_ID`) always lands a
+  // full, unconstrained session. Any OTHER verified actor is a federated
+  // *visitor*: they are auto-signed-in with a read-only-by-default scope that
+  // the owner can widen (or disable) in /settings/visitor-access.
+  const isOwner =
+    !!config.primaryAgentId && claims.actorId === config.primaryAgentId;
+
+  const scope = await resolveVisitorScope();
+
+  // When visitor auto-sign-in is turned off, a non-owner handoff must not
+  // authenticate — but it also must not strand the visitor. Fall through to
+  // the local destination unauthenticated so they can sign in normally.
+  if (!isOwner && !scope.enabled) {
+    return NextResponse.redirect(new URL(next, localOrigin), {
+      headers: { "Cache-Control": "no-store" },
+    });
   }
+
+  // Cookie/token lifetime: owners get the standard remote-viewer TTL; visitors
+  // get the owner-configured session length.
+  const ttlMs = isOwner ? REMOTE_VIEWER_TTL_MS : scope.ttlMinutes * MS_PER_MINUTE;
+
+  // Capabilities recorded for the visit: owners are unconstrained (record the
+  // full capability set), visitors get their resolved scope.
+  const grantedScope: VisitorCapability[] = isOwner
+    ? [...VISITOR_CAPABILITIES]
+    : scope.capabilities;
 
   const token = createRemoteViewerToken({
     actorId: claims.actorId,
     homeBaseUrl: claims.homeBaseUrl,
     localInstanceId: config.instanceId,
+    ttlMs,
   });
+
+  // Record the landing (referral path, home, issuer, UA, granted scope) when
+  // the owner has visit recording enabled. Best-effort — never blocks the
+  // landing.
+  if (scope.recordVisits) {
+    await recordFederatedVisit({
+      visitorActorId: claims.actorId,
+      isOwner,
+      homeBaseUrl: claims.homeBaseUrl,
+      globalIssuerBaseUrl: claims.globalIssuerBaseUrl,
+      landingPath: next,
+      visitorName: claims.name,
+      grantedScope,
+      request,
+    });
+  }
 
   const response = NextResponse.redirect(new URL(next, localOrigin), {
     headers: { "Cache-Control": "no-store" },
   });
-  attachRemoteViewerCookie(response, requestUrl, token);
+  attachRemoteViewerCookie(response, requestUrl, token, ttlMs);
   return response;
 }

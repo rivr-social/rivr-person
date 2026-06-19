@@ -153,6 +153,62 @@ Still open:
 - **Sovereign-merge:** The connect-to-sovereign flow requires 7 manual fixes
   before it works for new users without hand-intervention.
 
+### Federated visitor access (browsing-SSO parity)
+
+A cross-instance SSO actor who lands via `/api/federation/sso/land` is
+auto-signed-in as a *visitor* with a `rivr_remote_viewer` cookie (minted
+node-side, verified in the edge middleware). Non-owner visitors are constrained
+by an owner-configurable policy; the instance OWNER (`PRIMARY_AGENT_ID`) is
+never constrained.
+
+- **Capability model + resolver:** `src/lib/federation/visitor-scope.ts` —
+  `VISITOR_CAPABILITIES` (`read` baseline + `react`/`comment`/`rsvp`/`message`
+  extras), `resolveVisitorScope()` (reads `federatedVisitorSettings`, degrades
+  to `defaultVisitorScope()` pre-migration), `sanitizeCapabilities`,
+  `visitorCan`, `requiredVisitorCapability`.
+- **Owner policy API:** `GET/POST /api/admin/visitor-access` (owner-only).
+  Body validation is in `src/lib/federation/visitor-access-policy.ts`
+  (`parseVisitorAccessBody`, TTL bounds 1..1440) — kept out of the route module
+  because Next.js 15 route files may only export request handlers.
+- **Owner settings UI:** `/settings/visitor-access` — toggle auto-sign-in,
+  per-capability checkboxes, session TTL, record-visits switch, and the most
+  recent recorded landings.
+- **Visit recording:** `src/lib/federation/visit-log.ts` appends to
+  `federatedVisitLog` (referral path, home instance, granted scope) when the
+  policy enables it. Schema: `federatedVisitorSettings` + `federatedVisitLog`
+  (migration 0053).
+- **Enforcement:** the lander mints a scoped/short-TTL cookie for non-owners and
+  skips the landing entirely when visitors are disabled;
+  `/api/federation/mutations` gates a cookie-visitor's action against
+  `requiredVisitorCapability` (owner/peer requests bypass it).
+- **Tests:** `visitor-access-policy.test.ts`, `visitor-scope.test.ts`, and
+  `remote-viewer-edge-parity.test.ts` (node-mint → edge-verify parity). Run
+  under Node ≥22 (`vitest`/rolldown needs `node:util.styleText`).
+
+### Anonymous public-profile visibility
+
+A fully anonymous viewer (no NextAuth session, no `rivr_remote_viewer` cookie)
+can see the owner's PUBLIC content on their sovereign profile — but ONLY the
+public/locale-visible subset. The viewer-aware filtering lives in
+`src/app/actions/graph/profiles.ts`:
+
+- `fetchProfileData(agentId, viewerIdOverride?)` resolves the viewer from
+  `tryActorId()` unless an explicit `viewerIdOverride` is passed (MCP/autobot
+  self-view callers have no `auth()` session, so they pass the owner id). The
+  anonymous branch runs owned resources through `filterPubliclyCrawlableResources`
+  rather than returning them raw.
+- `fetchUserPosts(userId, limit, viewerId)` filters BEFORE slicing:
+  `filterViewableResources(viewerId, …)` for an authenticated viewer,
+  `filterPubliclyCrawlableResources(…)` for anonymous (`viewerId === null`), then
+  applies `limit`. So private/locale posts never consume an anonymous viewer's
+  page budget.
+- Callers thread the real viewer: `api/profile/[username]` passes the (possibly
+  null) session id; `api/myprofile`, `mcp-tools`, and `autobot-system-prompt`
+  pass the owner id for self-view.
+- Coverage: `src/app/actions/graph/__tests__/profiles.test.ts` asserts an
+  anonymous viewer sees only public posts, the owner still sees their own
+  private posts, and visibility filtering precedes the limit.
+
 ## Development
 
 ```bash

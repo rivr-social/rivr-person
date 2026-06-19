@@ -29,7 +29,7 @@ export async function GET(
   try {
     const [profile, posts, events, groups, docsResult, homeInstance, autobotPersona] = await Promise.all([
       fetchProfileData(agent.id).catch(() => null),
-      fetchUserPosts(agent.id, 30).catch(() => ({ posts: [], owner: null })),
+      fetchUserPosts(agent.id, 30, actorId).catch(() => ({ posts: [], owner: null })),
       fetchUserEvents(agent.id, 30).catch(() => []),
       fetchUserGroups(agent.id, 30).catch(() => []),
       getDocumentsForUser(agent.id).catch(() => []),

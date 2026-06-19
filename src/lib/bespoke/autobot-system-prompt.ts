@@ -283,8 +283,8 @@ export async function buildAutobotSystemPrompt(
     walletResult,
   ] = await Promise.all([
     resolveAutobotSoulContent(promptActorId),
-    fetchProfileData(userId).catch(() => null),
-    fetchUserPosts(userId, 20).catch(() => ({ posts: [] as SerializedResource[], owner: null })),
+    fetchProfileData(userId, userId).catch(() => null),
+    fetchUserPosts(userId, 20, userId).catch(() => ({ posts: [] as SerializedResource[], owner: null })),
     fetchUserEvents(userId, 20).catch(() => [] as SerializedAgent[]),
     fetchUserGroups(userId, 30).catch(() => [] as SerializedAgent[]),
     fetchUserConnections(userId).catch(() => [] as SerializedAgent[]),

@@ -63,7 +63,7 @@ export async function GET(request: Request) {
       getMyTicketPurchasesAction().catch(() => ({ success: false as const })),
       getAllSubscriptionStatusesAction().catch(() => []),
       fetchMyReceipts().catch(() => ({ receipts: [] })),
-      fetchUserPosts(actorId, 30).catch(() => ({ posts: [], owner: null })),
+      fetchUserPosts(actorId, 30, actorId).catch(() => ({ posts: [], owner: null })),
       fetchUserEvents(actorId, 30).catch(() => []),
       fetchUserGroups(actorId, 30).catch(() => []),
       fetchMarketplaceListings(50).catch(() => []),

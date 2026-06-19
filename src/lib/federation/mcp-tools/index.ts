@@ -98,7 +98,7 @@ function getLocation(value: unknown): { lat: number; lng: number } | null {
 
 async function buildMyProfileBundle(actorId: string) {
   const [profile, savedListingIds, wallet, wallets, transactions, ticketPurchases, subscriptions, receipts, posts, events, groups, marketplaceListings, reactionCounts, connections, homeInstance] = await Promise.all([
-    fetchProfileData(actorId).catch(() => null),
+    fetchProfileData(actorId, actorId).catch(() => null),
     fetchMySavedListingIds().catch(() => [] as string[]),
     getMyWalletAction().catch(() => ({ success: false as const })),
     getMyWalletsAction().catch(() => ({ success: false as const })),
@@ -106,7 +106,7 @@ async function buildMyProfileBundle(actorId: string) {
     getMyTicketPurchasesAction().catch(() => ({ success: false as const })),
     getAllSubscriptionStatusesAction().catch(() => []),
     fetchMyReceipts().catch(() => ({ receipts: [] })),
-    fetchUserPosts(actorId, 30).catch(() => ({ posts: [], owner: null })),
+    fetchUserPosts(actorId, 30, actorId).catch(() => ({ posts: [], owner: null })),
     fetchUserEvents(actorId, 30).catch(() => []),
     fetchUserGroups(actorId, 30).catch(() => []),
     fetchMarketplaceListings(50).catch(() => []),
