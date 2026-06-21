@@ -149,6 +149,7 @@ export async function createPostResource(input: {
   offeringType?: string;
   eventId?: string;
   groupId?: string;
+  ownerId?: string;
   imageUrl?: string | null;
   localeId?: string | null;
   gratitudeRecipientId?: string | null;
@@ -204,6 +205,22 @@ export async function createPostResource(input: {
     }
   }
 
+  // Posting AS a group (group-owned content) is allowed for admins/members with
+  // write access. The post is owned by the group and homes on the group's
+  // instance, mirroring group-owned offerings — versus the default author-owned
+  // post, which homes on the author and is merely surfaced INTO a group.
+  const ownerId = input.ownerId ?? userId;
+  if (ownerId !== userId) {
+    const allowedOwner = await hasGroupWriteAccess(userId, ownerId);
+    if (!allowedOwner) {
+      return {
+        success: false,
+        message: "You do not have permission to post as this group.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+  }
+
   const fallbackTitle = input.content.trim().slice(0, 80);
   const scopedLocaleIds = Array.from(
     new Set(
@@ -235,21 +252,27 @@ export async function createPostResource(input: {
     ? new Date(Date.now() + 60 * 60 * 1000).toISOString()
     : null;
 
-  // Embed author identity in metadata so post cards render correctly without a separate fetch.
-  const authorAgent = await getAgent(userId);
+  // Embed author identity in metadata so post cards render correctly without a
+  // separate fetch. When posting AS a group (ownerId !== userId), the post's
+  // displayed author is the group itself — matching its ownership.
+  const authorAgent = await getAgent(ownerId);
 
   // Scope tags encode chapter/group visibility hints used by feed and discovery queries.
   //
-  // A post is the AUTHOR'S content placed into a group — not the group's own
-  // content. It is homed on the author's instance (canonical home) and surfaced
-  // in the group + global via the POST_CREATED domain event below. It must NOT
-  // be routed to the group's home instance: a federated group whose home
-  // resolves to global (no local node, no parent) sent the post off-box to a
-  // mutation endpoint that never durably materialized it, so the author kept no
-  // copy and the group feed never showed it (while the facade still reported
-  // success). Offerings already home on the author (`targetAgentId = ownerId`);
-  // posts now match. Group write access was already enforced above.
-  const targetAgentId = userId;
+  // A default post is the AUTHOR'S content placed into a group — not the group's
+  // own content. It is homed on the author's instance (canonical home) and
+  // surfaced in the group + global via the POST_CREATED domain event below. It
+  // must NOT be routed to the group's home instance: a federated group whose
+  // home resolves to global (no local node, no parent) sent the post off-box to
+  // a mutation endpoint that never durably materialized it, so the author kept
+  // no copy and the group feed never showed it (while the facade still reported
+  // success).
+  //
+  // A group-owned post (ownerId set to a group the actor has write access to)
+  // instead homes on the group — `targetAgentId = ownerId` — mirroring
+  // group-owned offerings. When ownerId === userId this collapses back to the
+  // author-homed default. Write access for either path was enforced above.
+  const targetAgentId = ownerId;
   const facadeResult = await updateFacade.execute(
     {
       type: "createPostResource",
@@ -263,6 +286,7 @@ export async function createPostResource(input: {
         type: "post",
         content: input.content,
         visibility,
+        ownerId,
         tags: scopeTags,
         embeds: input.embeds ?? [],
         ...(isLive && input.liveLocation ? { location: input.liveLocation } : {}),
@@ -276,6 +300,7 @@ export async function createPostResource(input: {
           offeringType: input.offeringType ?? null,
           eventId: input.eventId ?? null,
           groupId: input.groupId ?? null,
+          ownerId,
           gratitudeRecipientId: input.gratitudeRecipientId ?? null,
           gratitudeRecipientName: input.gratitudeRecipientName ?? null,
           imageUrl: input.imageUrl ?? null,
@@ -336,6 +361,7 @@ export async function createPostResource(input: {
         id: actionResult.resourceId,
         postType: input.postType ?? "social",
         groupId: input.groupId ?? null,
+        ownerId,
       },
     }).catch(() => {});
 

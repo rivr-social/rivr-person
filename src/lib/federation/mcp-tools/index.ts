@@ -254,7 +254,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.posts.create",
-    description: "Create a post as the active actor or into a group where the actor has write access. When isGlobal is true (default), the post is also federated to the configured registry so it surfaces on the global instance.",
+    description: "Create a post as the active actor, into a group where the actor has write access (groupId), or AS a group the actor administers (ownerId — the post is then owned by and homes on that group). When isGlobal is true (default), the post is also federated to the configured registry so it surfaces on the global instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -264,6 +264,10 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         content: { type: "string" },
         postType: { type: "string" },
         groupId: { type: "string" },
+        ownerId: {
+          type: "string",
+          description: "Post AS this group (the actor must have write access). The post is owned by and homes on the group, rather than the actor surfacing their own post into it.",
+        },
         localeId: { type: "string" },
         imageUrl: { type: "string" },
         isGlobal: { type: "boolean" },
@@ -292,6 +296,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         content,
         postType: getString(args.postType) ?? "social",
         groupId: getString(args.groupId) ?? undefined,
+        ownerId: getString(args.ownerId) ?? undefined,
         localeId: getString(args.localeId) ?? undefined,
         imageUrl: getString(args.imageUrl),
         isGlobal,
