@@ -19,6 +19,7 @@ import {
 import { getMyWalletAction } from "@/app/actions/wallet";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { MCP_TOOL_DEFINITIONS } from "@/lib/federation/mcp-tools";
+import { getGroupMembershipRolesForUser } from "@/lib/queries/agents";
 import * as kgClient from "@/lib/kg/autobot-kg-client";
 import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
 import { readAgentSoul } from "@/lib/agent-docs";
@@ -304,14 +305,18 @@ export async function buildAutobotSystemPrompt(
   const tagline = (meta.tagline as string) ?? "";
 
   // Format groups
+  const groupMembershipRoles = await getGroupMembershipRolesForUser(
+    userId,
+    groups.map((group) => group.id),
+  ).catch(() => new Map<string, string>());
   const groupSummary = groups.length > 0
     ? groups.map((g) => {
         const gMeta = (g.metadata ?? {}) as Record<string, unknown>;
-        const role = Array.isArray(gMeta.adminIds) && (gMeta.adminIds as string[]).includes(userId)
-          ? "admin"
-          : Array.isArray(gMeta.creatorId) || gMeta.creatorId === userId
-            ? "creator"
-            : "member";
+        const role = gMeta.creatorId === userId
+          ? "creator"
+          : Array.isArray(gMeta.adminIds) && (gMeta.adminIds as string[]).includes(userId)
+            ? "admin"
+            : groupMembershipRoles.get(g.id) ?? "member";
         return `- ${g.name} (id: ${g.id}, role: ${role})`;
       }).join("\n")
     : "No groups.";
