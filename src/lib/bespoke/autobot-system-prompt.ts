@@ -312,11 +312,19 @@ export async function buildAutobotSystemPrompt(
   const groupSummary = groups.length > 0
     ? groups.map((g) => {
         const gMeta = (g.metadata ?? {}) as Record<string, unknown>;
-        const role = gMeta.creatorId === userId
-          ? "creator"
-          : Array.isArray(gMeta.adminIds) && (gMeta.adminIds as string[]).includes(userId)
-            ? "admin"
-            : groupMembershipRoles.get(g.id) ?? "member";
+        const ledgerRole = groupMembershipRoles.get(g.id);
+        const isPrimeAgent = gMeta.creatorId === userId;
+        const isAdmin =
+          (Array.isArray(gMeta.adminIds) && (gMeta.adminIds as string[]).includes(userId)) ||
+          ledgerRole === "admin" ||
+          ledgerRole === "creator";
+        const role = isPrimeAgent && isAdmin
+          ? "prime agent and admin"
+          : isPrimeAgent
+            ? "prime agent"
+            : isAdmin
+              ? "admin"
+              : ledgerRole ?? "member";
         return `- ${g.name} (id: ${g.id}, role: ${role})`;
       }).join("\n")
     : "No groups.";
