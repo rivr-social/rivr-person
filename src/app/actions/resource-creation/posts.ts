@@ -19,6 +19,7 @@ import { getAgent } from "@/lib/queries/agents";
 import { syncMurmurationsProfilesForActor } from "@/lib/murmurations";
 import { ensureLocalNode, queueEntityExportEvents } from "@/lib/federation";
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/index";
+import { routeWrite } from "@/lib/federation/write-router";
 
 import {
   resolveAuthenticatedUserId,
@@ -273,7 +274,12 @@ export async function createPostResource(input: {
   // group-owned offerings. When ownerId === userId this collapses back to the
   // author-homed default. Write access for either path was enforced above.
   const targetAgentId = ownerId;
-  const facadeResult = await updateFacade.execute(
+  // Group-owned posts may be homed on a sovereign group instance. Use the
+  // current write router so that cross-instance requests carry the scoped peer
+  // secret and actor binding; the legacy UpdateFacade only forwarded the node
+  // admin key and caused correctly authorized MCP calls to fail remotely with
+  // "Authentication required".
+  const facadeResult = await routeWrite(
     {
       type: "createPostResource",
       actorId: userId,
