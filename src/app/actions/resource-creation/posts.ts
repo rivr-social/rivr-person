@@ -40,7 +40,9 @@ async function maybeCreateLinkedMeetingBundle(params: {
   groupId?: string;
   liveLocation?: { lat: number; lng: number } | null;
   localeId?: string | null;
+  regionId?: string | null;
   scopedLocaleIds?: string[];
+  scopedRegionIds?: string[];
   scopedGroupIds?: string[];
   scopedUserIds?: string[];
   isGlobal?: boolean;
@@ -63,7 +65,9 @@ async function maybeCreateLinkedMeetingBundle(params: {
     ownerId: params.groupId,
     groupId: params.groupId,
     localeId: params.localeId ?? null,
+    regionId: params.regionId ?? null,
     scopedLocaleIds: params.scopedLocaleIds,
+    scopedRegionIds: params.scopedRegionIds,
     scopedGroupIds: Array.from(new Set([params.groupId, ...(params.scopedGroupIds ?? [])])),
     scopedUserIds: params.scopedUserIds,
     isGlobal: params.isGlobal,
@@ -153,9 +157,11 @@ export async function createPostResource(input: {
   ownerId?: string;
   imageUrl?: string | null;
   localeId?: string | null;
+  regionId?: string | null;
   gratitudeRecipientId?: string | null;
   gratitudeRecipientName?: string | null;
   scopedLocaleIds?: string[];
+  scopedRegionIds?: string[];
   scopedGroupIds?: string[];
   scopedUserIds?: string[];
   isGlobal?: boolean;
@@ -231,19 +237,33 @@ export async function createPostResource(input: {
       ].filter((id) => id && id !== "all"),
     ),
   );
+  // Regions (bioregions/basins) are place-typed agents like locales, just at a
+  // larger geographic scope. They ride the same place-scope machinery: their ids
+  // join `chapterTags` so place-aware feeds surface the content, while
+  // `scopedRegionIds` is persisted distinctly so region scope stays
+  // distinguishable from locale scope for UI and discovery.
+  const scopedRegionIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(input.scopedRegionIds) ? input.scopedRegionIds : []),
+        ...(input.regionId && input.regionId !== "all" ? [input.regionId] : []),
+      ].filter((id) => id && id !== "all"),
+    ),
+  );
   const scopedGroupIds = Array.isArray(input.scopedGroupIds) ? input.scopedGroupIds : [];
   const scopedUserIds = Array.isArray(input.scopedUserIds) ? input.scopedUserIds : [];
-  const chapterTags = scopedLocaleIds;
+  const chapterTags = Array.from(new Set([...scopedLocaleIds, ...scopedRegionIds]));
   const groupTags = Array.from(new Set([...(input.groupId ? [input.groupId] : []), ...scopedGroupIds]));
   const scopeTags = Array.from(new Set([...chapterTags, ...groupTags, ...scopedUserIds]));
   const hasScopedLocales = scopedLocaleIds.length > 0;
+  const hasScopedRegions = scopedRegionIds.length > 0;
   const hasScopedGroups = scopedGroupIds.length > 0;
   const hasScopedUsers = scopedUserIds.length > 0;
   const wantsGlobal = input.isGlobal !== false;
   let visibility: VisibilityLevel = "public";
   if (hasScopedGroups || hasScopedUsers) {
     visibility = "private";
-  } else if (hasScopedLocales || !wantsGlobal) {
+  } else if (hasScopedLocales || hasScopedRegions || !wantsGlobal) {
     visibility = "locale";
   }
 
@@ -314,6 +334,7 @@ export async function createPostResource(input: {
           chapterTags,
           groupTags,
           scopedLocaleIds,
+          scopedRegionIds,
           scopedGroupIds,
           scopedUserIds,
           isGlobal: wantsGlobal,
@@ -349,7 +370,9 @@ export async function createPostResource(input: {
             groupId: input.groupId,
             liveLocation: input.liveLocation,
             localeId: input.localeId ?? null,
+            regionId: input.regionId ?? null,
             scopedLocaleIds,
+            scopedRegionIds,
             scopedGroupIds,
             scopedUserIds,
             isGlobal: wantsGlobal,
@@ -450,9 +473,11 @@ export async function createPostCommerceResource(input: {
   groupId?: string;
   imageUrl?: string | null;
   localeId?: string | null;
+  regionId?: string | null;
   gratitudeRecipientId?: string | null;
   gratitudeRecipientName?: string | null;
   scopedLocaleIds?: string[];
+  scopedRegionIds?: string[];
   scopedGroupIds?: string[];
   scopedUserIds?: string[];
   isGlobal?: boolean;
@@ -664,19 +689,32 @@ export async function createPostCommerceResource(input: {
       ].filter((id) => id && id !== "all"),
     ),
   );
+  // Regions are place-typed agents (metadata.placeType region/basin) just like
+  // locales. They scope content the same way locales do — merged into the
+  // place-scope (chapterTags) set and drive the place-scoped "locale"
+  // visibility level — but are tracked distinctly in metadata.scopedRegionIds.
+  const scopedRegionIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(input.scopedRegionIds) ? input.scopedRegionIds : []),
+        ...(input.regionId && input.regionId !== "all" ? [input.regionId] : []),
+      ].filter((id) => id && id !== "all"),
+    ),
+  );
   const scopedGroupIds = Array.isArray(input.scopedGroupIds) ? input.scopedGroupIds : [];
   const scopedUserIds = Array.isArray(input.scopedUserIds) ? input.scopedUserIds : [];
-  const chapterTags = scopedLocaleIds;
+  const chapterTags = Array.from(new Set([...scopedLocaleIds, ...scopedRegionIds]));
   const groupTags = Array.from(new Set([...(input.groupId ? [input.groupId] : []), ...scopedGroupIds]));
   const scopeTags = Array.from(new Set([...chapterTags, ...groupTags, ...scopedUserIds]));
   const hasScopedLocales = scopedLocaleIds.length > 0;
+  const hasScopedRegions = scopedRegionIds.length > 0;
   const hasScopedGroups = scopedGroupIds.length > 0;
   const hasScopedUsers = scopedUserIds.length > 0;
   const wantsGlobal = input.isGlobal !== false;
   let visibility: VisibilityLevel = "public";
   if (hasScopedGroups || hasScopedUsers) {
     visibility = "private";
-  } else if (hasScopedLocales || !wantsGlobal) {
+  } else if (hasScopedLocales || hasScopedRegions || !wantsGlobal) {
     visibility = "locale";
   }
   const isLive = (input.isLiveInvitation ?? false) && input.liveLocation != null;
@@ -772,6 +810,7 @@ export async function createPostCommerceResource(input: {
             priceCents: item.priceCents,
           })),
           scopedLocaleIds,
+          scopedRegionIds,
           scopedGroupIds,
           scopedUserIds,
           isGlobal: wantsGlobal,
@@ -886,6 +925,7 @@ export async function createPostCommerceResource(input: {
             chapterTags,
             groupTags,
             scopedLocaleIds,
+            scopedRegionIds,
             scopedGroupIds,
             scopedUserIds,
             isGlobal: wantsGlobal,
