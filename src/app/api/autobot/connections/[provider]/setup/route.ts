@@ -78,6 +78,19 @@ function ensureHttpUrl(value: string, label: string): string {
   return trimmed;
 }
 
+function ensureAllowedSignalBridge(value: string): string {
+  const normalized = ensureHttpUrl(value, "Signal service URL");
+  const origin = new URL(normalized).origin;
+  const allowedOrigins = (process.env.SIGNAL_BRIDGE_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  if (!allowedOrigins.includes(origin)) {
+    throw new Error("Signal bridge origin is not in SIGNAL_BRIDGE_ALLOWED_ORIGINS.");
+  }
+  return normalized;
+}
+
 async function ensureExistingPath(pathValue: string, label: string): Promise<string> {
   const trimmed = pathValue.trim();
   if (!trimmed) {
@@ -180,12 +193,42 @@ export async function POST(request: Request, context: RouteContext) {
         if (!serviceUrl) {
           throw new Error("Signal service URL is required.");
         }
-        config.serviceUrl = ensureHttpUrl(serviceUrl, "Signal service URL");
+        config.serviceUrl = ensureAllowedSignalBridge(serviceUrl);
         if (!config.phoneNumber?.trim()) {
           throw new Error("Signal phone number is required.");
         }
         accountLabel = accountLabel ?? "Signal";
         externalAccountId = externalAccountId ?? config.phoneNumber.trim();
+        break;
+      }
+      case "substack": {
+        const publicationUrl = config.publicationUrl?.trim();
+        if (!publicationUrl) throw new Error("Substack publication URL is required.");
+        config.publicationUrl = ensureHttpUrl(publicationUrl, "Substack publication URL");
+        if (config.feedUrl?.trim()) {
+          config.feedUrl = ensureHttpUrl(config.feedUrl, "Substack feed URL");
+        } else {
+          config.feedUrl = `${config.publicationUrl.replace(/\/$/, "")}/feed`;
+        }
+        accountLabel = accountLabel ?? new URL(config.publicationUrl).hostname;
+        externalAccountId = externalAccountId ?? config.publicationUrl;
+        break;
+      }
+      case "luma": {
+        const calendarUrl = config.calendarUrl?.trim();
+        if (!calendarUrl) throw new Error("Luma calendar URL is required.");
+        config.calendarUrl = ensureHttpUrl(calendarUrl, "Luma calendar URL");
+        accountLabel = accountLabel ?? "Luma Calendar";
+        externalAccountId = externalAccountId ?? config.calendarUrl;
+        break;
+      }
+      case "x": {
+        const handle = config.handle?.trim().replace(/^@/, "");
+        if (!handle) throw new Error("X handle is required.");
+        if (!config.bearerToken?.trim()) throw new Error("X bearer token is required.");
+        config.handle = handle;
+        accountLabel = accountLabel ?? `@${handle}`;
+        externalAccountId = externalAccountId ?? handle;
         break;
       }
       case "obsidian_vault": {

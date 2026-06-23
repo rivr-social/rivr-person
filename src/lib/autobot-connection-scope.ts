@@ -64,7 +64,8 @@ export function buildConnectionsRedirectUrl(
   params?: Record<string, string | null | undefined>,
 ): string {
   const normalizedBaseUrl = baseUrl.trim() || "http://localhost:3000";
-  const url = new URL("/autobot", normalizedBaseUrl);
+  const url = new URL("/settings", normalizedBaseUrl);
+  url.searchParams.set("tab", "connectors");
   if (params) {
     for (const [key, value] of Object.entries(params)) {
       if (typeof value === "string" && value.trim()) {
@@ -72,6 +73,5 @@ export function buildConnectionsRedirectUrl(
       }
     }
   }
-  url.hash = "connections";
   return url.toString();
 }

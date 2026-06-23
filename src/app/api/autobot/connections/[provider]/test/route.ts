@@ -140,6 +140,7 @@ export async function POST(_request: Request, context: RouteContext) {
     switch (provider) {
       case "google_docs":
       case "google_calendar":
+      case "gmail":
         result = await testOAuthTokenValid(
           actorId,
           "google_workspace",
@@ -291,6 +292,15 @@ export async function POST(_request: Request, context: RouteContext) {
           result = { valid: false, error: "No Signal service URL configured." };
           break;
         }
+        const origin = new URL(serviceUrl).origin;
+        const allowedOrigins = (process.env.SIGNAL_BRIDGE_ALLOWED_ORIGINS ?? "")
+          .split(",")
+          .map((entry) => entry.trim().replace(/\/$/, ""))
+          .filter(Boolean);
+        if (!allowedOrigins.includes(origin)) {
+          result = { valid: false, error: "Signal bridge origin is not in SIGNAL_BRIDGE_ALLOWED_ORIGINS." };
+          break;
+        }
         try {
           const response = await fetch(`${serviceUrl}/v1/about`, { cache: "no-store" });
           result = {
@@ -319,6 +329,49 @@ export async function POST(_request: Request, context: RouteContext) {
           break;
         }
         result = { valid: true, label: `Phone: ${phoneNumberId}` };
+        break;
+      }
+
+      case "substack": {
+        const publicationUrl = connection?.config.publicationUrl?.trim();
+        if (!publicationUrl) {
+          result = { valid: false, error: "No Substack publication URL configured." };
+          break;
+        }
+        const url = new URL(publicationUrl);
+        if (url.protocol !== "https:" || !(url.hostname === "substack.com" || url.hostname.endsWith(".substack.com"))) {
+          result = { valid: false, error: "Publication must be an https://*.substack.com URL." };
+          break;
+        }
+        const response = await fetch(`${url.origin}/feed`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        result = { valid: response.ok, label: response.ok ? url.hostname : undefined, error: response.ok ? undefined : `Substack feed returned ${response.status}.` };
+        break;
+      }
+
+      case "luma": {
+        const calendarUrl = connection?.config.calendarUrl?.trim();
+        if (!calendarUrl) {
+          result = { valid: false, error: "No Luma calendar URL configured." };
+          break;
+        }
+        const url = new URL(calendarUrl);
+        if (url.protocol !== "https:" || !(url.hostname === "lu.ma" || url.hostname.endsWith(".lu.ma"))) {
+          result = { valid: false, error: "Calendar must be an https://lu.ma URL." };
+          break;
+        }
+        const response = await fetch(url, { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        result = { valid: response.ok, label: response.ok ? url.pathname.replace(/^\//, "") || "Luma" : undefined, error: response.ok ? undefined : `Luma returned ${response.status}.` };
+        break;
+      }
+
+      case "x": {
+        const bearerToken = connection?.config.bearerToken?.trim();
+        if (!bearerToken) {
+          result = { valid: false, error: "No X bearer token configured." };
+          break;
+        }
+        const response = await fetch("https://api.x.com/2/users/me", { headers: { Authorization: `Bearer ${bearerToken}` }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        result = { valid: response.ok, label: response.ok ? connection?.accountLabel : undefined, error: response.ok ? undefined : `X API returned ${response.status}.` };
         break;
       }
 

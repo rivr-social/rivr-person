@@ -65,6 +65,16 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   try {
+    // Sync backend note (messenger-class providers):
+    // telegram, whatsapp_business, signal, slack, facebook, and instagram are
+    // intended to sync via mautrix bridges on RIVR's existing Matrix/Synapse
+    // infra, NOT bespoke per-provider API polling. The connect/guided-setup UI
+    // and the connector definitions still ship in the Connectors tab so all 13
+    // providers are configurable; messenger providers whose message sync is
+    // delegated to a mautrix bridge intentionally have NO entry below and fall
+    // through to the clean "Sync is not implemented" seam rather than running a
+    // bespoke poll loop. Non-messenger connectors (Google Drive/Calendar/Gmail,
+    // Notion, Substack, Luma, X) stay on direct API/OAuth sync.
     const syncDispatch: Record<string, () => Promise<ConnectorSyncResult>> = {
       google_docs: () => syncGoogleDocsConnection(actorId, connection),
       google_calendar: () => syncGoogleCalendarConnection(actorId, connection),

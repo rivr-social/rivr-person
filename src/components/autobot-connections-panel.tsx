@@ -164,6 +164,21 @@ function getGuidedSetupFields(
         { key: "phoneNumber", label: "Phone Number", placeholder: "+15551234567" },
         { key: "deviceName", label: "Device Name", placeholder: "Rivr Signal Bridge" },
       ];
+    case "substack":
+      return [
+        { key: "publicationUrl", label: "Publication URL", placeholder: "https://example.substack.com", inputType: "url" },
+        { key: "feedUrl", label: "Feed URL", placeholder: "https://example.substack.com/feed", inputType: "url" },
+      ];
+    case "luma":
+      return [
+        { key: "calendarUrl", label: "Calendar URL", placeholder: "https://lu.ma/example", inputType: "url" },
+        { key: "apiKey", label: "API Key", placeholder: "Optional API key", inputType: "password" },
+      ];
+    case "x":
+      return [
+        { key: "handle", label: "X Handle", placeholder: "@example" },
+        { key: "bearerToken", label: "Bearer Token", placeholder: "X API bearer token", inputType: "password" },
+      ];
     case "obsidian_vault":
     case "parachute_vault":
       return [
@@ -519,7 +534,11 @@ function getProviderSetupSteps(
   }
 }
 
-export function AutobotConnectionsPanel() {
+export function AutobotConnectionsPanel({
+  providers,
+}: {
+  providers?: AutobotConnectionProvider[];
+} = {}) {
   const { toast } = useToast();
   const searchParams = useSearchParams();
   const [connections, setConnections] = useState<AutobotConnection[]>([]);
@@ -790,7 +809,9 @@ export function AutobotConnectionsPanel() {
         </CardContent>
       </Card>
 
-      {definitions.map((definition) => {
+      {definitions
+        .filter((definition) => !providers || providers.includes(definition.provider))
+        .map((definition) => {
         const connection =
           connections.find((item) => item.provider === definition.provider) ?? {
             provider: definition.provider,

@@ -36,6 +36,7 @@ import type { AppReleaseStatus } from "@/lib/app-release";
 import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { DomainSettings } from "@/components/domain-settings";
 import { RecoverySeedPanel } from "@/components/recovery-seed-panel";
+import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
 
 export type SettingsInitialData = {
   name: string;
@@ -67,7 +68,7 @@ type SettingsTab =
   | "notifications"
   | "appearance"
   | "agent-hq"
-  | "connections"
+  | "connectors"
   | "seller"
   | "federation"
   | "security";
@@ -78,7 +79,7 @@ const SETTINGS_TAB_VALUES: SettingsTab[] = [
   "notifications",
   "appearance",
   "agent-hq",
-  "connections",
+  "connectors",
   "seller",
   "federation",
   "security",
@@ -323,11 +324,11 @@ export function SettingsForm({
   const { toast } = useToast();
   const { theme, setTheme } = useTheme();
   const requestedTab = searchParams.get("tab");
-  const initialTab: SettingsTab = SETTINGS_TAB_VALUES.includes(
-    requestedTab as SettingsTab,
-  )
-    ? (requestedTab as SettingsTab)
-    : "account";
+  const initialTab: SettingsTab = requestedTab === "connections"
+    ? "connectors"
+    : SETTINGS_TAB_VALUES.includes(requestedTab as SettingsTab)
+      ? (requestedTab as SettingsTab)
+      : "account";
 
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -722,6 +723,7 @@ export function SettingsForm({
           <TabsTrigger value="privacy">Privacy</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
+          <TabsTrigger value="connectors">Connectors</TabsTrigger>
           <TabsTrigger value="seller">Seller</TabsTrigger>
           <TabsTrigger value="federation">Federation</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -1086,6 +1088,16 @@ export function SettingsForm({
               {isSaving ? "Saving..." : "Save Changes"}
             </Button>
           </div>
+        </TabsContent>
+
+        <TabsContent value="connectors" className="space-y-4">
+          <AutobotConnectionsPanel
+            providers={[
+              "google_docs", "google_calendar", "gmail", "notion",
+              "telegram", "whatsapp_business", "signal", "slack",
+              "facebook", "instagram", "substack", "luma", "x",
+            ]}
+          />
         </TabsContent>
 
         <TabsContent value="privacy" className="space-y-6">

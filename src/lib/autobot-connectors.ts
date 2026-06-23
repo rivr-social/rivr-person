@@ -2,6 +2,7 @@ export type AutobotConnectionProvider =
   | "teller"
   | "google_docs"
   | "google_calendar"
+  | "gmail"
   | "proton_docs"
   | "notion"
   | "parachute_vault"
@@ -17,6 +18,9 @@ export type AutobotConnectionProvider =
   | "signal"
   | "facebook"
   | "instagram"
+  | "substack"
+  | "luma"
+  | "x"
   | "wolfram"
   | "github"
   | "email_smtp"
@@ -90,14 +94,25 @@ export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
   },
   {
     provider: "google_docs",
-    label: "Google Docs",
-    description: "Two-way document sync, including structured doc imports for KG ingestion.",
+    label: "Google Drive",
+    description: "Connect Drive files and Google Docs for document sync and knowledge ingestion.",
     authStrategy: "oauth2",
     authProvider: "google",
     modules: ["docs", "kg"],
     capabilities: ["read_docs", "write_docs", "sync_tabs", "kg_ingest"],
     configHints: ["folderId", "defaultDocId", "maxResults"],
     supportsSync: true,
+  },
+  {
+    provider: "gmail",
+    label: "Gmail",
+    description: "Connect Gmail for email ingestion, drafting, sending, and notifications.",
+    authStrategy: "oauth2",
+    authProvider: "google",
+    modules: ["messages", "kg"],
+    capabilities: ["read_email", "send_email", "kg_ingest"],
+    configHints: ["labelIds", "fromAddress"],
+    supportsSync: false,
   },
   {
     provider: "google_calendar",
@@ -267,6 +282,36 @@ export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
     capabilities: ["read_media", "write_media", "kg_ingest"],
     configHints: ["accountId"],
     supportsSync: true,
+  },
+  {
+    provider: "substack",
+    label: "Substack",
+    description: "Connect a publication feed for post import and publishing context.",
+    authStrategy: "manual",
+    modules: ["docs", "media", "kg"],
+    capabilities: ["read_posts", "kg_ingest"],
+    configHints: ["publicationUrl", "feedUrl"],
+    supportsSync: false,
+  },
+  {
+    provider: "luma",
+    label: "Luma",
+    description: "Connect a Luma calendar for event import and registration links.",
+    authStrategy: "token",
+    modules: ["calendar", "groups"],
+    capabilities: ["read_events", "sync_events"],
+    configHints: ["calendarUrl", "apiKey"],
+    supportsSync: false,
+  },
+  {
+    provider: "x",
+    label: "X",
+    description: "Connect an X account for social publishing and timeline ingestion.",
+    authStrategy: "token",
+    modules: ["messages", "media", "kg"],
+    capabilities: ["read_posts", "write_posts", "kg_ingest"],
+    configHints: ["handle", "bearerToken"],
+    supportsSync: false,
   },
   {
     provider: "wolfram",
