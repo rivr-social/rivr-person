@@ -23,6 +23,10 @@ import { getGroupMembershipRolesForUser } from "@/lib/queries/agents";
 import * as kgClient from "@/lib/kg/autobot-kg-client";
 import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
 import { readAgentSoul } from "@/lib/agent-docs";
+import { discoverAgentProjects, loadWorkspaceRegistry } from "@/lib/agent-hq";
+import type { AgentWorkspace } from "@/lib/agent-hq";
+import { BUILDER_CAPABILITIES_BLOCK } from "@/lib/bespoke/builder-system-prompt";
+import type { SiteFiles } from "@/lib/bespoke/site-files";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 
 // ---------------------------------------------------------------------------
@@ -166,6 +170,9 @@ I avoid brittle corporate tone, cliche futurism, hollow hype, empty abstraction.
 const MAX_CONTEXT_CHARS = 8000;
 const TRUNCATION_NOTICE = "\n... (truncated for context limit)";
 
+/** Max chars of build-session file contents to inline into the prompt. */
+const MAX_SITE_FILES_CHARS = 12_000;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -202,6 +209,70 @@ function summarizeResource(resource: SerializedResource): string {
 }
 
 // ---------------------------------------------------------------------------
+// Builder context formatters (apps filesystem + active build session)
+// ---------------------------------------------------------------------------
+
+function summarizeWorkspace(workspace: AgentWorkspace): string {
+  const parts = [`- ${workspace.label} (id: ${workspace.id}, scope: ${workspace.scope})`];
+  if (workspace.packageName) parts.push(`  package: ${workspace.packageName}`);
+  if (workspace.liveSubdomain) parts.push(`  live: ${workspace.liveSubdomain}`);
+  if (workspace.description) parts.push(`  ${workspace.description.slice(0, 140)}`);
+  return parts.join("\n");
+}
+
+/**
+ * Builds the apps-filesystem summary block: the discovered agent workspaces
+ * (foundation / app / shared) the assistant can build into. Falls back to the
+ * persisted workspace registry when live discovery fails (e.g. shared instances
+ * without host access). Returns an empty string when nothing is available.
+ */
+async function buildWorkspaceSummary(): Promise<string> {
+  let workspaces: AgentWorkspace[] = [];
+  try {
+    workspaces = await discoverAgentProjects();
+  } catch {
+    try {
+      workspaces = (await loadWorkspaceRegistry()).workspaces;
+    } catch {
+      workspaces = [];
+    }
+  }
+
+  if (workspaces.length === 0) return "";
+
+  return `\n## App Workspaces (filesystem)\nYou can build and edit files in these workspaces. Use the builder capabilities below to author site/app files for them:\n${workspaces
+    .map(summarizeWorkspace)
+    .join("\n")}\n`;
+}
+
+/**
+ * Builds the active build-session block: a listing of the current site files,
+ * with contents inlined up to a char budget (large files are noted but elided).
+ * Returns an empty string when no build session files are provided.
+ */
+function buildSiteFilesContext(siteFiles: SiteFiles | undefined): string {
+  if (!siteFiles) return "";
+  const fileNames = Object.keys(siteFiles);
+  if (fileNames.length === 0) return "";
+
+  let body = "";
+  let totalChars = 0;
+  for (const name of fileNames) {
+    const content = siteFiles[name] ?? "";
+    const header = `### ${name}\n\`\`\`\n`;
+    const footer = "\n```\n\n";
+    if (totalChars + header.length + content.length + footer.length > MAX_SITE_FILES_CHARS) {
+      body += `### ${name}\n(content omitted — ${content.length} characters)\n\n`;
+      continue;
+    }
+    body += header + content + footer;
+    totalChars += header.length + content.length + footer.length;
+  }
+
+  return `\n## Active Build Session (${fileNames.length} files)\nA site build is in progress. These are the current files — when the user asks for changes, output the COMPLETE updated files using the builder output format:\n\n${body}`;
+}
+
+// ---------------------------------------------------------------------------
 // Tool Definitions Formatter
 // ---------------------------------------------------------------------------
 
@@ -235,6 +306,18 @@ type BuildAutobotPromptOptions = {
   activePersonaId?: string;
   activePersonaName?: string;
   includedPersonaKgIds?: string[];
+  /**
+   * The current site files of an active build session. When provided, the
+   * prompt inlines them and folds in builder capabilities so the one assistant
+   * can both converse and build. Omit for a pure-chat turn.
+   */
+  buildSessionFiles?: SiteFiles;
+  /**
+   * Whether to include the apps-filesystem workspace summary + builder
+   * capabilities in the prompt. Defaults to `true` so the unified assistant
+   * always knows it can build; set `false` only for narrow chat-only callers.
+   */
+  includeBuilderContext?: boolean;
 };
 
 async function buildAdditionalPersonaKgContext(personaIds: string[]): Promise<string> {
@@ -270,6 +353,7 @@ export async function buildAutobotSystemPrompt(
   const includedPersonaKgIds = Array.from(
     new Set((options?.includedPersonaKgIds ?? []).filter((personaId) => personaId && personaId !== explicitActivePersonaId)),
   );
+  const includeBuilderContext = options?.includeBuilderContext ?? true;
 
   // Load soul identity document and user context in parallel
   const [
@@ -372,6 +456,16 @@ export async function buildAutobotSystemPrompt(
   // external knowledge alongside their Rivr data.
   const personKgContext = await buildPersonKgContext(promptActorId);
 
+  // Builder context — the apps filesystem the assistant can build into, plus the
+  // current build-session files (if any), plus the shared builder capabilities.
+  // This folds the dedicated builder prompt into the one assistant prompt so a
+  // single agent drives both chat and building.
+  const workspaceSummary = includeBuilderContext ? await buildWorkspaceSummary() : "";
+  const siteFilesContext = buildSiteFilesContext(options?.buildSessionFiles);
+  const builderContext = includeBuilderContext
+    ? `\n---\n\n# Builder Context\n${workspaceSummary}${siteFilesContext}\n${BUILDER_CAPABILITIES_BLOCK}\n`
+    : siteFilesContext;
+
   // Build the prompt — soul identity first, then structured context
   return `${soul.content}
 
@@ -473,7 +567,7 @@ If the user asks for modifications ("change the price to $420", "make it 24 hour
 - Show enthusiasm for the user's activities.
 - When suggesting, explain your reasoning briefly ("I see you're in the Boulder Bikers group, which would be a great place to list this").
 - If you're unsure about something, ask rather than guess.
-${personKgContext}${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}`;
+${personKgContext}${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}${builderContext}`;
 }
 
 // ---------------------------------------------------------------------------

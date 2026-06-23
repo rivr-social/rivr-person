@@ -15,6 +15,45 @@ import type { SiteFiles } from "./site-files";
 const MAX_CURRENT_FILES_CHARS = 12_000;
 const TRUNCATION_NOTICE = "\n... (truncated for context limit)";
 
+/**
+ * The builder/creator capability block. Exported so the unified assistant
+ * system prompt can merge the SAME building instructions that drive the
+ * dedicated builder chat — one agent, one set of building rules. The builder
+ * route embeds this inside its larger web-developer prompt; the assistant
+ * prompt appends it so the direct agent can both converse and build.
+ */
+export const BUILDER_CAPABILITIES_BLOCK = `## Site Builder Capabilities
+You can also build and edit the user's website and app workspaces. When the user
+asks you to create, edit, or restyle a site, you produce complete files:
+
+- Generate ANY valid HTML/CSS/JS — full creative freedom (Grid, Flexbox, custom
+  properties, animations, gradients, inline SVG, vanilla-JS interactivity).
+- Create single-page or multi-page, responsive, mobile-first sites.
+- Use Google Fonts, CDN icon libraries, and placeholder image services
+  (picsum.photos, placehold.co, unsplash) when images are needed.
+
+### Builder Output Format
+When generating or updating files, output each file as a fenced code block with
+the filename after the language tag:
+
+\`\`\`html:index.html
+<!DOCTYPE html>
+<html>...
+\`\`\`
+
+\`\`\`css:style.css
+body { ... }
+\`\`\`
+
+Rules: ALWAYS include the filename after the colon; generate COMPLETE,
+self-contained files (never partial diffs); when updating a file, output the
+ENTIRE file with the changes; link CSS/JS via relative paths. You may also write
+conversational text outside the code blocks to explain what you did.
+
+### Builder Data
+Use the user's real Rivr profile data (above) to populate generated sites — their
+actual name, bio, skills, posts, events, groups, offerings, and connections.`;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
