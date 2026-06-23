@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { builderDataSources } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import type { DataSourceKind, DataSourceConfig } from "@/lib/bespoke/types";
+import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -53,10 +54,11 @@ export async function GET(): Promise<NextResponse> {
   }
 
   try {
+    const { directAgentId } = await resolveDirectAgent(session.user.id);
     const rows = await db
       .select()
       .from(builderDataSources)
-      .where(eq(builderDataSources.agentId, session.user.id));
+      .where(eq(builderDataSources.agentId, directAgentId));
 
     const sources = rows.map((row) => ({
       id: row.id,
@@ -108,7 +110,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
       );
     }
 
-    const agentId = session.user.id;
+    const { directAgentId: agentId } = await resolveDirectAgent(session.user.id);
     const kind = body.kind;
     const label = body.label ?? kind;
     const enabled = body.enabled ?? true;
