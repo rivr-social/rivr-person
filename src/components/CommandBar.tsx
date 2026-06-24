@@ -242,13 +242,13 @@ const COMMANDS: CommandDefinition[] = [
     aliases: ["builder", "open builder", "/builder"],
   },
   {
-    id: "autobot",
-    label: "Autobot",
-    description: "Open the autobot control plane.",
-    path: "/autobot",
+    id: "assistant-settings",
+    label: "Assistant Settings",
+    description: "Configure your AI assistant (name, roles, knowledge, access).",
+    path: "/settings?tab=agent-hq",
     group: "Tools",
     icon: Bot,
-    aliases: ["autobot", "/autobot", "open autobot"],
+    aliases: ["assistant", "autobot", "agent settings", "configure assistant", "agent hq"],
   },
   {
     id: "agent-chat",

@@ -52,8 +52,8 @@ export function DeviceAuthorizeClient({ userCode }: Props) {
         </p>
         <p className="text-sm text-muted-foreground">
           You can also approve pending device codes from the{" "}
-          <Link href="/autobot" className="underline hover:text-foreground">
-            Agent HQ dashboard
+          <Link href="/settings?tab=agent-hq" className="underline hover:text-foreground">
+            Assistant settings (Access tab)
           </Link>.
         </p>
       </div>

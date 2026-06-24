@@ -58,7 +58,7 @@ export function BottomNav() {
 
   const navItems = [
     { name: "Home", href: "/", icon: Home, active: pathname === "/", external: false },
-    { name: "Agent HQ", href: "/autobot", icon: Bot, active: pathname.startsWith("/autobot"), external: false },
+    { name: "Assistant", href: "/autobot/chat", icon: Bot, active: pathname.startsWith("/autobot"), external: false },
     { name: "Create", href: "/create", icon: PlusSquare, active: pathname.startsWith("/create"), external: false },
     { name: "Profile", href: profileHref, icon: User, active: pathname.startsWith("/profile"), external: false },
   ]
