@@ -7,6 +7,7 @@ import { resolveHomeInstance } from "@/lib/federation/resolution";
 import {
   authorizeFederationRequest,
   bindAuthorizedFederationActor,
+  resolveLocalActorId,
 } from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
@@ -254,9 +255,21 @@ export async function POST(request: Request) {
       );
     }
 
+    // Normalize the peer-supplied actor id to this instance's local agent id.
+    // Under peer-secret (server-to-server) trust the bound actorId is the
+    // FORWARDING instance's local id for the human; downstream authority checks
+    // run against THIS instance's graph and must see the receiver-local id. The
+    // mapping comes from federation_entity_map (read-only — never minted here).
+    // peerNodeId/peerTrusted ride on the original authorization (a persona
+    // binding only narrows actorId, never the peer fields). Unmapped actors pass
+    // through unchanged.
+    const effectiveActorId = authorization.peerTrusted
+      ? await resolveLocalActorId(authorization.peerNodeId, actorBinding.actorId)
+      : actorBinding.actorId;
+
     return handleLegacyMutation(
       body,
-      actorBinding.actorId,
+      effectiveActorId,
       config,
       remoteInstanceSlug,
       remoteInstanceId,
