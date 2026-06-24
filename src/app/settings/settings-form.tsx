@@ -38,6 +38,7 @@ import { DomainSettings } from "@/components/domain-settings";
 import { RecoverySeedPanel } from "@/components/recovery-seed-panel";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
 import { AssistantSettingsPanel } from "@/components/assistant-settings-panel";
+import { USER_CONNECTABLE_PROVIDERS } from "@/lib/autobot-connectors";
 
 export type SettingsInitialData = {
   name: string;
@@ -1105,13 +1106,7 @@ export function SettingsForm({
         )}
 
         <TabsContent value="connectors" className="space-y-4">
-          <AutobotConnectionsPanel
-            providers={[
-              "google_docs", "google_calendar", "gmail", "notion",
-              "telegram", "whatsapp_business", "signal", "slack",
-              "facebook", "instagram", "substack", "luma", "x",
-            ]}
-          />
+          <AutobotConnectionsPanel providers={USER_CONNECTABLE_PROVIDERS} />
         </TabsContent>
 
         <TabsContent value="privacy" className="space-y-6">

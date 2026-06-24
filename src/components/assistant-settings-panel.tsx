@@ -10,7 +10,11 @@
  * Personas are configured from their own editor (`/personas/[id]/edit`).
  *
  * Tabs: Identity (with an editable assistant NAME) · Roles · Knowledge ·
- * Voice · Access (MCP token + device approvals) · Connections · Activity.
+ * Voice · Access (MCP token + device approvals) · Connectors · Activity.
+ *
+ * The Connectors tab is the PER-AGENT connector surface (A2): connectors are
+ * owned by this direct agent, configured here, and the assistant inherits them
+ * (A3). The same connector catalog is mirrored on `/settings?tab=connectors`.
  *
  * The assistant name is the direct agent's `agents.name` column, read/written
  * through `/api/autobot/identity` (which resolves the caller's own direct agent
@@ -29,6 +33,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { Activity, Bot, Loader2, Network } from "lucide-react";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
+import { USER_CONNECTABLE_PROVIDERS } from "@/lib/autobot-connectors";
 import { DeviceApprovals } from "@/components/device-approvals";
 import { McpTokenCard } from "@/components/mcp-token-card";
 import { AgentRolesTab } from "@/components/hub/agent-roles-tab";
@@ -166,7 +171,7 @@ export function AssistantSettingsPanel() {
           <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
           <TabsTrigger value="voice">Voice</TabsTrigger>
           <TabsTrigger value="access">Access</TabsTrigger>
-          <TabsTrigger value="connections">Connections</TabsTrigger>
+          <TabsTrigger value="connectors">Connectors</TabsTrigger>
         </TabsList>
 
         <TabsContent value="identity" className="mt-4 space-y-4">
@@ -235,8 +240,22 @@ export function AssistantSettingsPanel() {
           <ActivityFeed actorId={identity.directAgentId} />
         </TabsContent>
 
-        <TabsContent value="connections" className="mt-4">
-          <AutobotConnectionsPanel />
+        <TabsContent value="connectors" className="mt-4 space-y-3">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Network className="h-4 w-4" />
+                Agent connectors
+              </CardTitle>
+              <CardDescription>
+                Connectors are owned by this agent. Your assistant inherits all
+                of them automatically. Use the &quot;Share with personas&quot;
+                toggle on a connector to also share it with this agent&apos;s
+                personas.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+          <AutobotConnectionsPanel providers={USER_CONNECTABLE_PROVIDERS} />
         </TabsContent>
       </Tabs>
     </div>
