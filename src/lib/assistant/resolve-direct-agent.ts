@@ -8,17 +8,18 @@
 //   1. WHICH agent id is the user's direct agent, and
 //   2. WHICH `autobotSettings` blob (model, connectors, MCP token) drives it.
 //
-// Resolution order (delegated to `findAutobotEnabledPersona`):
-//   - the parent account's autobot-enabled child persona, if any; otherwise
-//   - the parent account's own agent row (single-person instances store the
-//     flag directly on the account row).
+// The self-facing assistant ALWAYS resolves to the user's own account (their
+// "clone"): the parent account id is the single direct-agent identity that owns
+// the wallet + MCP authority. A child persona NEVER silently takes over the
+// assistant — a persona acts only when the user explicitly selects it in the
+// chat bubble for that chat (the chat surface threads that selection through
+// its own `personaId` path; see `api/autobot/chat/route.ts`).
 //
-// When neither carries the autobot-enabled flag we fall back to the parent
-// account id itself, so the builder always has a valid agent identity to key
-// settings off of (the parent owns the wallet + MCP authority).
+// (The public-facing profile-chat surfaces still use
+// `findAutobotEnabledPersona` to pick which persona answers visitors — that is
+// a different surface and is unaffected by this resolver.)
 // ---------------------------------------------------------------------------
 
-import { findAutobotEnabledPersona } from "@/app/actions/personas";
 import {
   getAutobotUserSettings,
   type AutobotUserSettings,
@@ -57,16 +58,16 @@ export async function resolveDirectAgent(
     throw new Error("resolveDirectAgent: controllerId is required.");
   }
 
-  const persona = await findAutobotEnabledPersona(controllerId);
-  const directAgentId = persona?.id ?? controllerId;
-  const isPersona = directAgentId !== controllerId;
-
+  // The direct agent is ALWAYS the account/clone. A persona never silently
+  // becomes the self-facing assistant; explicit per-chat persona selection is
+  // handled at the chat surface, not here.
+  const directAgentId = controllerId;
   const autobotSettings = await getAutobotUserSettings(directAgentId);
 
   return {
     directAgentId,
     controllerId,
-    isPersona,
+    isPersona: false,
     autobotSettings,
   };
 }
