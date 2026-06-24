@@ -379,20 +379,36 @@ export async function createPostResource(input: {
           })
         : null;
 
-    emitDomainEvent({
-      eventType: EVENT_TYPES.POST_CREATED,
-      entityType: "resource",
-      entityId: actionResult.resourceId,
-      actorId: userId,
-      // `id` is required by the resource-cards projection on peer instances —
-      // without it the federated row never materializes.
-      payload: {
-        id: actionResult.resourceId,
-        postType: input.postType ?? "social",
-        groupId: input.groupId ?? null,
-        ownerId,
-      },
-    }).catch(() => {});
+    // Only the HOME instance projects this post into federation. When the
+    // write was forwarded to a sovereign home (e.g. a group-owned post homed
+    // on the group's own instance), that instance materializes the resource and
+    // emits/exports its own POST_CREATED + full snapshot upsert. Emitting here
+    // too would project a SECOND, thin manifest reference originating from THIS
+    // instance — placeholder title ("Federated resource …"), wrong canonical
+    // URL (this instance instead of the group's), and no author ledger edge —
+    // which then shadows the real one in global discovery. Gate on the router's
+    // execution location so the dual-emit only fires for locally homed writes.
+    if (facadeResult.executedOn === "local") {
+      emitDomainEvent({
+        eventType: EVENT_TYPES.POST_CREATED,
+        entityType: "resource",
+        entityId: actionResult.resourceId,
+        actorId: userId,
+        // Carry the resource's real visibility so the exported federation event
+        // is scoped correctly. Without it the event defaulted to "public",
+        // leaking locale/members posts to the public pull and materializing a
+        // public shell (is_public=t) on peers for a non-public post.
+        visibility,
+        // `id` is required by the resource-cards projection on peer instances —
+        // without it the federated row never materializes.
+        payload: {
+          id: actionResult.resourceId,
+          postType: input.postType ?? "social",
+          groupId: input.groupId ?? null,
+          ownerId,
+        },
+      }).catch(() => {});
+    }
 
     if (linkedBundle) {
       return {
@@ -1034,18 +1050,22 @@ export async function createPostCommerceResource(input: {
   const commerceActionResult = commerceFacadeResult.data as ActionResult;
 
   if (commerceActionResult?.success && commerceActionResult.resourceId) {
-    emitDomainEvent({
-      eventType: EVENT_TYPES.POST_CREATED,
-      entityType: "resource",
-      entityId: commerceActionResult.resourceId,
-      actorId: userId,
-      payload: {
-        id: commerceActionResult.resourceId,
-        postType: input.postType ?? "social",
-        commerce: true,
-        groupId: input.groupId ?? null,
-      },
-    }).catch(() => {});
+    // Only the HOME instance projects to federation (see note on the main emit).
+    if (commerceFacadeResult.executedOn === "local") {
+      emitDomainEvent({
+        eventType: EVENT_TYPES.POST_CREATED,
+        entityType: "resource",
+        entityId: commerceActionResult.resourceId,
+        actorId: userId,
+        visibility,
+        payload: {
+          id: commerceActionResult.resourceId,
+          postType: input.postType ?? "social",
+          commerce: true,
+          groupId: input.groupId ?? null,
+        },
+      }).catch(() => {});
+    }
   }
 
   return commerceActionResult;
