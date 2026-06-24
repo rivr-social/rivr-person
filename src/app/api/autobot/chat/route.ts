@@ -16,7 +16,7 @@ import { auth } from "@/auth";
 import { buildAutobotSystemPrompt } from "@/lib/bespoke/autobot-system-prompt";
 import { isPersonaOf } from "@/lib/persona";
 import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
-import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
+import { resolveAssistantConnectionScope } from "@/lib/autobot-connection-scope";
 import {
   chatViaGemini,
   chatViaOllama,
@@ -171,7 +171,9 @@ export async function POST(request: Request) {
       : DEFAULT_MODEL;
 
   const ownerId = session.user.id;
-  const subject = await resolveAutobotConnectionScope(ownerId);
+  // A3: the assistant IS the direct agent and inherits the agent's connectors —
+  // resolve the assistant's scope from the direct agent, not the persona cookie.
+  const subject = await resolveAssistantConnectionScope(ownerId);
   let promptActorId = subject.actorId;
   let resolvedPersonaId: string | null = subject.scopeType === "persona" ? subject.actorId : null;
   let resolvedPersonaName: string | null =

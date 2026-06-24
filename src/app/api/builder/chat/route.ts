@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { buildSystemPrompt, type WorkspaceContext } from "@/lib/bespoke/builder-system-prompt";
 import type { SiteFiles } from "@/lib/bespoke/site-files";
+import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -396,17 +397,46 @@ function isRateLimitError(error: unknown): boolean {
 }
 
 /**
- * Resolve the ordered fallback chain based on available API keys.
- * Primary provider first, then any configured alternatives.
+ * Map a direct-agent `selectedModel` slug (e.g. `"anthropic/claude-sonnet-4-6"`,
+ * `"openai/gpt-4o"`, `"google/gemini-2.0-flash"`, `"ollama/llama3.2"`) to the
+ * provider that should be tried FIRST. Returns `null` when the slug does not
+ * name a known provider, in which case the API-key default ordering is used.
  */
-function buildFallbackChain(): AIProvider[] {
-  const chain: AIProvider[] = [];
-  if (process.env.ANTHROPIC_API_KEY) chain.push("anthropic");
-  if (process.env.OPENAI_API_KEY) chain.push("openai");
-  if (process.env.GOOGLE_AI_API_KEY) chain.push("gemini");
-  // Ollama is always last — no API key needed, just needs a running instance
-  chain.push("ollama");
-  return chain;
+function preferredProviderFromModel(selectedModel: string | undefined): AIProvider | null {
+  if (!selectedModel) return null;
+  const prefix = selectedModel.split("/")[0]?.toLowerCase().trim();
+  switch (prefix) {
+    case "anthropic":
+      return "anthropic";
+    case "openai":
+      return "openai";
+    case "google":
+    case "gemini":
+      return "gemini";
+    case "ollama":
+      return "ollama";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Resolve the ordered fallback chain based on available API keys.
+ * When `preferred` names an available provider it is tried first so the builder
+ * honors the direct agent's configured model; the remaining providers follow as
+ * fallbacks. Ollama is always last — it needs no API key, just a running host.
+ */
+function buildFallbackChain(preferred?: AIProvider | null): AIProvider[] {
+  const available: AIProvider[] = [];
+  if (process.env.ANTHROPIC_API_KEY) available.push("anthropic");
+  if (process.env.OPENAI_API_KEY) available.push("openai");
+  if (process.env.GOOGLE_AI_API_KEY) available.push("gemini");
+  available.push("ollama");
+
+  if (!preferred || !available.includes(preferred)) {
+    return available;
+  }
+  return [preferred, ...available.filter((provider) => provider !== preferred)];
 }
 
 async function streamForProvider(
@@ -451,7 +481,13 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const fallbackChain = buildFallbackChain();
+  // Resolve the canonical direct agent so the builder shares one identity +
+  // one autobotSettings blob (model, connectors, MCP token) with the assistant.
+  // Honor the direct agent's configured model when picking the provider order.
+  const { autobotSettings } = await resolveDirectAgent(session.user.id);
+  const fallbackChain = buildFallbackChain(
+    preferredProviderFromModel(autobotSettings.selectedModel),
+  );
 
   try {
     const body = (await request.json()) as ChatRequestBody;

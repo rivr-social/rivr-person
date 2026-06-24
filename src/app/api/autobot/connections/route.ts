@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { accounts } from "@/db/schema";
 import {
   AUTOBOT_CONNECTOR_DEFINITIONS,
+  filterSharedConnections,
   sanitizeAutobotConnections,
   type AutobotConnection,
 } from "@/lib/autobot-connectors";
@@ -59,6 +60,10 @@ const AVAILABLE_OAUTH_PROVIDERS = {
   oauth2: true,
 } as const;
 
+/** A connection as returned to the UI, annotated with whether it is inherited
+ * (shared down from the owning agent and therefore read-only at this scope). */
+type ScopedAutobotConnection = AutobotConnection & { inherited?: boolean };
+
 type ConnectionPatchBody = {
   connections?: AutobotConnection[];
 };
@@ -76,6 +81,32 @@ function mergePersonLevelConnections(
   );
   if (tellerConnection) {
     byProvider.set("teller", tellerConnection);
+  }
+
+  return [...byProvider.values()].sort((a, b) =>
+    a.provider.localeCompare(b.provider),
+  );
+}
+
+/**
+ * Merges a persona's own connectors with the SHARED subset inherited from its
+ * owning agent (A3 inheritance). Inherited shared connectors that the persona
+ * has not overridden are returned read-only (`inherited: true`). A persona's
+ * own connector for the same provider always wins.
+ */
+function mergeInheritedSharedConnections(
+  subjectConnections: AutobotConnection[],
+  ownerConnections: AutobotConnection[],
+): ScopedAutobotConnection[] {
+  const byProvider = new Map<string, ScopedAutobotConnection>();
+
+  for (const inherited of filterSharedConnections(ownerConnections)) {
+    byProvider.set(inherited.provider, { ...inherited, inherited: true });
+  }
+
+  // The persona's own connectors override any inherited entry for the provider.
+  for (const own of subjectConnections) {
+    byProvider.set(own.provider, { ...own, inherited: false });
   }
 
   return [...byProvider.values()].sort((a, b) =>
@@ -118,10 +149,15 @@ export async function GET() {
           .where(eq(accounts.userId, subject.ownerId)),
   ]);
 
-  const connections = mergePersonLevelConnections(
-    subjectSettings.connections,
-    ownerSettings?.connections ?? [],
-  );
+  const connections: ScopedAutobotConnection[] = subject.inheritedSharedOnly
+    ? mergeInheritedSharedConnections(
+        subjectSettings.connections,
+        ownerSettings?.connections ?? [],
+      )
+    : mergePersonLevelConnections(
+        subjectSettings.connections,
+        ownerSettings?.connections ?? [],
+      );
 
   const linkedAccounts = [
     ...subjectLinkedAccounts,
@@ -164,9 +200,26 @@ export async function POST(request: Request) {
   const tellerConnection = nextConnections.find(
     (connection) => connection.provider === "teller",
   );
-  const subjectConnections = nextConnections.filter(
+  let subjectConnections = nextConnections.filter(
     (connection) => connection.provider !== "teller",
   );
+
+  // Inheritance guard (A3): a persona scope inherits the agent's SHARED
+  // connectors read-only. Strip any inherited shared provider from the write so
+  // a persona can never overwrite the owning agent's shared connector — it may
+  // only manage its OWN connectors. The agent's own connectors are edited from
+  // the main profile / direct-agent surface.
+  if (subject.inheritedSharedOnly && subject.actorId !== subject.ownerId) {
+    const ownerSettingsForGuard = await getAutobotUserSettings(subject.ownerId);
+    const inheritedProviders = new Set(
+      filterSharedConnections(ownerSettingsForGuard.connections).map(
+        (connection) => connection.provider,
+      ),
+    );
+    subjectConnections = subjectConnections.filter(
+      (connection) => !inheritedProviders.has(connection.provider),
+    );
+  }
 
   const [subjectSettings, ownerSettings] = await Promise.all([
     saveAutobotUserSettings(subject.actorId, {
@@ -184,10 +237,15 @@ export async function POST(request: Request) {
       : Promise.resolve(null),
   ]);
 
-  const connections = mergePersonLevelConnections(
-    subjectSettings.connections,
-    ownerSettings?.connections ?? [],
-  );
+  const connections: ScopedAutobotConnection[] = subject.inheritedSharedOnly
+    ? mergeInheritedSharedConnections(
+        subjectSettings.connections,
+        ownerSettings?.connections ?? [],
+      )
+    : mergePersonLevelConnections(
+        subjectSettings.connections,
+        ownerSettings?.connections ?? [],
+      );
 
   return NextResponse.json({
     connections,

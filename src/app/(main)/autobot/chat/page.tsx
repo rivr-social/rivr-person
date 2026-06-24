@@ -2181,7 +2181,7 @@ export default function AutobotChatPage() {
       {/* Header */}
       <div className="shrink-0 px-4 py-3 border-b flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href="/autobot">
+          <Link href="/">
             <Button variant="ghost" size="icon" className="h-8 w-8">
               <ArrowLeft className="h-4 w-4" />
             </Button>

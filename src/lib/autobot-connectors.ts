@@ -77,6 +77,15 @@ export interface AutobotConnection {
   lastSyncedAt?: string;
   error?: string;
   config: Record<string, string>;
+  /**
+   * Whether this agent-owned connector is shared down to the agent's personas
+   * (and surfaced to the agent's assistant). The assistant inherits ALL of its
+   * direct agent's connectors; personas inherit only the shared subset. Owned
+   * (non-inherited) connectors are always available to their owning agent.
+   * Defaults to `false` — connectors are private to the owning agent until the
+   * owner explicitly shares them.
+   */
+  shared?: boolean;
 }
 
 export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
@@ -391,6 +400,27 @@ export const AUTOBOT_CONNECTION_PROVIDER_SET = new Set(
   AUTOBOT_CONNECTOR_DEFINITIONS.map((definition) => definition.provider),
 );
 
+/**
+ * The connectors a sovereign user can connect from the per-agent connector
+ * surfaces (settings Connectors tab + the assistant's Connectors tab). Keep
+ * this list in sync with the settings catalog test.
+ */
+export const USER_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
+  "google_docs",
+  "google_calendar",
+  "gmail",
+  "notion",
+  "telegram",
+  "whatsapp_business",
+  "signal",
+  "slack",
+  "facebook",
+  "instagram",
+  "substack",
+  "luma",
+  "x",
+];
+
 export const AUTOBOT_CONNECTION_MODULE_SET = new Set<AutobotConnectionModule>([
   "docs",
   "calendar",
@@ -477,7 +507,20 @@ export function sanitizeAutobotConnection(
         ? input.error.trim().slice(0, 500)
         : undefined,
     config,
+    shared: input.shared === true ? true : undefined,
   };
+}
+
+/**
+ * Filters a set of agent-owned connectors down to the subset that is shared
+ * with personas. Personas inherit only shared connectors (A3 inheritance:
+ * "Personas show SHARED connectors only"). The assistant, by contrast,
+ * inherits the agent's FULL set (use the unfiltered list for the assistant).
+ */
+export function filterSharedConnections(
+  connections: AutobotConnection[],
+): AutobotConnection[] {
+  return connections.filter((connection) => connection.shared === true);
 }
 
 export function sanitizeAutobotConnections(input: unknown): AutobotConnection[] {

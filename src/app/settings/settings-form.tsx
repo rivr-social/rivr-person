@@ -37,6 +37,8 @@ import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { DomainSettings } from "@/components/domain-settings";
 import { RecoverySeedPanel } from "@/components/recovery-seed-panel";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
+import { AssistantSettingsPanel } from "@/components/assistant-settings-panel";
+import { USER_CONNECTABLE_PROVIDERS } from "@/lib/autobot-connectors";
 
 export type SettingsInitialData = {
   name: string;
@@ -324,11 +326,17 @@ export function SettingsForm({
   const { toast } = useToast();
   const { theme, setTheme } = useTheme();
   const requestedTab = searchParams.get("tab");
-  const initialTab: SettingsTab = requestedTab === "connections"
+  const resolvedRequestedTab: SettingsTab = requestedTab === "connections"
     ? "connectors"
     : SETTINGS_TAB_VALUES.includes(requestedTab as SettingsTab)
       ? (requestedTab as SettingsTab)
       : "account";
+  // The Assistant ("agent-hq") tab is self-owner-only. If a persona is the
+  // active actor, fall back to Account so we never land on an empty tab.
+  const initialTab: SettingsTab =
+    resolvedRequestedTab === "agent-hq" && isPersonaActive
+      ? "account"
+      : resolvedRequestedTab;
 
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -723,6 +731,7 @@ export function SettingsForm({
           <TabsTrigger value="privacy">Privacy</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
+          {!isPersonaActive && <TabsTrigger value="agent-hq">Assistant</TabsTrigger>}
           <TabsTrigger value="connectors">Connectors</TabsTrigger>
           <TabsTrigger value="seller">Seller</TabsTrigger>
           <TabsTrigger value="federation">Federation</TabsTrigger>
@@ -1090,14 +1099,14 @@ export function SettingsForm({
           </div>
         </TabsContent>
 
+        {!isPersonaActive && (
+          <TabsContent value="agent-hq" className="space-y-4">
+            <AssistantSettingsPanel />
+          </TabsContent>
+        )}
+
         <TabsContent value="connectors" className="space-y-4">
-          <AutobotConnectionsPanel
-            providers={[
-              "google_docs", "google_calendar", "gmail", "notion",
-              "telegram", "whatsapp_business", "signal", "slack",
-              "facebook", "instagram", "substack", "luma", "x",
-            ]}
-          />
+          <AutobotConnectionsPanel providers={USER_CONNECTABLE_PROVIDERS} />
         </TabsContent>
 
         <TabsContent value="privacy" className="space-y-6">
