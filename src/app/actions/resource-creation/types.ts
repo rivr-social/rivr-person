@@ -30,6 +30,16 @@ export interface CreateResourceInput {
 export interface UpdateResourceInput {
   resourceId: string;
   ownerId?: string;
+  /**
+   * Home-routing hint: the agent id that OWNS (and whose instance HOMES) this
+   * resource. Supplied by callers acting on a resource homed on a peer instance
+   * this instance keeps no local copy of (e.g. an admin editing a post owned by
+   * a group on the group's own sovereign instance). When the resolved home is
+   * remote, the update is forwarded there with peer-secret auth and the home
+   * re-authorizes the federation-resolved actor. Distinct from `ownerId`, which
+   * is the move-to target for a same-home ownership transfer.
+   */
+  targetAgentId?: string;
   name?: string;
   description?: string | null;
   content?: string | null;

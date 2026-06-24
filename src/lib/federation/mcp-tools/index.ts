@@ -7,7 +7,8 @@ import { sendThanksTokensAction } from "@/app/actions/interactions/thanks-tokens
 import { toggleJoinGroup } from "@/app/actions/interactions/social";
 import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
-import { deleteResource } from "@/app/actions/resource-creation/lifecycle";
+import { deleteResource, updateResource } from "@/app/actions/resource-creation/lifecycle";
+import type { UpdateResourceInput } from "@/app/actions/resource-creation/types";
 import { createEventResource } from "@/app/actions/resource-creation/events";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import {
@@ -422,13 +423,19 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.posts.delete",
-    description: "Soft-delete a post the active actor owns. Emits a resource.deleted federation event so peer instances mirror the delete.",
+    description:
+      "Soft-delete a resource (post/event/offering/etc.) the active actor owns, OR one owned by a group the actor administers — including groups homed on a PEER instance. Emits a resource.deleted federation event so peer instances clear the projection. When the resource is homed on a peer (e.g. a post owned by a group on its own sovereign instance), pass ownerId (the owning group/agent id) so the delete is routed to and authorized on that home instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["resourceId"],
       properties: {
         resourceId: { type: "string" },
+        ownerId: {
+          type: "string",
+          description:
+            "The agent id that OWNS this resource (and whose instance HOMES it). Required when the resource is homed on a peer instance this instance keeps no local copy of — e.g. deleting a post owned by a group on the group's own sovereign instance. The home instance re-authorizes the actor's admin rights there.",
+        },
       },
     },
     enabledFor: ["session", "token"],
@@ -437,7 +444,74 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       if (!resourceId) {
         throw new Error("resourceId is required.");
       }
-      return deleteResource(resourceId);
+      const ownerId = getString(args.ownerId) ?? undefined;
+      return deleteResource(resourceId, ownerId ? { targetAgentId: ownerId } : undefined);
+    },
+  },
+  {
+    name: "rivr.resources.update",
+    description:
+      "Update a resource (post/event/offering/project/etc.) the active actor owns, OR one owned by a group the actor administers — including groups homed on a PEER instance. Patch any of: name/title, description, content (post body), tags, visibility (public|locale|members|private), and metadata fields (metadataPatch is shallow-merged). When the resource is homed on a peer (e.g. owned by a group on its own sovereign instance), pass ownerId so the update is routed to and authorized on that home instance.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["resourceId"],
+      properties: {
+        resourceId: { type: "string" },
+        ownerId: {
+          type: "string",
+          description:
+            "The agent id that OWNS this resource (and whose instance HOMES it). Required when the resource is homed on a peer instance this instance keeps no local copy of. The home instance re-authorizes the actor's admin rights there.",
+        },
+        name: { type: "string", description: "New name/title for the resource." },
+        description: { type: "string", description: "New description." },
+        content: { type: "string", description: "New body content (e.g. a post body)." },
+        tags: { type: "array", items: { type: "string" }, description: "Replacement tag list." },
+        visibility: {
+          type: "string",
+          enum: ["public", "locale", "members", "private"],
+          description: "New visibility level.",
+        },
+        metadataPatch: {
+          type: "object",
+          additionalProperties: true,
+          description: "Metadata fields to shallow-merge into the resource's existing metadata.",
+        },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const resourceId = getString(args.resourceId);
+      if (!resourceId) {
+        throw new Error("resourceId is required.");
+      }
+      const input: UpdateResourceInput = { resourceId };
+      const ownerId = getString(args.ownerId);
+      if (ownerId) input.targetAgentId = ownerId;
+      // Only patch fields the caller actually provided (presence-checked on the
+      // raw args), so an omitted field is never coerced to null/empty and the
+      // existing value is preserved.
+      if (args.name !== undefined) {
+        const name = getString(args.name);
+        if (name) input.name = name;
+      }
+      if (args.description !== undefined) {
+        input.description = getString(args.description);
+      }
+      if (args.content !== undefined) {
+        input.content = getString(args.content);
+      }
+      if (args.tags !== undefined) {
+        input.tags = getStringArray(args.tags);
+      }
+      if (args.visibility !== undefined) {
+        const visibility = getString(args.visibility);
+        if (visibility) input.visibility = visibility as UpdateResourceInput["visibility"];
+      }
+      if (args.metadataPatch && typeof args.metadataPatch === "object" && !Array.isArray(args.metadataPatch)) {
+        input.metadataPatch = args.metadataPatch as Record<string, unknown>;
+      }
+      return updateResource(input);
     },
   },
   {

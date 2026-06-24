@@ -25,6 +25,8 @@ import {
   createResourceWithLedger,
 } from "./helpers";
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/index";
+import { routeWrite } from "@/lib/federation/write-router";
+import { resolveHomeInstance } from "@/lib/federation/resolution";
 import type { ActionResult, UpdateResourceInput } from "./types";
 import { normalizeEventTickets } from "./types";
 import { syncEventTicketOfferings } from "./events";
@@ -58,6 +60,48 @@ export async function updateResource(input: UpdateResourceInput): Promise<Action
   }
 
   const permission = await canModifyResource(userId, input.resourceId);
+
+  // Cross-instance UPDATE. When the resource is homed on a PEER instance (e.g.
+  // an admin editing a post owned by a group that lives on its own sovereign
+  // instance — one this instance keeps no local copy of), forward the update to
+  // the home instance with peer-secret auth instead of failing the local
+  // permission check. The caller supplies the owner via `targetAgentId`; we
+  // fall back to a local mirror's owner when one exists. The home instance
+  // re-authorizes the federation-resolved actor through its own
+  // canModifyResource → hasGroupWriteAccess gate, so admin rights are enforced
+  // there, not here.
+  const updateRoutingOwnerId = input.targetAgentId?.trim() || permission.resource?.ownerId;
+  if (updateRoutingOwnerId) {
+    const updateHome = await resolveHomeInstance(updateRoutingOwnerId);
+    if (!updateHome.isLocal) {
+      const routed = await routeWrite<UpdateResourceInput, ActionResult>(
+        {
+          type: "updateResource",
+          actorId: userId,
+          targetAgentId: updateRoutingOwnerId,
+          payload: input,
+        },
+        async () => {
+          throw new Error("Remote update must not run the local executor");
+        },
+      );
+      if (!routed.success) {
+        return {
+          success: false,
+          message: routed.error ?? "Failed to update resource on its home instance",
+          error: { code: routed.errorCode ?? "REMOTE_EXECUTION_FAILED" },
+        };
+      }
+      return (
+        routed.data ?? {
+          success: true,
+          message: "Updated successfully",
+          resourceId: input.resourceId,
+        }
+      );
+    }
+  }
+
   if (!permission.allowed || !permission.resource) {
     return {
       success: false,
@@ -258,7 +302,10 @@ export async function updateResource(input: UpdateResourceInput): Promise<Action
   return updateActionResult;
 }
 
-export async function deleteResource(resourceId: string): Promise<ActionResult> {
+export async function deleteResource(
+  resourceId: string,
+  options?: { targetAgentId?: string },
+): Promise<ActionResult> {
   const userId = await resolveAuthenticatedUserId();
   if (!userId) {
     return {
@@ -287,6 +334,47 @@ export async function deleteResource(resourceId: string): Promise<ActionResult> 
   }
 
   const permission = await canModifyResource(userId, resourceId);
+
+  // Cross-instance DELETE. When the resource is homed on a PEER instance (e.g.
+  // an admin deleting a post owned by a group on its own sovereign instance —
+  // one this instance keeps no local copy of), forward the delete to the home
+  // instance with peer-secret auth. The caller supplies the owner via
+  // `options.targetAgentId`; we fall back to a local mirror's owner when one
+  // exists. The home instance re-authorizes the federation-resolved actor and
+  // performs the soft-delete + RESOURCE_DELETED emit, so no local row, local
+  // permission edge, or local emit is required here.
+  const deleteRoutingOwnerId = options?.targetAgentId?.trim() || permission.resource?.ownerId;
+  if (deleteRoutingOwnerId) {
+    const deleteHome = await resolveHomeInstance(deleteRoutingOwnerId);
+    if (!deleteHome.isLocal) {
+      const routed = await routeWrite<{ resourceId: string }, ActionResult>(
+        {
+          type: "deleteResource",
+          actorId: userId,
+          targetAgentId: deleteRoutingOwnerId,
+          payload: { resourceId },
+        },
+        async () => {
+          throw new Error("Remote delete must not run the local executor");
+        },
+      );
+      if (!routed.success) {
+        return {
+          success: false,
+          message: routed.error ?? "Failed to delete resource on its home instance",
+          error: { code: routed.errorCode ?? "REMOTE_EXECUTION_FAILED" },
+        };
+      }
+      return (
+        routed.data ?? {
+          success: true,
+          message: "Deleted successfully",
+          resourceId,
+        }
+      );
+    }
+  }
+
   if (!permission.allowed || !permission.resource) {
     return {
       success: false,
