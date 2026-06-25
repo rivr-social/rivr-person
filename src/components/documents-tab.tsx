@@ -25,8 +25,30 @@ import { createDocumentResourceAction, createPersonalDocumentAction } from "@/ap
 import { useToast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ResourceAclPanel } from "@/components/resource-acl-panel"
 
 type DocViewMode = "documents" | "filesystem"
+
+/**
+ * Recognizes a virtual DB-tree path that points at a Resource record and
+ * returns its id. Resources are reachable both via the per-agent scope
+ * (`@{agentId}/resources/{type}/{id}`) and the legacy flat root
+ * (`resources/{type}/{id}`). Anything deeper (a record.json/content.md leaf) or
+ * shallower (the type folder) returns null, so the ACL panel only appears for
+ * the resource node itself.
+ */
+function resourceIdFromDbPath(path: string): { id: string; name: string } | null {
+  const segments = path.split("/").filter(Boolean)
+  // @{agentId}/resources/{type}/{id}
+  if (segments[0]?.startsWith("@") && segments[1] === "resources" && segments.length === 4) {
+    return { id: segments[3], name: `${segments[2]}/${segments[3]}` }
+  }
+  // resources/{type}/{id}
+  if (segments[0] === "resources" && segments.length === 3) {
+    return { id: segments[2], name: `${segments[1]}/${segments[2]}` }
+  }
+  return null
+}
 
 interface FsWorkspace {
   id: string
@@ -89,6 +111,7 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
   const [fsFileLoading, setFsFileLoading] = useState(false)
   const [fsFileSaving, setFsFileSaving] = useState(false)
   const [fsMessage, setFsMessage] = useState<string | null>(null)
+  const [aclResource, setAclResource] = useState<{ id: string; name: string } | null>(null)
 
   useEffect(() => {
     setDocumentItems(documents)
@@ -526,6 +549,8 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
                 onToggleDirectory={(node) => {
                   if (node.id === "db:__root__" || node.id === "fs:__root__") return
                   if (node.source === "db") {
+                    const resource = resourceIdFromDbPath(node.path)
+                    setAclResource(resource)
                     void toggleDbDirectory(node)
                     return
                   }
@@ -545,6 +570,15 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
             </div>
             {fsError ? <p className="text-xs text-destructive">{fsError}</p> : null}
           </div>
+          <div className="space-y-3">
+          {aclResource ? (
+            <ResourceAclPanel
+              key={aclResource.id}
+              resourceId={aclResource.id}
+              resourceName={aclResource.name}
+              onClose={() => setAclResource(null)}
+            />
+          ) : null}
           <div className="space-y-2 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="truncate text-sm font-medium">{selectedFileDisplay || "Select a file"}</p>
@@ -591,6 +625,7 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
               spellCheck={false}
             />
             {fsMessage ? <p className="text-xs text-muted-foreground">{fsMessage}</p> : null}
+          </div>
           </div>
         </div>
       ) : (

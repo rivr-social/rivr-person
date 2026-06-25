@@ -1,0 +1,362 @@
+"use client"
+
+/**
+ * Per-resource permissioning panel for the unified filesystem organizer.
+ *
+ * Surfaced inside the Documents tab's Filesystem view when a Resource node
+ * (a `resources/{type}/{id}` virtual folder) is selected. It reads and mutates
+ * the resource's sharing state via the T2.1a organizer APIs:
+ *
+ * - GET  /api/agent-hq/resources/[id]/access  — visibility + active grants
+ * - POST /api/agent-hq/resources/[id]/access  — grant/revoke a verb
+ * - PATCH /api/agent-hq/resources/[id]        — change visibility
+ * - GET  /api/agent-hq/resources/[id]/ledger  — read-only audit history
+ * - GET  /api/agent-hq/personas               — grant targets (owner personas)
+ *
+ * The panel is owner/grantor-gated server-side: a viewer without `grant` gets a
+ * 403 from the access route and the panel renders a read-only "no access"
+ * message. Visibility is the implicit-access fallback; explicit grants layer on
+ * top, exactly as the permission model defines.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { Loader2, Plus, ShieldCheck, Trash2, X } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+
+const VISIBILITY_OPTIONS = ["public", "locale", "members", "private", "hidden"] as const
+type Visibility = (typeof VISIBILITY_OPTIONS)[number]
+
+const VISIBILITY_HELP: Record<Visibility, string> = {
+  public: "Anyone can find and view this.",
+  locale: "Visible to agents in the same locale.",
+  members: "Visible to members only.",
+  private: "Only you and explicitly granted agents.",
+  hidden: "Hidden from listings; grant access explicitly.",
+}
+
+interface AccessGrant {
+  subjectId: string
+  subjectName: string
+  subjectImage: string | null
+  isPersona: boolean
+  verb: string
+  role: string | null
+  grantedAt: string
+}
+
+interface Persona {
+  id: string
+  name: string | null
+  image: string | null
+  description: string | null
+}
+
+interface HistoryEntry {
+  id: string
+  verb: string
+  subjectId: string
+  subjectName: string
+  summary: string
+  timestamp: string
+}
+
+interface AccessResponse {
+  visibility: Visibility
+  grantableVerbs: string[]
+  grants: AccessGrant[]
+}
+
+interface ResourceAclPanelProps {
+  resourceId: string
+  /** Optional human label for the resource (folder name). */
+  resourceName?: string
+  /** Notifies the parent to clear the selected ACL target. */
+  onClose?: () => void
+}
+
+export function ResourceAclPanel({ resourceId, resourceName, onClose }: ResourceAclPanelProps) {
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [forbidden, setForbidden] = useState(false)
+  const [visibility, setVisibility] = useState<Visibility>("private")
+  const [grantableVerbs, setGrantableVerbs] = useState<string[]>([])
+  const [grants, setGrants] = useState<AccessGrant[]>([])
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const [grantSubject, setGrantSubject] = useState("")
+  const [grantVerb, setGrantVerb] = useState("")
+
+  const loadAccess = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    setForbidden(false)
+    try {
+      const [accessRes, personasRes, ledgerRes] = await Promise.all([
+        fetch(`/api/agent-hq/resources/${encodeURIComponent(resourceId)}/access`, { cache: "no-store" }),
+        fetch(`/api/agent-hq/personas`, { cache: "no-store" }),
+        fetch(`/api/agent-hq/resources/${encodeURIComponent(resourceId)}/ledger`, { cache: "no-store" }),
+      ])
+
+      if (accessRes.status === 403) {
+        setForbidden(true)
+        return
+      }
+      const accessData = (await accessRes.json().catch(() => ({}))) as AccessResponse & { error?: string }
+      if (!accessRes.ok || accessData.error) {
+        throw new Error(accessData.error || `Failed to load access (${accessRes.status})`)
+      }
+      setVisibility(accessData.visibility)
+      setGrantableVerbs(accessData.grantableVerbs ?? [])
+      setGrants(accessData.grants ?? [])
+      setGrantVerb((current) => current || accessData.grantableVerbs?.[0] || "")
+
+      const personasData = (await personasRes.json().catch(() => ({}))) as { personas?: Persona[] }
+      setPersonas(personasData.personas ?? [])
+
+      if (ledgerRes.ok) {
+        const ledgerData = (await ledgerRes.json().catch(() => ({}))) as { history?: HistoryEntry[] }
+        setHistory(ledgerData.history ?? [])
+      } else {
+        setHistory([])
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load access")
+    } finally {
+      setLoading(false)
+    }
+  }, [resourceId])
+
+  useEffect(() => {
+    void loadAccess()
+  }, [loadAccess])
+
+  const handleVisibilityChange = useCallback(
+    async (next: Visibility) => {
+      const previous = visibility
+      setVisibility(next)
+      setBusy(true)
+      setMessage(null)
+      try {
+        const response = await fetch(`/api/agent-hq/resources/${encodeURIComponent(resourceId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ visibility: next }),
+        })
+        const data = (await response.json().catch(() => ({}))) as { error?: string }
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Failed to update visibility (${response.status})`)
+        }
+        setMessage(`Visibility set to ${next}.`)
+        void loadAccess()
+      } catch (err) {
+        setVisibility(previous)
+        setMessage(err instanceof Error ? err.message : "Failed to update visibility")
+      } finally {
+        setBusy(false)
+      }
+    },
+    [loadAccess, resourceId, visibility],
+  )
+
+  const mutateGrant = useCallback(
+    async (action: "grant" | "revoke", subjectId: string, verb: string) => {
+      setBusy(true)
+      setMessage(null)
+      try {
+        const response = await fetch(`/api/agent-hq/resources/${encodeURIComponent(resourceId)}/access`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, subjectId, verb }),
+        })
+        const data = (await response.json().catch(() => ({}))) as { error?: string }
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Failed to ${action} (${response.status})`)
+        }
+        setMessage(action === "grant" ? `Granted ${verb}.` : `Revoked ${verb}.`)
+        if (action === "grant") setGrantSubject("")
+        void loadAccess()
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : `Failed to ${action}`)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [loadAccess, resourceId],
+  )
+
+  const grantTargets = useMemo(() => personas, [personas])
+
+  if (forbidden) {
+    return (
+      <div className="space-y-2 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 font-medium text-foreground">
+          <ShieldCheck className="h-4 w-4" /> Permissions
+        </div>
+        <p>You don&apos;t have rights to manage sharing for this item.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4 rounded-lg border p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-primary" />
+          <div>
+            <p className="text-sm font-medium leading-tight">Permissions</p>
+            {resourceName ? (
+              <p className="truncate text-xs text-muted-foreground">{resourceName}</p>
+            ) : null}
+          </div>
+        </div>
+        {onClose ? (
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose} aria-label="Close permissions">
+            <X className="h-4 w-4" />
+          </Button>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading access…
+        </div>
+      ) : error ? (
+        <div className="space-y-2 text-sm">
+          <p className="text-destructive">{error}</p>
+          <Button variant="outline" size="sm" onClick={() => void loadAccess()}>
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <>
+          {/* Visibility — implicit-access fallback */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Visibility</p>
+            <select
+              value={visibility}
+              onChange={(event) => void handleVisibilityChange(event.target.value as Visibility)}
+              disabled={busy}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              {VISIBILITY_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">{VISIBILITY_HELP[visibility]}</p>
+          </div>
+
+          {/* Explicit grants */}
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Shared with</p>
+            {grants.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No explicit grants yet.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {grants.map((grant) => (
+                  <li
+                    key={`${grant.subjectId}:${grant.verb}`}
+                    className="flex items-center justify-between gap-2 rounded-md border bg-muted/20 px-2 py-1.5 text-xs"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate font-medium">{grant.subjectName}</span>
+                      {grant.isPersona ? (
+                        <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                          persona
+                        </Badge>
+                      ) : null}
+                      <Badge variant="outline" className="h-4 px-1 text-[10px]">
+                        {grant.verb}
+                      </Badge>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                      disabled={busy}
+                      onClick={() => void mutateGrant("revoke", grant.subjectId, grant.verb)}
+                      aria-label={`Revoke ${grant.verb} from ${grant.subjectName}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Add a grant */}
+          <div className="space-y-2 rounded-md border border-dashed p-2">
+            <p className="text-xs font-medium text-muted-foreground">Grant access</p>
+            {grantTargets.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                No personas available to grant. Create a persona first.
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={grantSubject}
+                  onChange={(event) => setGrantSubject(event.target.value)}
+                  disabled={busy}
+                  className="h-8 min-w-[120px] flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  <option value="">Select agent…</option>
+                  {grantTargets.map((persona) => (
+                    <option key={persona.id} value={persona.id}>
+                      {persona.name || persona.id}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={grantVerb}
+                  onChange={(event) => setGrantVerb(event.target.value)}
+                  disabled={busy}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  {grantableVerbs.map((verb) => (
+                    <option key={verb} value={verb}>
+                      {verb}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={busy || !grantSubject || !grantVerb}
+                  onClick={() => void mutateGrant("grant", grantSubject, grantVerb)}
+                >
+                  <Plus className="mr-1 h-3.5 w-3.5" /> Add
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Read-only history */}
+          {history.length > 0 ? (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">History</p>
+              <ul className="max-h-40 space-y-1 overflow-y-auto text-[11px] text-muted-foreground">
+                {history.map((entry) => (
+                  <li key={entry.id} className="flex items-center justify-between gap-2">
+                    <span className="truncate">
+                      <span className="font-medium text-foreground">{entry.subjectName}</span> {entry.summary}
+                    </span>
+                    <span className="shrink-0 tabular-nums">
+                      {new Date(entry.timestamp).toLocaleDateString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {message ? <p className="text-xs text-muted-foreground">{message}</p> : null}
+        </>
+      )}
+    </div>
+  )
+}
