@@ -271,6 +271,13 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
           tags: input.tags ?? [],
           embeds: input.embeds ?? [],
           metadata: input.metadata ?? {},
+          ...(input.file ? {
+            ...(input.file.url ? { url: input.file.url } : {}),
+            ...(input.file.storageKey ? { storageKey: input.file.storageKey } : {}),
+            ...(input.file.storageProvider ? { storageProvider: input.file.storageProvider } : {}),
+            ...(input.file.contentType ? { contentType: input.file.contentType } : {}),
+            ...(typeof input.file.fileSize === "number" ? { fileSize: input.file.fileSize } : {}),
+          } : {}),
           ...(input.location ? {
             location: {
               type: "Point" as const,

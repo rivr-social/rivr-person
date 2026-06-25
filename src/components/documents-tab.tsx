@@ -14,13 +14,13 @@
  *
  * Supply either `groupId` (group documents) or `ownerId` (personal documents), not both.
  */
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import type { Document } from "@/types/domain"
 import { DocumentList } from "./document-list"
 import { DocumentViewer } from "./document-viewer"
 import { EmptyState } from "./empty-state"
-import { ChevronDown, ChevronRight, FileText, FolderOpen } from "lucide-react"
+import { ChevronDown, ChevronRight, FileText, FolderOpen, Loader2, Upload } from "lucide-react"
 import { createDocumentResourceAction, createPersonalDocumentAction } from "@/app/actions/create-resources"
 import { useToast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
@@ -112,6 +112,8 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
   const [fsFileSaving, setFsFileSaving] = useState(false)
   const [fsMessage, setFsMessage] = useState<string | null>(null)
   const [aclResource, setAclResource] = useState<{ id: string; name: string } | null>(null)
+  const [fsUploading, setFsUploading] = useState(false)
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     setDocumentItems(documents)
@@ -288,6 +290,54 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
       setFsError(error instanceof Error ? error.message : "Failed to load database tree")
     }
   }, [fetchDbEntries, toTreeNodes])
+
+  const handleUploadFile = useCallback(
+    async (file: File) => {
+      setFsUploading(true)
+      setFsMessage(null)
+      setFsError(null)
+      try {
+        const form = new FormData()
+        form.append("file", file)
+        const uploadRes = await fetch("/api/upload", { method: "POST", body: form })
+        const uploadData = (await uploadRes.json().catch(() => ({}))) as {
+          results?: { key: string; url: string; size: number; mimeType: string }[]
+          error?: string
+        }
+        if (!uploadRes.ok || uploadData.error || !uploadData.results?.[0]) {
+          throw new Error(uploadData.error || `Upload failed (${uploadRes.status})`)
+        }
+        const stored = uploadData.results[0]
+        const resourceRes = await fetch("/api/agent-hq/resources/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: file.name,
+            url: stored.url,
+            storageKey: stored.key,
+            contentType: stored.mimeType,
+            fileSize: stored.size,
+            visibility: "private",
+            ...(ownerId ? { ownerId } : {}),
+          }),
+        })
+        const resourceData = (await resourceRes.json().catch(() => ({}))) as {
+          resourceId?: string
+          error?: string
+        }
+        if (!resourceRes.ok || resourceData.error) {
+          throw new Error(resourceData.error || `Failed to save file (${resourceRes.status})`)
+        }
+        setFsMessage(`Uploaded "${file.name}" as a private file.`)
+        await loadDbRoot()
+      } catch (error) {
+        setFsError(error instanceof Error ? error.message : "Failed to upload file")
+      } finally {
+        setFsUploading(false)
+      }
+    },
+    [loadDbRoot, ownerId],
+  )
 
   const toggleDbDirectory = useCallback(
     async (node: ExplorerNode) => {
@@ -541,6 +591,33 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
                   Open
                 </Button>
               </div>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-muted-foreground">Files</p>
+              <input
+                ref={uploadInputRef}
+                type="file"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) void handleUploadFile(file)
+                  event.target.value = ""
+                }}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={fsUploading}
+              >
+                {fsUploading ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="mr-1 h-3.5 w-3.5" />
+                )}
+                Upload file
+              </Button>
             </div>
             <div className="max-h-[520px] space-y-1 overflow-y-auto rounded-md border bg-muted/20 p-2">
               <FilesystemTree

@@ -23,7 +23,7 @@
  * 403 and the panel renders a read-only notice.
  */
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Loader2, Plus, ShieldCheck, Trash2, X } from "lucide-react"
+import { Loader2, Plus, Send, ShieldCheck, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -128,6 +128,11 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
   const [policyConditions, setPolicyConditions] = useState<PolicyCondition[]>([
     { key: "", operator: "equals", value: "" },
   ])
+
+  // Share-as-post form
+  const [showShareForm, setShowShareForm] = useState(false)
+  const [shareCaption, setShareCaption] = useState("")
+  const [shareOfferingId, setShareOfferingId] = useState("")
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -324,6 +329,34 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
     },
     [loadAccess, resourceId],
   )
+
+  const shareAsPost = useCallback(async () => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      const response = await fetch(`/api/agent-hq/resources/${encodeURIComponent(resourceId)}/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          caption: shareCaption || undefined,
+          linkedOfferingId: shareOfferingId || undefined,
+        }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { error?: string; postId?: string }
+      if (!response.ok || data.error) {
+        throw new Error(data.error || `Failed to share (${response.status})`)
+      }
+      setMessage("Shared as a post.")
+      setShowShareForm(false)
+      setShareCaption("")
+      setShareOfferingId("")
+      void loadAccess()
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to share")
+    } finally {
+      setBusy(false)
+    }
+  }, [loadAccess, resourceId, shareCaption, shareOfferingId])
 
   const toggleAction = (verb: string, list: string[], set: (next: string[]) => void) => {
     set(list.includes(verb) ? list.filter((v) => v !== verb) : [...list, verb])
@@ -680,6 +713,44 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
                 </Button>
               </div>
             ) : null}
+          </div>
+
+          {/* Share as post — optionally with an embedded offering */}
+          <div className="space-y-2 rounded-md border border-dashed p-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-muted-foreground">Share as post</p>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-[11px]"
+                onClick={() => setShowShareForm((v) => !v)}
+              >
+                {showShareForm ? "Cancel" : "Share"}
+              </Button>
+            </div>
+            {showShareForm ? (
+              <div className="space-y-2">
+                <Input
+                  value={shareCaption}
+                  onChange={(event) => setShareCaption(event.target.value)}
+                  placeholder="Caption (optional)"
+                  className="h-8 text-xs"
+                />
+                <Input
+                  value={shareOfferingId}
+                  onChange={(event) => setShareOfferingId(event.target.value)}
+                  placeholder="Embed offering id (optional)"
+                  className="h-8 text-xs"
+                />
+                <Button size="sm" className="h-8 text-xs" disabled={busy} onClick={() => void shareAsPost()}>
+                  <Send className="mr-1 h-3.5 w-3.5" /> Post
+                </Button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                Publish this file as a post; attach an offering to sell or promote it.
+              </p>
+            )}
           </div>
 
           {/* Read-only history */}

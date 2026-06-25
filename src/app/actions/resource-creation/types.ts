@@ -25,6 +25,19 @@ export interface CreateResourceInput {
   metadata?: Record<string, unknown>;
   location?: { lat: number; lng: number };
   federate?: boolean;
+  /**
+   * Stored-object reference for resources backed by an uploaded file (image,
+   * video, audio, document, or generic file). Populates the resource's
+   * dedicated storage columns so the file is addressable without unpacking
+   * metadata. Omitted for text-only resources.
+   */
+  file?: {
+    url?: string;
+    storageKey?: string;
+    storageProvider?: string;
+    contentType?: string;
+    fileSize?: number;
+  };
 }
 
 export interface UpdateResourceInput {
