@@ -19,8 +19,8 @@ import { getExecutionContext } from "@/lib/federation/execution-context";
 import { hasEntitlement } from "@/lib/billing";
 import type { MembershipTier } from "@/db/schema";
 
-import type { ActionResult, CreateResourceInput } from "./types";
-import { GROUP_LIKE_OWNER_AGENT_TYPES } from "./types";
+import type { ActionResult, CreateResourceInput, MemberCapabilityVerb } from "./types";
+import { GROUP_LIKE_OWNER_AGENT_TYPES, resolveGroupMemberCapability } from "./types";
 
 const MEMBERSHIP_TIER_VALUES: MembershipTier[] = [
   "basic",
@@ -79,32 +79,6 @@ export async function resolveAuthenticatedUserId(): Promise<string | null> {
   }
 
   return resolvedUserId;
-}
-
-/**
- * Per-group member content-capability toggles. Members may, by default, author
- * the content-participation verbs in a group they belong to; a group admin can
- * restrict this per-verb via `agents.metadata.memberCapabilities`
- * (`Record<verb, boolean>`). Absence of a toggle means default-on.
- *
- * This is the verified-principal authz axis made per-group: the toggle is the
- * explicit grant a member's posting hangs on — a `join`/`belong` row alone never
- * grants write (see `hasGroupManageAccess`).
- */
-export const MEMBER_CAPABILITY_VERBS = ["create", "comment", "react"] as const;
-export type MemberCapabilityVerb = (typeof MEMBER_CAPABILITY_VERBS)[number];
-
-export function resolveGroupMemberCapability(
-  metadata: Record<string, unknown> | null | undefined,
-  verb: MemberCapabilityVerb,
-): boolean {
-  const caps = (metadata ?? {}).memberCapabilities;
-  if (caps && typeof caps === "object" && !Array.isArray(caps)) {
-    const value = (caps as Record<string, unknown>)[verb];
-    if (typeof value === "boolean") return value;
-  }
-  // Default-on for the recognized content verbs.
-  return (MEMBER_CAPABILITY_VERBS as readonly string[]).includes(verb);
 }
 
 /**

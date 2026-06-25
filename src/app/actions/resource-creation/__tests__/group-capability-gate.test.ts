@@ -39,8 +39,8 @@ vi.mock("@/db/schema", () => ({
 }));
 vi.mock("@/db", () => ({ db: { select: mocks.dbSelect, execute: mocks.dbExecute } }));
 
+import { resolveGroupMemberCapability } from "@/app/actions/resource-creation/types";
 import {
-  resolveGroupMemberCapability,
   hasGroupManageAccess,
   canPostToGroup,
 } from "@/app/actions/resource-creation/helpers";
