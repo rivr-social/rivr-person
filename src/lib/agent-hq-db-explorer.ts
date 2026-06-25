@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import nodePath from "node:path";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { agentTypeEnum, agents, builderDataSources, ledger, resourceTypeEnum, resources, verbTypeEnum } from "@/db/schema";
@@ -144,6 +144,29 @@ async function getViewerContext(): Promise<AgentHqDbViewerContext> {
   return { userId, personaIds, allOwnerIds: [userId, ...personaIds] };
 }
 
+/**
+ * Resource ids explicitly shared WITH an agent via an active grant. A grant is
+ * a ledger row (`verb = "grant"`, `subjectId = agentId`, `objectType =
+ * "resource"`, `isActive = true`); `objectId` is the resource id. This powers
+ * the filesystem surfacing items shared with an agent (incl. personas)
+ * alongside the items it owns. The grant only adds the resource to the agent's
+ * view — writes stay owner-only via the scoped path.
+ */
+async function sharedResourceIdsForAgent(agentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ objectId: ledger.objectId })
+    .from(ledger)
+    .where(
+      and(
+        eq(ledger.verb, "grant"),
+        eq(ledger.subjectId, agentId),
+        eq(ledger.objectType, "resource"),
+        eq(ledger.isActive, true),
+      ),
+    );
+  return [...new Set(rows.map((row) => row.objectId).filter((id): id is string => Boolean(id)))];
+}
+
 function splitPath(relativePath: string) {
   const safeRelative = relativePath.replace(/^\/+/, "").trim();
   const segments = safeRelative.length > 0 ? safeRelative.split("/") : [];
@@ -232,14 +255,24 @@ export async function listDbEntries(relativePath = ""): Promise<{
     }
 
     if (subRoot === "resources") {
-      // Scoped resources for this agent
+      // Scoped resources for this agent: items it OWNS plus items explicitly
+      // shared WITH it via an active grant (T2.2 — any agent, incl personas).
       const type = subRest[0];
       const id = subRest[1];
+      const sharedIds = await sharedResourceIdsForAgent(agentId);
+      const ownedOrShared = (extra?: ReturnType<typeof eq>) =>
+        and(
+          sharedIds.length > 0
+            ? or(eq(resources.ownerId, agentId), inArray(resources.id, sharedIds))
+            : eq(resources.ownerId, agentId),
+          isNull(resources.deletedAt),
+          extra,
+        );
       if (!type) {
         const rows = await db
           .select({ type: resources.type })
           .from(resources)
-          .where(and(eq(resources.ownerId, agentId), isNull(resources.deletedAt)));
+          .where(ownedOrShared());
         const presentTypes = new Set(rows.map((row) => row.type));
         const resourceEntries = resourceTypeEnum.enumValues
           .filter((rt) => presentTypes.has(rt))
@@ -298,7 +331,7 @@ export async function listDbEntries(relativePath = ""): Promise<{
         const rows = await db
           .select({ id: resources.id, name: resources.name })
           .from(resources)
-          .where(and(eq(resources.type, type as typeof resourceTypeEnum.enumValues[number]), eq(resources.ownerId, agentId), isNull(resources.deletedAt)));
+          .where(ownedOrShared(eq(resources.type, type as typeof resourceTypeEnum.enumValues[number])));
         const entries: AgentHqDbEntry[] = [];
         // Add transcripts virtual folder for document type
         if (type === "document") {
@@ -718,8 +751,13 @@ export async function readDbFile(relativePath: string): Promise<{
         rFile = subParts[4];
       }
       if (!rType || !rId || !rFile) throw new Error("Resource file path is required.");
+      // Owned by the scope agent OR explicitly shared with it (read-only).
+      const sharedIds = await sharedResourceIdsForAgent(agentId);
+      const resourceScope = sharedIds.includes(rId)
+        ? and(eq(resources.id, rId), isNull(resources.deletedAt))
+        : and(eq(resources.id, rId), eq(resources.ownerId, agentId), isNull(resources.deletedAt));
       const row = await db.query.resources.findFirst({
-        where: and(eq(resources.id, rId), eq(resources.ownerId, agentId), isNull(resources.deletedAt)),
+        where: resourceScope,
         columns: { id: true, name: true, type: true, description: true, content: true, contentType: true, ownerId: true, visibility: true, tags: true, metadata: true, updatedAt: true },
       });
       if (!row) throw new Error("Resource not found.");
