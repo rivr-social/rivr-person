@@ -26,8 +26,9 @@ import { useToast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ResourceAclPanel } from "@/components/resource-acl-panel"
+import { FacetedVaultPanel } from "@/components/faceted-vault-panel"
 
-type DocViewMode = "documents" | "filesystem"
+type DocViewMode = "documents" | "filesystem" | "vault"
 
 /**
  * Recognizes a virtual DB-tree path that points at a Resource record and
@@ -537,9 +538,18 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
         >
           Filesystem
         </Button>
+        <Button
+          variant={viewMode === "vault" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setViewMode("vault")}
+        >
+          Tags
+        </Button>
       </div>
 
-      {viewMode === "filesystem" ? (
+      {viewMode === "vault" ? (
+        <FacetedVaultPanel />
+      ) : viewMode === "filesystem" ? (
         <div className="grid gap-4 md:grid-cols-[300px_1fr]">
           <div className="space-y-3 rounded-lg border p-3">
             <div className="space-y-2">
