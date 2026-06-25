@@ -1984,6 +1984,60 @@ export const builderDataSources = pgTable(
 export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
 export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;
 
+/**
+ * Builder-owned tables (Wave 2 / T2.4). The "Data" tab in the builder is the
+ * set of tables the builder defines for the app/site it is working on. Each row
+ * here is a table definition: a name + a JSONB column schema
+ * (`{ key, label, type }[]`, see `src/lib/builder/tables.ts`). Tables are scoped
+ * to the owning agent (the direct/builder agent) and a `siteSlug` so one agent
+ * can keep distinct table sets per site.
+ * Created by migration 0054_builder_tables.
+ */
+export const builderTables = pgTable(
+  'builder_tables',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull(),
+    siteSlug: text('site_slug').notNull().default('default'),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** Column schema: { key, label, type }[] (type ∈ text|number|boolean|date). */
+    columns: jsonb('columns').$type<Array<{ key: string; label: string; type: string }>>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('btbl_agent_id_idx').on(table.agentId),
+    index('btbl_agent_site_idx').on(table.agentId, table.siteSlug),
+  ]
+);
+
+export type BuilderTableRecord = typeof builderTables.$inferSelect;
+export type NewBuilderTableRecord = typeof builderTables.$inferInsert;
+
+/**
+ * Rows belonging to a builder-owned table. `data` is a JSONB object keyed by the
+ * parent table's column keys, with values coerced to each column's type by
+ * `validateRow` before insert. Deleting a table cascades its rows.
+ * Created by migration 0054_builder_tables.
+ */
+export const builderTableRows = pgTable(
+  'builder_table_rows',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tableId: uuid('table_id')
+      .notNull()
+      .references(() => builderTables.id, { onDelete: 'cascade' }),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('btblrow_table_id_idx').on(table.tableId)]
+);
+
+export type BuilderTableRowRecord = typeof builderTableRows.$inferSelect;
+export type NewBuilderTableRowRecord = typeof builderTableRows.$inferInsert;
+
 // ---------------------------------------------------------------------------
 // Credential sync queue (federation-auth #15)
 // ---------------------------------------------------------------------------
