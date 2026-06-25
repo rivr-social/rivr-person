@@ -43,17 +43,36 @@ export class PermissionError extends Error {
 // =============================================================================
 
 /**
- * An attribute condition that must be met for a policy to grant access.
+ * Supported ABAC condition operators.
  *
- * Operators:
- * - "equals":   actor's attribute value === condition value
- * - "contains": actor's attribute (array) contains the condition value
- * - "in":       actor's attribute value is in the condition value (array)
- * - "exists":   actor has the attribute key (value is ignored)
+ * - "equals":     actor's attribute value === condition value
+ * - "not_equals": actor's attribute value !== condition value
+ * - "contains":   actor's attribute (array) contains the condition value
+ * - "in":         actor's attribute value is in the condition value (array)
+ * - "exists":     actor has the attribute key (value is ignored)
+ * - "gt"/"gte"/"lt"/"lte": numeric comparison of actor attribute vs value
+ */
+export const ATTRIBUTE_OPERATORS = [
+  "equals",
+  "not_equals",
+  "contains",
+  "in",
+  "exists",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+] as const;
+
+export type AttributeOperator = (typeof ATTRIBUTE_OPERATORS)[number];
+
+/**
+ * An attribute condition that must be met for a policy to apply (grant for
+ * an allow policy, block for a deny policy).
  */
 export interface AttributeCondition {
   key: string;
-  operator: "equals" | "contains" | "in" | "exists";
+  operator: AttributeOperator;
   value: string | string[];
 }
 
