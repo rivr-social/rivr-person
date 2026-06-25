@@ -70,6 +70,7 @@ import type {
 import { GitHubDeploySettings } from "@/components/github-deploy-settings";
 import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
 import { BuilderTablesPanel } from "@/components/builder-tables-panel";
+import { BuilderReaScopePicker } from "@/components/builder-rea-scope-picker";
 
 // ---------------------------------------------------------------------------
 // Workspace target types
@@ -2721,6 +2722,19 @@ export default function BuilderPage() {
                                         </div>
                                       ))}
                                     </div>
+                                  )}
+
+                                  {enabled && meta.scopeVocabulary && (
+                                    <BuilderReaScopePicker
+                                      vocabulary={meta.scopeVocabulary}
+                                      config={config}
+                                      onChange={(next) =>
+                                        void handleSaveDataSourceConfig(
+                                          meta.kind,
+                                          next,
+                                        )
+                                      }
+                                    />
                                   )}
 
                                   {enabled && (
