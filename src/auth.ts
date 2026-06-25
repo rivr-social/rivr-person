@@ -36,6 +36,10 @@ import { eq } from "drizzle-orm";
 import { verify } from "@node-rs/bcrypt";
 import type { NextAuthConfig } from "next-auth";
 import { verifyWithGlobalIdentityAuthority } from "@/lib/auth/global-credential-authority";
+import {
+  GOOGLE_OAUTH_SCOPES,
+  linkGoogleConnectorsFromGrant,
+} from "@/lib/autobot-google-link";
 
 /**
  * Minimum allowed password length per NIST SP 800-63B guidelines.
@@ -155,16 +159,15 @@ if (googleOAuthConfigured) {
       clientSecret: googleClientSecret as string,
       authorization: {
         params: {
-          scope: [
-            "openid",
-            "email",
-            "profile",
-            "https://www.googleapis.com/auth/documents",
-            "https://www.googleapis.com/auth/drive.file",
-            "https://www.googleapis.com/auth/calendar",
-          ].join(" "),
+          // A5: request the FULL connector scope set (Calendar + Gmail + Drive +
+          // Docs) up front. `include_granted_scopes` makes Google return an
+          // incremental superset on a re-link so a user who initially declined
+          // a scope can grant it later without losing the others. Partial grants
+          // are reconciled in the `linkAccount` event below.
+          scope: GOOGLE_OAUTH_SCOPES.join(" "),
           access_type: "offline",
           prompt: "consent",
+          include_granted_scopes: "true",
         },
       },
       allowDangerousEmailAccountLinking: true,
@@ -247,6 +250,31 @@ export const authConfig: NextAuthConfig = {
         session.user.name = (token.name as string | undefined) ?? null;
       }
       return session;
+    },
+  },
+
+  events: {
+    /**
+     * A5: when a Google account is linked, map the *granted* OAuth scopes onto
+     * the agent's connector lane so the Calendar/Gmail/Drive/Docs connectors
+     * light up automatically from the one sign-in. Grant-driven, so a partial
+     * consent only enables the connectors the user actually authorized. Failures
+     * are swallowed — a connector-provisioning hiccup must never break sign-in.
+     */
+    async linkAccount({ user, account }) {
+      if (account?.provider !== "google") return;
+      const agentId = user?.id;
+      if (!agentId) return;
+      try {
+        await linkGoogleConnectorsFromGrant({
+          agentId,
+          grantedScope: account.scope,
+          externalAccountId: account.providerAccountId,
+          accountLabel: user.email ?? user.name ?? null,
+        });
+      } catch (error) {
+        console.error("Failed to link Google connectors from grant:", error);
+      }
     },
   },
 
