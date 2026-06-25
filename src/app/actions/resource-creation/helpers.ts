@@ -322,7 +322,7 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
         .from(agents)
         .where(and(eq(agents.id, ownerId), inArray(agents.type, [...GROUP_LIKE_OWNER_AGENT_TYPES])))
         .limit(1);
-      if (!owner || !(await hasGroupWriteAccess(userId, ownerId))) {
+      if (!owner || !(await canPostToGroup(userId, ownerId, "create"))) {
         return {
           success: false,
           message: "You do not have permission to create content for this group.",
