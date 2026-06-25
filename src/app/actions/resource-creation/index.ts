@@ -16,6 +16,9 @@ export {
 export {
   resolveAuthenticatedUserId,
   hasGroupWriteAccess,
+  hasGroupManageAccess,
+  canPostToGroup,
+  resolveGroupMemberCapability,
   canModifyResource,
   revalidateOwnerPaths,
   createResourceWithLedger,

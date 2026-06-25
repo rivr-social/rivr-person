@@ -124,9 +124,12 @@ const VERB_IMPLICATIONS: Partial<Record<VerbType, VerbType[]>> = {
  * group grants for verbs included in their role entry here.
  */
 const ROLE_PERMISSIONS: Record<string, VerbType[]> = {
-  admin: ["manage", "view", "update", "delete", "grant", "assign", "use", "rent", "share"],
-  moderator: ["view", "update", "assign", "use", "rent"],
-  member: ["view", "use", "rent"],
+  admin: ["manage", "view", "update", "delete", "grant", "assign", "use", "rent", "share", "create", "comment", "react"],
+  moderator: ["view", "update", "assign", "use", "rent", "create", "comment", "react"],
+  // Members may author content-participation verbs (create/comment/react) in a
+  // group they belong to. Per-group `metadata.memberCapabilities` toggles gate
+  // this further; see canPostToGroup. Structural verbs stay admin/moderator.
+  member: ["view", "use", "rent", "create", "comment", "react"],
   viewer: ["view"],
 };
 
