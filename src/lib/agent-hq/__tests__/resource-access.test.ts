@@ -32,8 +32,8 @@ describe("GRANTABLE_VERBS / isGrantableVerb", () => {
 describe("shapeAccessGrants", () => {
   it("humanizes subjects, flags personas, and sorts by name then verb", () => {
     const rows: RawGrantRow[] = [
-      { subjectId: "a2", action: "view", role: null, grantedAt: new Date("2026-01-02T00:00:00Z") },
-      { subjectId: "a1", action: "manage", role: "editor", grantedAt: "2026-01-01T00:00:00Z" },
+      { subjectId: "a2", action: "view", role: null, scope: "locale", grantedAt: new Date("2026-01-02T00:00:00Z") },
+      { subjectId: "a1", action: "manage", role: "editor", scope: "global", grantedAt: "2026-01-01T00:00:00Z" },
     ];
     const grants = shapeAccessGrants(rows, lookup);
     expect(grants.map((g) => g.subjectName)).toEqual(["Alice", "Bob"]);
@@ -44,6 +44,7 @@ describe("shapeAccessGrants", () => {
       isPersona: false,
       verb: "manage",
       role: "editor",
+      scope: "global",
     });
     expect(grants[1]).toMatchObject({ subjectId: "a2", isPersona: true, subjectImage: null });
     expect(grants[1].grantedAt).toBe("2026-01-02T00:00:00.000Z");
@@ -51,9 +52,9 @@ describe("shapeAccessGrants", () => {
 
   it("drops rows whose action is not a grantable verb", () => {
     const rows: RawGrantRow[] = [
-      { subjectId: "a1", action: "own", role: null, grantedAt: new Date() },
-      { subjectId: "a1", action: null, role: null, grantedAt: new Date() },
-      { subjectId: "a1", action: "view", role: null, grantedAt: new Date() },
+      { subjectId: "a1", action: "own", role: null, scope: null, grantedAt: new Date() },
+      { subjectId: "a1", action: null, role: null, scope: null, grantedAt: new Date() },
+      { subjectId: "a1", action: "view", role: null, scope: null, grantedAt: new Date() },
     ];
     const grants = shapeAccessGrants(rows, lookup);
     expect(grants).toHaveLength(1);
@@ -62,7 +63,7 @@ describe("shapeAccessGrants", () => {
 
   it("falls back to 'Unknown agent' for missing identities", () => {
     const rows: RawGrantRow[] = [
-      { subjectId: "ghost", action: "view", role: null, grantedAt: new Date() },
+      { subjectId: "ghost", action: "view", role: null, scope: null, grantedAt: new Date() },
     ];
     const grants = shapeAccessGrants(rows, lookup);
     expect(grants[0].subjectName).toBe("Unknown agent");

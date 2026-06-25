@@ -96,15 +96,18 @@ export async function GET(_request: Request, context: RouteContext) {
         ),
       );
 
-    const raw: RawGrantRow[] = grantRows.map((row) => ({
-      subjectId: row.subjectId,
-      action:
-        row.metadata && typeof row.metadata === "object" && "action" in row.metadata
-          ? String((row.metadata as Record<string, unknown>).action ?? "")
-          : null,
-      role: row.role,
-      grantedAt: row.timestamp,
-    }));
+    const raw: RawGrantRow[] = grantRows.map((row) => {
+      const meta = row.metadata && typeof row.metadata === "object"
+        ? (row.metadata as Record<string, unknown>)
+        : null;
+      return {
+        subjectId: row.subjectId,
+        action: meta && "action" in meta ? String(meta.action ?? "") : null,
+        role: row.role,
+        scope: meta && typeof meta.scope === "string" ? meta.scope : null,
+        grantedAt: row.timestamp,
+      };
+    });
 
     const lookup = await loadIdentities(
       [...new Set(raw.map((r) => r.subjectId))],
@@ -145,7 +148,11 @@ export async function POST(request: Request, context: RouteContext) {
       action?: string;
       subjectId?: string;
       verb?: string;
+      role?: string;
+      scope?: string;
     };
+    const scope = body.scope === "locale" ? "locale" : "global";
+    const role = typeof body.role === "string" && body.role.trim() ? body.role.trim() : undefined;
 
     if (body.action !== "grant" && body.action !== "revoke") {
       return NextResponse.json(
@@ -171,6 +178,8 @@ export async function POST(request: Request, context: RouteContext) {
           verb: body.verb,
           targetId: id,
           targetType: "resource",
+          role,
+          scope,
         });
       } else {
         await revokePermission({

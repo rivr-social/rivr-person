@@ -34,6 +34,8 @@ export interface RawGrantRow {
   subjectId: string;
   action: string | null;
   role: string | null;
+  /** Grant context: "locale" (scoped) or "global" (default). */
+  scope: string | null;
   grantedAt: Date | string;
 }
 
@@ -45,6 +47,7 @@ export interface AccessGrantDTO {
   isPersona: boolean;
   verb: VerbType;
   role: string | null;
+  scope: string | null;
   grantedAt: string;
 }
 
@@ -102,6 +105,7 @@ export function shapeAccessGrants(
       isPersona: identity?.isPersona === true,
       verb: action as VerbType,
       role: row.role,
+      scope: row.scope,
       grantedAt: toIso(row.grantedAt),
     });
   }
