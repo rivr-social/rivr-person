@@ -33,7 +33,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { Activity, Bot, Loader2, Network } from "lucide-react";
 import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
-import { USER_CONNECTABLE_PROVIDERS } from "@/lib/autobot-connectors";
+import {
+  DEPLOY_CONNECTABLE_PROVIDERS,
+  USER_CONNECTABLE_PROVIDERS,
+} from "@/lib/autobot-connectors";
 import { DeviceApprovals } from "@/components/device-approvals";
 import { McpTokenCard } from "@/components/mcp-token-card";
 import { AgentRolesTab } from "@/components/hub/agent-roles-tab";
@@ -216,6 +219,8 @@ export function AssistantSettingsPanel() {
               </div>
             </CardContent>
           </Card>
+
+          <ClaudeCodeTokenCard />
         </TabsContent>
 
         <TabsContent value="roles" className="mt-4">
@@ -256,9 +261,193 @@ export function AssistantSettingsPanel() {
             </CardHeader>
           </Card>
           <AutobotConnectionsPanel providers={USER_CONNECTABLE_PROVIDERS} />
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Network className="h-4 w-4" />
+                Deploy &amp; DNS
+              </CardTitle>
+              <CardDescription>
+                Connect a DNS provider so the builder can point your domains at
+                generated sites. API keys are stored encrypted at rest.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+          <AutobotConnectionsPanel providers={DEPLOY_CONNECTABLE_PROVIDERS} />
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code token (A4) — the agent's own Claude credential that powers BOTH
+// the assistant chat and the builder. Stored as the `claude_code` connector
+// (config.token), encrypted at rest; the connections API only ever returns the
+// "__stored__" placeholder, never the token itself.
+// ---------------------------------------------------------------------------
+
+const CONNECTIONS_ENDPOINT = "/api/autobot/connections";
+const CLAUDE_CODE_SETUP_ENDPOINT = "/api/autobot/connections/claude_code/setup";
+const STORED_SECRET_PLACEHOLDER = "__stored__";
+
+interface ConnectionLike {
+  provider: string;
+  status?: string;
+  config?: Record<string, string>;
+}
+
+function ClaudeCodeTokenCard() {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [configured, setConfigured] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(CONNECTIONS_ENDPOINT, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to load connectors (${res.status})`);
+      const data = (await res.json()) as { connections?: ConnectionLike[] };
+      const claude = (data.connections ?? []).find(
+        (connection) => connection.provider === "claude_code",
+      );
+      setConfigured(
+        Boolean(
+          claude &&
+            (claude.config?.token === STORED_SECRET_PLACEHOLDER ||
+              claude.status === "connected"),
+        ),
+      );
+    } catch {
+      setConfigured(false);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onSave = useCallback(async () => {
+    const trimmed = tokenDraft.trim();
+    if (!trimmed) {
+      toast({ title: "Paste a Claude Code token first", variant: "destructive" });
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(CLAUDE_CODE_SETUP_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { token: trimmed } }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to save token (${res.status})`);
+      }
+      setTokenDraft("");
+      setConfigured(true);
+      toast({
+        title: "Claude token saved",
+        description: "Your assistant and builder now run on your Claude.",
+      });
+    } catch (error) {
+      toast({
+        title: "Could not save token",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  }, [tokenDraft, toast]);
+
+  const onRemove = useCallback(async () => {
+    setRemoving(true);
+    try {
+      // Fetch the full connection set, drop claude_code, and re-save. The GET
+      // redacts other providers' secrets to "__stored__"; the bulk POST
+      // reconciles those back to their stored encrypted values, so removing the
+      // Claude token never disturbs other connectors.
+      const res = await fetch(CONNECTIONS_ENDPOINT, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to load connectors (${res.status})`);
+      const data = (await res.json()) as { connections?: ConnectionLike[] };
+      const remaining = (data.connections ?? []).filter(
+        (connection) => connection.provider !== "claude_code",
+      );
+      const saveRes = await fetch(CONNECTIONS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connections: remaining }),
+      });
+      if (!saveRes.ok) {
+        const saveData = await saveRes.json().catch(() => ({}));
+        throw new Error(saveData.error || `Failed to remove token (${saveRes.status})`);
+      }
+      setConfigured(false);
+      setTokenDraft("");
+      toast({ title: "Claude token removed" });
+    } catch (error) {
+      toast({
+        title: "Could not remove token",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setRemoving(false);
+    }
+  }, [toast]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium">Claude Code token</CardTitle>
+        <CardDescription>
+          Paste a Claude Code token to run this assistant and your site builder
+          on your own Claude. One token powers both chat and code generation. The
+          token is stored encrypted at rest and never shown again.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (
+          <>
+            {configured ? (
+              <Badge variant="secondary" className="text-[10px]">
+                Token saved
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px]">
+                Not configured — falls back to the instance credential
+              </Badge>
+            )}
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={tokenDraft}
+                onChange={(event) => setTokenDraft(event.target.value)}
+                placeholder={configured ? "Paste a new token to replace" : "sk-ant-…"}
+                autoComplete="off"
+              />
+              <Button onClick={onSave} disabled={saving || !tokenDraft.trim()}>
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+              {configured ? (
+                <Button variant="outline" onClick={onRemove} disabled={removing}>
+                  {removing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Remove"}
+                </Button>
+              ) : null}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

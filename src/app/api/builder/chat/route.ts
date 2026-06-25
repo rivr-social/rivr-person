@@ -2,6 +2,13 @@ import { auth } from "@/auth";
 import { buildSystemPrompt, type WorkspaceContext } from "@/lib/bespoke/builder-system-prompt";
 import type { SiteFiles } from "@/lib/bespoke/site-files";
 import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
+import { resolveClaudeCodeConnectorToken } from "@/lib/autobot-connector-secrets";
+import {
+  ANTHROPIC_OAUTH_BETA,
+  ANTHROPIC_VERSION,
+  CLAUDE_CODE_IDENTITY,
+  resolveClaudeOAuthToken,
+} from "@/lib/ai/native-chat";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -51,25 +58,38 @@ type AIProvider = "anthropic" | "openai" | "gemini" | "ollama" | "none";
 async function streamAnthropic(
   systemPrompt: string,
   messages: ChatMessage[],
+  connectorToken?: string,
 ): Promise<ReadableStream<Uint8Array>> {
-  const apiKey = process.env.ANTHROPIC_API_KEY!;
+  // A4: the builder shares the assistant's Claude credential path. Resolve via
+  // the OAuth chain (agent's claude_code connector token → claude-auth file →
+  // ANTHROPIC_API_KEY) and call the Messages API with Bearer + oauth-beta, so a
+  // single pasted Claude Code token powers BOTH builder and chat.
+  const token = await resolveClaudeOAuthToken(connectorToken);
 
   const anthropicMessages = messages.map((m) => ({
     role: m.role,
     content: m.content,
   }));
 
+  // OAuth (Claude Max / Claude Code) credentials require the first system block
+  // to be the Claude Code identity string; the operator prompt follows it.
+  const systemBlocks: Array<{ type: "text"; text: string }> = [
+    { type: "text", text: CLAUDE_CODE_IDENTITY },
+    { type: "text", text: systemPrompt },
+  ];
+
   const response = await fetch(ANTHROPIC_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
+      Authorization: `Bearer ${token}`,
+      "anthropic-version": ANTHROPIC_VERSION,
+      "anthropic-beta": ANTHROPIC_OAUTH_BETA,
     },
     body: JSON.stringify({
       model: ANTHROPIC_MODEL,
       max_tokens: MAX_TOKENS,
-      system: systemPrompt,
+      system: systemBlocks,
       messages: anthropicMessages,
       stream: true,
     }),
@@ -426,9 +446,20 @@ function preferredProviderFromModel(selectedModel: string | undefined): AIProvid
  * honors the direct agent's configured model; the remaining providers follow as
  * fallbacks. Ollama is always last — it needs no API key, just a running host.
  */
-function buildFallbackChain(preferred?: AIProvider | null): AIProvider[] {
+function buildFallbackChain(
+  preferred?: AIProvider | null,
+  hasClaudeCredential = false,
+): AIProvider[] {
   const available: AIProvider[] = [];
-  if (process.env.ANTHROPIC_API_KEY) available.push("anthropic");
+  // Anthropic is reachable when ANY Claude credential resolves: the agent's
+  // claude_code connector token, the instance claude-auth store, or the env key.
+  if (
+    hasClaudeCredential ||
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.AGENT_HQ_CLAUDE_HOME
+  ) {
+    available.push("anthropic");
+  }
   if (process.env.OPENAI_API_KEY) available.push("openai");
   if (process.env.GOOGLE_AI_API_KEY) available.push("gemini");
   available.push("ollama");
@@ -443,10 +474,11 @@ async function streamForProvider(
   provider: AIProvider,
   systemPrompt: string,
   messages: ChatMessage[],
+  connectorToken?: string,
 ): Promise<ReadableStream<Uint8Array>> {
   switch (provider) {
     case "anthropic":
-      return streamAnthropic(systemPrompt, messages);
+      return streamAnthropic(systemPrompt, messages, connectorToken);
     case "openai":
       return streamOpenAI(systemPrompt, messages);
     case "gemini":
@@ -485,8 +517,12 @@ export async function POST(request: Request): Promise<Response> {
   // one autobotSettings blob (model, connectors, MCP token) with the assistant.
   // Honor the direct agent's configured model when picking the provider order.
   const { autobotSettings } = await resolveDirectAgent(session.user.id);
+  const claudeConnectorToken = resolveClaudeCodeConnectorToken(
+    autobotSettings.connections,
+  );
   const fallbackChain = buildFallbackChain(
     preferredProviderFromModel(autobotSettings.selectedModel),
+    Boolean(claudeConnectorToken),
   );
 
   try {
@@ -518,7 +554,12 @@ export async function POST(request: Request): Promise<Response> {
 
     for (const provider of fallbackChain) {
       try {
-        stream = await streamForProvider(provider, systemPrompt, body.messages);
+        stream = await streamForProvider(
+          provider,
+          systemPrompt,
+          body.messages,
+          claudeConnectorToken,
+        );
         break;
       } catch (error) {
         lastError = error;

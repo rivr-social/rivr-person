@@ -25,6 +25,7 @@
  * imported from server code — never from `@/lib/autobot-connectors`, which is
  * shared with client components.
  */
+import type { AutobotConnection } from "@/lib/autobot-connectors";
 import { decryptSecret, encryptSecret, isEncryptedSecret } from "@/lib/crypto/secret-box";
 
 /**
@@ -55,6 +56,32 @@ export const SECRET_CONFIG_KEYS: ReadonlySet<string> = new Set(
 
 /** Placeholder returned to clients in place of a stored secret value. */
 export const REDACTED_SECRET_PLACEHOLDER = "__stored__";
+
+/**
+ * Providers whose secret config values are encrypted at rest. Scoped to the new
+ * credential-bearing connectors (the Claude Code token and the DNS/deploy API
+ * keys) so the existing connectors' read paths keep working unchanged. The
+ * decrypt helpers pass plaintext through, so this set can grow without a
+ * migration as more providers adopt encryption.
+ */
+export const ENCRYPTED_SECRET_PROVIDERS: ReadonlySet<string> = new Set([
+  "claude_code",
+  "cloudflare",
+  "squarespace",
+  "namecheap",
+]);
+
+/**
+ * Encrypts a connector's secret config values only when the provider is opted
+ * into encryption-at-rest; otherwise returns the config unchanged.
+ */
+export function encryptConnectorConfigForProvider(
+  provider: string,
+  config: Record<string, string>,
+): Record<string, string> {
+  if (!ENCRYPTED_SECRET_PROVIDERS.has(provider)) return config;
+  return encryptConnectorConfig(config);
+}
 
 /** Returns true when a config key holds a secret that must be encrypted. */
 export function isSecretConfigKey(key: string): boolean {
@@ -111,6 +138,27 @@ export function decryptConnectorConfig(
 export function decryptConnectorSecret(value: string | null | undefined): string {
   if (!value) return "";
   return decryptSecret(value) ?? "";
+}
+
+/**
+ * Resolves the decrypted Claude Code token from an agent's connector lane, if a
+ * connected `claude_code` connector with a token is present. Used to drive the
+ * assistant chat AND the builder off the agent's own pasted token (A4), so one
+ * credential powers both surfaces for that agent.
+ *
+ * @param connections - The agent's connector lane (from autobot settings).
+ * @returns The cleartext token, or `undefined` when none is configured.
+ */
+export function resolveClaudeCodeConnectorToken(
+  connections: AutobotConnection[] | undefined,
+): string | undefined {
+  if (!Array.isArray(connections)) return undefined;
+  const connector = connections.find(
+    (connection) => connection.provider === "claude_code",
+  );
+  if (!connector) return undefined;
+  const token = decryptConnectorSecret(connector.config.token);
+  return token || undefined;
 }
 
 /**

@@ -27,6 +27,7 @@ import {
   ExternalLink,
   FileText,
   FolderOpen,
+  Globe,
   KeyRound,
   Loader2,
   MessageSquare,
@@ -116,6 +117,7 @@ const MODULE_ICON_MAP: Record<AutobotConnectionModule, typeof FileText> = {
   kg: Network,
   groups: MessageSquare,
   wallet: Wallet,
+  deploy: Globe,
 };
 
 const STATUS_TONE: Record<AutobotConnectionStatus, "outline" | "default" | "secondary" | "destructive"> = {
@@ -249,6 +251,23 @@ function getGuidedSetupFields(
         { key: "handle", label: "Handle", placeholder: "you.bsky.social" },
         { key: "appPassword", label: "App Password", placeholder: "xxxx-xxxx-xxxx-xxxx", inputType: "password" },
         { key: "pdsUrl", label: "PDS URL", placeholder: "https://bsky.social (optional)", inputType: "url", description: "Only needed for self-hosted PDS." },
+      ];
+    case "cloudflare":
+      return [
+        { key: "apiKey", label: "API Token", placeholder: "Cloudflare API token", inputType: "password", description: "Scoped token with DNS edit / deploy permissions. Stored encrypted at rest." },
+        { key: "zoneId", label: "Zone ID", placeholder: "Optional zone id" },
+        { key: "accountId", label: "Account ID", placeholder: "Optional account id" },
+      ];
+    case "squarespace":
+      return [
+        { key: "apiKey", label: "API Key", placeholder: "Squarespace developer API key", inputType: "password", description: "Stored encrypted at rest." },
+        { key: "domain", label: "Domain", placeholder: "example.com" },
+      ];
+    case "namecheap":
+      return [
+        { key: "apiKey", label: "API Key", placeholder: "Namecheap API key", inputType: "password", description: "Stored encrypted at rest." },
+        { key: "apiUser", label: "API User", placeholder: "Namecheap API username" },
+        { key: "domain", label: "Domain", placeholder: "example.com" },
       ];
     default:
       return [];

@@ -11,7 +11,14 @@ const DEFAULT_QUERY_LIMIT = 50;
 const MAX_QUERY_LIMIT = 200;
 
 /** Keys stripped from args before persisting to avoid storing large payloads. */
-const REDACTED_ARG_KEYS = new Set(["token", "password", "secret"]);
+const REDACTED_ARG_KEYS = new Set([
+  "token",
+  "password",
+  "secret",
+  "apiKey",
+  "accessToken",
+  "refreshToken",
+]);
 
 // ---------------------------------------------------------------------------
 // Write

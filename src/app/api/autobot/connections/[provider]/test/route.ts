@@ -10,6 +10,11 @@ import {
   getAutobotConnectorDefinition,
   type AutobotConnectionProvider,
 } from "@/lib/autobot-connectors";
+import { decryptConnectorSecret } from "@/lib/autobot-connector-secrets";
+import {
+  ANTHROPIC_OAUTH_BETA,
+  ANTHROPIC_VERSION,
+} from "@/lib/ai/native-chat";
 import { validateBotToken } from "@/lib/autobot-telegram-sync";
 import { testSlackConnection } from "@/lib/autobot-slack-sync";
 import { testDiscordConnection } from "@/lib/autobot-discord-sync";
@@ -253,6 +258,91 @@ export async function POST(_request: Request, context: RouteContext) {
             error: error instanceof Error ? error.message : "Bot token validation failed.",
           };
         }
+        break;
+      }
+
+      case "claude_code": {
+        const token = decryptConnectorSecret(connection?.config.token).trim();
+        if (!token) {
+          result = { valid: false, error: "No Claude Code token configured." };
+          break;
+        }
+        try {
+          const response = await fetch("https://api.anthropic.com/v1/models", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "anthropic-version": ANTHROPIC_VERSION,
+              "anthropic-beta": ANTHROPIC_OAUTH_BETA,
+            },
+            cache: "no-store",
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!response.ok) {
+            result = {
+              valid: false,
+              error: `Anthropic API returned ${response.status}. Token may be invalid or expired.`,
+            };
+          } else {
+            result = { valid: true, label: "Claude Code token valid" };
+          }
+        } catch (error) {
+          result = {
+            valid: false,
+            error: error instanceof Error ? error.message : "Claude Code token test failed.",
+          };
+        }
+        break;
+      }
+
+      case "cloudflare": {
+        const apiKey = decryptConnectorSecret(connection?.config.apiKey).trim();
+        if (!apiKey) {
+          result = { valid: false, error: "No Cloudflare API token configured." };
+          break;
+        }
+        try {
+          const response = await fetch(
+            "https://api.cloudflare.com/client/v4/user/tokens/verify",
+            {
+              headers: { Authorization: `Bearer ${apiKey}` },
+              cache: "no-store",
+              signal: AbortSignal.timeout(10_000),
+            },
+          );
+          if (!response.ok) {
+            result = {
+              valid: false,
+              error: `Cloudflare API returned ${response.status}. Token may be invalid.`,
+            };
+          } else {
+            const data = (await response.json()) as {
+              result?: { status?: string };
+            };
+            const active = data.result?.status === "active";
+            result = {
+              valid: active,
+              label: active ? "Cloudflare token active" : undefined,
+              error: active ? undefined : "Cloudflare token is not active.",
+            };
+          }
+        } catch (error) {
+          result = {
+            valid: false,
+            error: error instanceof Error ? error.message : "Cloudflare token test failed.",
+          };
+        }
+        break;
+      }
+
+      case "squarespace":
+      case "namecheap": {
+        // No safe unauthenticated probe endpoint — validate that a key is set.
+        const apiKey = decryptConnectorSecret(connection?.config.apiKey).trim();
+        result = {
+          valid: Boolean(apiKey),
+          label: apiKey ? `${definition.label} key stored` : undefined,
+          error: apiKey ? undefined : `No ${definition.label} API key configured.`,
+        };
         break;
       }
 

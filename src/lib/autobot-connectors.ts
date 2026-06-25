@@ -27,6 +27,10 @@ export type AutobotConnectionProvider =
   | "matrix"
   | "mastodon"
   | "bluesky"
+  | "claude_code"
+  | "cloudflare"
+  | "squarespace"
+  | "namecheap"
   | "generic_oauth2";
 
 export type AutobotConnectionModule =
@@ -36,7 +40,8 @@ export type AutobotConnectionModule =
   | "media"
   | "kg"
   | "groups"
-  | "wallet";
+  | "wallet"
+  | "deploy";
 
 export type AutobotConnectionAuthStrategy =
   | "oauth2"
@@ -384,6 +389,50 @@ export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
     supportsSync: false,
   },
   {
+    provider: "claude_code",
+    label: "Claude Code",
+    description:
+      "Paste a Claude Code token so this agent's assistant and builder both run on your Claude. One token powers chat and code generation for this agent.",
+    authStrategy: "token",
+    modules: ["kg", "deploy"],
+    capabilities: ["assistant_llm", "builder_llm", "code_generation"],
+    configHints: ["token"],
+    supportsSync: false,
+  },
+  {
+    provider: "cloudflare",
+    label: "Cloudflare DNS",
+    description:
+      "Connect a Cloudflare API token to point DNS at builder-generated static sites and sovereign deployments.",
+    authStrategy: "api_key",
+    modules: ["deploy"],
+    capabilities: ["manage_dns", "point_domain"],
+    configHints: ["apiKey", "zoneId", "accountId"],
+    supportsSync: false,
+  },
+  {
+    provider: "squarespace",
+    label: "Squarespace Domains",
+    description:
+      "Connect a Squarespace domains API key to manage DNS records for builder static-site pointing.",
+    authStrategy: "api_key",
+    modules: ["deploy"],
+    capabilities: ["manage_dns", "point_domain"],
+    configHints: ["apiKey", "domain"],
+    supportsSync: false,
+  },
+  {
+    provider: "namecheap",
+    label: "Namecheap DNS",
+    description:
+      "Connect a Namecheap API key to manage DNS host records for builder static-site pointing and sovereign deploys.",
+    authStrategy: "api_key",
+    modules: ["deploy"],
+    capabilities: ["manage_dns", "point_domain"],
+    configHints: ["apiKey", "apiUser", "domain"],
+    supportsSync: false,
+  },
+  {
     provider: "generic_oauth2",
     label: "Generic OAuth2",
     description: "Store a generic OAuth2 connector definition for future app/service integrations.",
@@ -421,6 +470,19 @@ export const USER_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
   "x",
 ];
 
+/**
+ * DNS/deploy connectors surfaced under the assistant's Connectors tab so the
+ * agent can point domains at builder-generated sites (A7). Their secret config
+ * (`apiKey`) is encrypted at rest. Kept separate from
+ * {@link USER_CONNECTABLE_PROVIDERS} (messaging/docs catalog) so the deploy
+ * surface renders its own section.
+ */
+export const DEPLOY_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
+  "cloudflare",
+  "squarespace",
+  "namecheap",
+];
+
 export const AUTOBOT_CONNECTION_MODULE_SET = new Set<AutobotConnectionModule>([
   "docs",
   "calendar",
@@ -429,6 +491,7 @@ export const AUTOBOT_CONNECTION_MODULE_SET = new Set<AutobotConnectionModule>([
   "kg",
   "groups",
   "wallet",
+  "deploy",
 ]);
 
 export function getAutobotConnectorDefinition(

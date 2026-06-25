@@ -14,6 +14,13 @@ import {
   saveAutobotUserSettings,
 } from "@/lib/autobot-user-settings";
 import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
+import {
+  ENCRYPTED_SECRET_PROVIDERS,
+  REDACTED_SECRET_PLACEHOLDER,
+  encryptConnectorConfigForProvider,
+  isSecretConfigKey,
+  redactConnectorConfig,
+} from "@/lib/autobot-connector-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -63,6 +70,60 @@ const AVAILABLE_OAUTH_PROVIDERS = {
 /** A connection as returned to the UI, annotated with whether it is inherited
  * (shared down from the owning agent and therefore read-only at this scope). */
 type ScopedAutobotConnection = AutobotConnection & { inherited?: boolean };
+
+/**
+ * Strips secret config material from any encrypted-provider connection before it
+ * is serialized to the browser. Secret values become the "__stored__"
+ * placeholder so the UI can show "configured" without ever receiving the
+ * (encrypted-at-rest) token material.
+ */
+function redactScopedConnection(
+  connection: ScopedAutobotConnection,
+): ScopedAutobotConnection {
+  if (!ENCRYPTED_SECRET_PROVIDERS.has(connection.provider)) return connection;
+  return { ...connection, config: redactConnectorConfig(connection.config) };
+}
+
+/**
+ * Reconciles inbound connector secrets against what is already stored.
+ *
+ * The GET above redacts encrypted-provider secrets to the "__stored__"
+ * placeholder, so a bulk panel save (POST) round-trips that placeholder back.
+ * Without this guard the placeholder would overwrite the real (encrypted)
+ * secret. For each encrypted-provider connection we: restore any secret whose
+ * inbound value is the placeholder from the existing stored value, then
+ * re-encrypt newly-entered plaintext secrets at rest. Non-encrypted providers
+ * pass through unchanged.
+ */
+function reconcileConnectionSecrets(
+  incoming: AutobotConnection[],
+  existing: AutobotConnection[],
+): AutobotConnection[] {
+  const existingByProvider = new Map(
+    existing.map((connection) => [connection.provider, connection]),
+  );
+
+  return incoming.map((connection) => {
+    if (!ENCRYPTED_SECRET_PROVIDERS.has(connection.provider)) return connection;
+
+    const priorConfig = existingByProvider.get(connection.provider)?.config ?? {};
+    const mergedConfig: Record<string, string> = { ...connection.config };
+    for (const key of Object.keys(mergedConfig)) {
+      if (isSecretConfigKey(key) && mergedConfig[key] === REDACTED_SECRET_PLACEHOLDER) {
+        if (priorConfig[key]) {
+          mergedConfig[key] = priorConfig[key];
+        } else {
+          delete mergedConfig[key];
+        }
+      }
+    }
+
+    return {
+      ...connection,
+      config: encryptConnectorConfigForProvider(connection.provider, mergedConfig),
+    };
+  });
+}
 
 type ConnectionPatchBody = {
   connections?: AutobotConnection[];
@@ -174,7 +235,7 @@ export async function GET() {
 
   return NextResponse.json({
     definitions: AUTOBOT_CONNECTOR_DEFINITIONS,
-    connections,
+    connections: connections.map(redactScopedConnection),
     linkedAccounts,
     availableAuthProviders: AVAILABLE_OAUTH_PROVIDERS,
     subject,
@@ -221,6 +282,16 @@ export async function POST(request: Request) {
     );
   }
 
+  // Preserve encrypted-at-rest secrets: a bulk save echoes the redacted
+  // "__stored__" placeholder back for encrypted providers, so reconcile against
+  // the currently-stored config before writing (restore untouched secrets,
+  // re-encrypt newly-entered ones).
+  const priorSubjectSettings = await getAutobotUserSettings(subject.actorId);
+  subjectConnections = reconcileConnectionSecrets(
+    subjectConnections,
+    priorSubjectSettings.connections,
+  );
+
   const [subjectSettings, ownerSettings] = await Promise.all([
     saveAutobotUserSettings(subject.actorId, {
       connections: subjectConnections,
@@ -248,7 +319,7 @@ export async function POST(request: Request) {
       );
 
   return NextResponse.json({
-    connections,
+    connections: connections.map(redactScopedConnection),
     subject,
   });
 }
