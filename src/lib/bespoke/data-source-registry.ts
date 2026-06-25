@@ -179,8 +179,11 @@ export async function fetchDataSourceContent(
         const params = new URLSearchParams({ kind });
         const types = (config.scopeTypes ?? []).filter((t) => t.trim().length > 0);
         const ids = (config.scopeIds ?? []).filter((i) => i.trim().length > 0);
+        if (ids.length === 0) {
+          return { label, data: null, error: `${label} requires at least one selected source item.` };
+        }
         if (types.length > 0) params.set("types", types.join(","));
-        if (ids.length > 0) params.set("ids", ids.join(","));
+        params.set("ids", ids.join(","));
         url = `/api/builder/rea-source?${params.toString()}`;
         break;
       }

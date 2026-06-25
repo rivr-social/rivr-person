@@ -150,13 +150,12 @@ export interface DataSourceConfig {
    * For REA sources (rivr-agents/ledger/resources): the KINDS/categories the
    * built app may read — resource types, agent types, or ledger verb types,
    * depending on the source kind. Empty/omitted = no type filter (still bounded
-   * by `scopeIds` if present, and always by the owner's own view-permissions).
+   * by required `scopeIds`, and always by the owner's own view-permissions).
    */
   scopeTypes?: string[];
   /**
-   * For REA sources: SPECIFIC object ids the built app may read. Empty/omitted =
-   * no id filter (bounded by `scopeTypes` if present). When both are omitted the
-   * scope is "everything the owner can view of this table" — narrow deliberately.
+   * For REA sources: SPECIFIC object ids the built app may read. Required for
+   * runtime fetches; type filters can only narrow these explicit selections.
    */
   scopeIds?: string[];
 }

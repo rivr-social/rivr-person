@@ -3,11 +3,7 @@ import { auth } from "@/auth";
 import { db } from "@/db";
 import { agents, ledger, resources } from "@/db/schema";
 import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
-import {
-  filterViewableAgents,
-  filterViewableResources,
-} from "@/app/actions/graph/helpers";
-import { canViewPredicate } from "@/lib/permissions";
+import { canViewPredicate, check } from "@/lib/permissions";
 import {
   isReaDataSourceKind,
   type ReaDataSourceKind,
@@ -19,15 +15,15 @@ export const dynamic = "force-dynamic";
 // ---------------------------------------------------------------------------
 // Builder REA data source
 //
-// Runtime read endpoint the BUILT site hits to display SCOPED slices of the
+// Runtime read endpoint the BUILT site hits to display SELECTED slices of the
 // owner's own Agents / Ledger / Resources. The scope is authored in the
 // builder Data → Sources tab and stored on the `builder_data_sources` binding
-// (`config.scopeTypes` + `config.scopeIds`).
+// (`config.scopeIds`, optionally narrowed by `config.scopeTypes`).
 //
 // SECURITY: scope can only ever NARROW. Every row is first bounded by the
-// builder/direct agent's OWN view-permissions (filterViewable* / canViewPredicate),
-// then narrowed to the requested kinds + ids. A scope can never widen access
-// beyond what the owner can already see.
+// builder/direct agent's OWN view-permissions (check / canViewPredicate), then
+// narrowed to the requested ids + kinds. A scope can never widen access beyond
+// what the owner can already see, and an omitted id scope is not a wildcard.
 // ---------------------------------------------------------------------------
 
 const CACHE_CONTROL_NO_STORE = "private, no-store, max-age=0, must-revalidate";
@@ -55,6 +51,26 @@ function noStore(body: unknown, status: number): NextResponse {
   });
 }
 
+async function filterReaResources(
+  actorId: string,
+  rows: (typeof resources.$inferSelect)[],
+): Promise<(typeof resources.$inferSelect)[]> {
+  const decisions = await Promise.all(
+    rows.map((row) => check(actorId, "view", row.id, "resource")),
+  );
+  return rows.filter((_, i) => decisions[i].allowed);
+}
+
+async function filterReaAgents(
+  actorId: string,
+  rows: (typeof agents.$inferSelect)[],
+): Promise<(typeof agents.$inferSelect)[]> {
+  const decisions = await Promise.all(
+    rows.map((row) => check(actorId, "view", row.id, "agent")),
+  );
+  return rows.filter((_, i) => decisions[i].allowed);
+}
+
 export async function GET(request: Request): Promise<NextResponse> {
   const session = await auth();
   if (!session?.user?.id) {
@@ -74,6 +90,13 @@ export async function GET(request: Request): Promise<NextResponse> {
   const kind = kindParam as ReaDataSourceKind;
   const scopeTypes = parseCsvParam(url.searchParams.get("types"));
   const scopeIds = parseCsvParam(url.searchParams.get("ids"));
+
+  if (scopeIds.length === 0) {
+    return noStore(
+      { error: "REA source scope must include at least one selected id." },
+      STATUS_BAD_REQUEST,
+    );
+  }
 
   try {
     // The self-facing assistant/builder always resolves to the account itself;
@@ -98,7 +121,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         .orderBy(desc(resources.updatedAt))
         .limit(MAX_ROWS);
 
-      const viewable = await filterViewableResources(actorId, rows);
+      const viewable = await filterReaResources(actorId, rows);
       const data = viewable.map((r) => ({
         id: r.id,
         type: r.type,
@@ -133,7 +156,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         .orderBy(agents.name)
         .limit(MAX_ROWS);
 
-      const viewable = await filterViewableAgents(actorId, rows);
+      const viewable = await filterReaAgents(actorId, rows);
       const data = viewable.map((a) => ({
         id: a.id,
         type: a.type,
