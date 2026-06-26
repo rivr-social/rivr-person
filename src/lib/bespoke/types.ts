@@ -116,7 +116,26 @@ export type DataSourceKind =
   | "myprofile"
   | "public-profile"
   | "solid-pod"
-  | "universal-manifest";
+  | "universal-manifest"
+  // REA graph sources: the built app reads SCOPED slices of the owner's own
+  // Agents / Ledger / Resources tables. Scope = a set of kinds/categories
+  // (`scopeTypes`) and/or a set of specific object ids (`scopeIds`).
+  | "rivr-agents"
+  | "rivr-ledger"
+  | "rivr-resources";
+
+/** The REA data-source kinds, for narrowing. */
+export const REA_DATA_SOURCE_KINDS = [
+  "rivr-agents",
+  "rivr-ledger",
+  "rivr-resources",
+] as const;
+
+export type ReaDataSourceKind = (typeof REA_DATA_SOURCE_KINDS)[number];
+
+export function isReaDataSourceKind(kind: DataSourceKind): kind is ReaDataSourceKind {
+  return (REA_DATA_SOURCE_KINDS as readonly string[]).includes(kind);
+}
 
 /** Per-source configuration stored alongside the binding. */
 export interface DataSourceConfig {
@@ -127,6 +146,18 @@ export interface DataSourceConfig {
   /** For universal-manifest: the kind + id path */
   umKind?: string;
   umId?: string;
+  /**
+   * For REA sources (rivr-agents/ledger/resources): the KINDS/categories the
+   * built app may read — resource types, agent types, or ledger verb types,
+   * depending on the source kind. Empty/omitted = no type filter (still bounded
+   * by required `scopeIds`, and always by the owner's own view-permissions).
+   */
+  scopeTypes?: string[];
+  /**
+   * For REA sources: SPECIFIC object ids the built app may read. Required for
+   * runtime fetches; type filters can only narrow these explicit selections.
+   */
+  scopeIds?: string[];
 }
 
 /** A persisted data-source binding row (mirrors the DB shape). */

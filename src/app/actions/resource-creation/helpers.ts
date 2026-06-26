@@ -19,8 +19,8 @@ import { getExecutionContext } from "@/lib/federation/execution-context";
 import { hasEntitlement } from "@/lib/billing";
 import type { MembershipTier } from "@/db/schema";
 
-import type { ActionResult, CreateResourceInput } from "./types";
-import { GROUP_LIKE_OWNER_AGENT_TYPES } from "./types";
+import type { ActionResult, CreateResourceInput, MemberCapabilityVerb } from "./types";
+import { GROUP_LIKE_OWNER_AGENT_TYPES, resolveGroupMemberCapability } from "./types";
 
 const MEMBERSHIP_TIER_VALUES: MembershipTier[] = [
   "basic",
@@ -81,7 +81,13 @@ export async function resolveAuthenticatedUserId(): Promise<string | null> {
   return resolvedUserId;
 }
 
-export async function hasGroupWriteAccess(userId: string, groupId: string): Promise<boolean> {
+/**
+ * MANAGE/admin authorization on a group-like agent: the creator, or an explicit
+ * active `own`/`manage` role edge. Deliberately does NOT accept `join`/`belong`
+ * membership rows (the C4-class ambient-claim hole) or tier/plan entitlement —
+ * structural and destructive operations require an explicit admin grant.
+ */
+export async function hasGroupManageAccess(userId: string, groupId: string): Promise<boolean> {
   const [group] = await db
     .select({ id: agents.id, metadata: agents.metadata })
     .from(agents)
@@ -94,6 +100,59 @@ export async function hasGroupWriteAccess(userId: string, groupId: string): Prom
   const creatorId = metadata.creatorId;
   if (typeof creatorId === "string" && creatorId === userId) return true;
 
+  const rows = await db.execute(sql`
+    SELECT id
+    FROM ledger
+    WHERE subject_id = ${userId}::uuid
+      AND object_id = ${groupId}::uuid
+      AND is_active = true
+      AND verb IN ('own', 'manage')
+      AND (expires_at IS NULL OR expires_at > NOW())
+    LIMIT 1
+  `);
+
+  return (rows as Array<Record<string, unknown>>).length > 0;
+}
+
+/**
+ * Structural/admin write gate. Now an alias for {@link hasGroupManageAccess};
+ * retained so structural call sites keep a stable name. Content-creation call
+ * sites must use {@link canPostToGroup} instead.
+ */
+export async function hasGroupWriteAccess(userId: string, groupId: string): Promise<boolean> {
+  return hasGroupManageAccess(userId, groupId);
+}
+
+/**
+ * CONTENT authorization on a group-like agent: a member may author content when
+ * (a) they have manage access (admins always may), OR (b) the group's per-verb
+ * member capability is enabled (default-on) AND they hold a real active
+ * membership edge AND satisfy any required tier/plan entitlement. The membership
+ * edge is necessary-but-not-sufficient — it only grants posting because the
+ * explicit per-group policy permits it.
+ */
+export async function canPostToGroup(
+  userId: string,
+  groupId: string,
+  verb: MemberCapabilityVerb = "create",
+): Promise<boolean> {
+  const [group] = await db
+    .select({ id: agents.id, metadata: agents.metadata })
+    .from(agents)
+    .where(and(eq(agents.id, groupId), inArray(agents.type, [...GROUP_LIKE_OWNER_AGENT_TYPES])))
+    .limit(1);
+
+  if (!group) return false;
+
+  const metadata = ((group.metadata ?? {}) as Record<string, unknown>);
+
+  // Admins/owner always may.
+  if (await hasGroupManageAccess(userId, groupId)) return true;
+
+  // Per-group toggle must permit this content verb for members.
+  if (!resolveGroupMemberCapability(metadata, verb)) return false;
+
+  // Required paid tier, if the group gates writes behind one.
   const requiredTier = normalizeRequiredTier(metadata);
   if (requiredTier) {
     const entitled = await hasEntitlement(userId, requiredTier);
@@ -237,7 +296,7 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
         .from(agents)
         .where(and(eq(agents.id, ownerId), inArray(agents.type, [...GROUP_LIKE_OWNER_AGENT_TYPES])))
         .limit(1);
-      if (!owner || !(await hasGroupWriteAccess(userId, ownerId))) {
+      if (!owner || !(await canPostToGroup(userId, ownerId, "create"))) {
         return {
           success: false,
           message: "You do not have permission to create content for this group.",
