@@ -190,12 +190,16 @@ export default function SignupPage() {
               />
               <div className="space-y-1">
                 <Label htmlFor="signup-accept-terms" className="text-sm font-medium">
-                  I accept the Terms and Conditions
+                  I accept the Terms of Service and Privacy Policy
                 </Label>
                 <p className="text-sm text-muted-foreground">
                   By creating an account, you agree to the{" "}
-                  <Link href="/auth/signup/terms" className="text-primary hover:underline">
-                    Terms and Conditions
+                  <Link href="/terms" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                    Terms of Service
+                  </Link>{" "}
+                  and{" "}
+                  <Link href="/privacy" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                    Privacy Policy
                   </Link>
                   .
                 </p>
