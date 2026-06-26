@@ -25,6 +25,9 @@ const VALID_KINDS: readonly DataSourceKind[] = [
   "public-profile",
   "solid-pod",
   "universal-manifest",
+  "rivr-agents",
+  "rivr-ledger",
+  "rivr-resources",
 ];
 
 // ---------------------------------------------------------------------------

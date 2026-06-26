@@ -18,7 +18,17 @@ export const dynamic = "force-dynamic";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-const CONDITION_OPERATORS = new Set(["equals", "contains", "in", "exists"]);
+const CONDITION_OPERATORS = new Set([
+  "equals",
+  "not_equals",
+  "contains",
+  "in",
+  "exists",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+]);
 
 function parseConditions(input: unknown): AttributeCondition[] {
   if (!Array.isArray(input)) return [];
@@ -33,7 +43,9 @@ function parseConditions(input: unknown): AttributeCondition[] {
       ? c.value.filter((v): v is string => typeof v === "string")
       : typeof c.value === "string"
         ? c.value
-        : "";
+        : typeof c.value === "number" && Number.isFinite(c.value)
+          ? c.value
+          : "";
     out.push({ key, operator: operator as AttributeCondition["operator"], value });
   }
   return out;
@@ -71,6 +83,7 @@ export async function GET(_request: Request, context: RouteContext) {
       return {
         id: row.id,
         label: meta.label ?? row.name ?? "Policy",
+        effect: meta.effect === "deny" ? "deny" : "allow",
         allowedActions: meta.allowedActions ?? [],
         conditions: meta.conditions ?? [],
         logicalOperator: meta.logicalOperator ?? "AND",
@@ -90,7 +103,7 @@ export async function GET(_request: Request, context: RouteContext) {
  * POST /api/agent-hq/resources/[id]/policies
  *
  * Creates an ABAC policy on the resource. Body:
- * `{ allowedActions, conditions: [{key, operator, value}], logicalOperator,
+ * `{ effect?, allowedActions, conditions: [{key, operator, value}], logicalOperator,
  * localeScope?, label? }`. Delegates to `createPermissionPolicy`, which
  * re-verifies the actor holds `manage` on the resource.
  */
@@ -104,6 +117,7 @@ export async function POST(request: Request, context: RouteContext) {
     const { id } = await context.params;
     const body = (await request.json().catch(() => ({}))) as {
       allowedActions?: unknown;
+      effect?: unknown;
       conditions?: unknown;
       logicalOperator?: unknown;
       localeScope?: unknown;
@@ -129,6 +143,7 @@ export async function POST(request: Request, context: RouteContext) {
     }
 
     const logicalOperator = body.logicalOperator === "OR" ? "OR" : "AND";
+    const effect = body.effect === "deny" ? "deny" : "allow";
     const localeScope =
       typeof body.localeScope === "string" && body.localeScope.trim()
         ? body.localeScope.trim()
@@ -141,6 +156,7 @@ export async function POST(request: Request, context: RouteContext) {
         creatorId: userId,
         targetId: id,
         targetType: "resource",
+        effect,
         allowedActions,
         conditions,
         logicalOperator,

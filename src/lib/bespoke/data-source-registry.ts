@@ -25,6 +25,12 @@ export interface DataSourceMeta {
   defaultConfig: DataSourceConfig;
   /** Fields the user can edit in the UI for this source kind. */
   configurableFields: ConfigurableField[];
+  /**
+   * REA sources are configured with a scope picker (kinds + specific objects),
+   * not free-text fields. `scopeVocabulary` tells the picker which catalog of
+   * "kinds" to offer: resource types, agent types, or ledger verb types.
+   */
+  scopeVocabulary?: "resource-types" | "agent-types" | "verb-types";
 }
 
 export interface ConfigurableField {
@@ -73,6 +79,33 @@ export const DATA_SOURCE_REGISTRY: readonly DataSourceMeta[] = [
       { key: "umKind", label: "Kind", placeholder: "e.g. person", required: true },
       { key: "umId", label: "ID", placeholder: "e.g. abc-123", required: true },
     ],
+  },
+  {
+    kind: "rivr-resources",
+    label: "My Resources",
+    description: "Scope which of your Resources the built site may read — by type and/or specific items. Bounded by your own view-permissions.",
+    iconHint: "Database",
+    defaultConfig: { scopeTypes: [], scopeIds: [] },
+    configurableFields: [],
+    scopeVocabulary: "resource-types",
+  },
+  {
+    kind: "rivr-agents",
+    label: "Agents",
+    description: "Scope which Agents (people, groups, orgs) the built site may read — by type and/or specific agents. Bounded by your own view-permissions.",
+    iconHint: "User",
+    defaultConfig: { scopeTypes: [], scopeIds: [] },
+    configurableFields: [],
+    scopeVocabulary: "agent-types",
+  },
+  {
+    kind: "rivr-ledger",
+    label: "Ledger",
+    description: "Scope which Ledger relationships the built site may read — by verb and/or specific subjects/objects. Bounded by your own predicate-visibility.",
+    iconHint: "FileCode2",
+    defaultConfig: { scopeTypes: [], scopeIds: [] },
+    configurableFields: [],
+    scopeVocabulary: "verb-types",
   },
 ] as const;
 
@@ -137,6 +170,21 @@ export async function fetchDataSourceContent(
           return { label, data: null, error: "Both kind and ID are required for universal-manifest source." };
         }
         url = `/api/universal-manifest/${encodeURIComponent(umKind)}/${encodeURIComponent(umId)}`;
+        break;
+      }
+
+      case "rivr-agents":
+      case "rivr-ledger":
+      case "rivr-resources": {
+        const params = new URLSearchParams({ kind });
+        const types = (config.scopeTypes ?? []).filter((t) => t.trim().length > 0);
+        const ids = (config.scopeIds ?? []).filter((i) => i.trim().length > 0);
+        if (ids.length === 0) {
+          return { label, data: null, error: `${label} requires at least one selected source item.` };
+        }
+        if (types.length > 0) params.set("types", types.join(","));
+        params.set("ids", ids.join(","));
+        url = `/api/builder/rea-source?${params.toString()}`;
         break;
       }
 

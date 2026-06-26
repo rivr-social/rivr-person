@@ -11,7 +11,11 @@ import {
 } from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
-import { REMOTE_VIEWER_COOKIE_NAME, validateRemoteViewerToken } from "@/lib/federation-remote-session";
+import {
+  REMOTE_VIEWER_COOKIE_NAME,
+  validateFederatedAssertion,
+  validateRemoteViewerToken,
+} from "@/lib/federation-remote-session";
 import {
   requiredVisitorCapability,
   resolveVisitorScope,
@@ -310,6 +314,20 @@ async function handleFederatedInteraction(
     return NextResponse.json(
       { success: false, error: "Actor context must include actorId, homeBaseUrl, and assertion" },
       { status: 400 },
+    );
+  }
+  const assertionCheck = validateFederatedAssertion({
+    token: actor.assertion,
+    actorId: actor.actorId,
+    homeBaseUrl: actor.homeBaseUrl,
+    audienceBaseUrl: config.baseUrl,
+    issuedAt: actor.issuedAt,
+    expiresAt: actor.expiresAt,
+  });
+  if (!assertionCheck.valid) {
+    return NextResponse.json(
+      { success: false, error: `Invalid actor assertion: ${assertionCheck.error}` },
+      { status: 401 },
     );
   }
   if (remoteViewerToken) {

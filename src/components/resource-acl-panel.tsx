@@ -39,8 +39,9 @@ const VISIBILITY_HELP: Record<Visibility, string> = {
   hidden: "Hidden from listings; grant access explicitly.",
 }
 
-const CONDITION_OPERATORS = ["equals", "contains", "in", "exists"] as const
+const CONDITION_OPERATORS = ["equals", "not_equals", "contains", "in", "exists", "gt", "gte", "lt", "lte"] as const
 type ConditionOperator = (typeof CONDITION_OPERATORS)[number]
+type PolicyEffect = "allow" | "deny"
 
 interface AccessGrant {
   subjectId: string
@@ -74,12 +75,13 @@ interface HistoryEntry {
 interface PolicyCondition {
   key: string
   operator: ConditionOperator
-  value: string | string[]
+  value: string | string[] | number
 }
 
 interface Policy {
   id: string
   label: string
+  effect: PolicyEffect
   allowedActions: string[]
   conditions: PolicyCondition[]
   logicalOperator: "AND" | "OR"
@@ -96,6 +98,25 @@ interface ResourceAclPanelProps {
   resourceId: string
   resourceName?: string
   onClose?: () => void
+}
+
+function normalizePolicyConditionValue(
+  operator: ConditionOperator,
+  value: PolicyCondition["value"],
+): PolicyCondition["value"] {
+  if (operator === "exists") return ""
+  const raw = Array.isArray(value) ? value.join(",") : String(value)
+  if (operator === "in") {
+    return raw
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+  }
+  if (operator === "gt" || operator === "gte" || operator === "lt" || operator === "lte") {
+    const numericValue = Number(raw)
+    return Number.isFinite(numericValue) ? numericValue : raw
+  }
+  return raw.trim()
 }
 
 export function ResourceAclPanel({ resourceId, resourceName, onClose }: ResourceAclPanelProps) {
@@ -122,6 +143,7 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
   // ABAC policy form
   const [showPolicyForm, setShowPolicyForm] = useState(false)
   const [policyLabel, setPolicyLabel] = useState("")
+  const [policyEffect, setPolicyEffect] = useState<PolicyEffect>("allow")
   const [policyActions, setPolicyActions] = useState<string[]>([])
   const [policyLogical, setPolicyLogical] = useState<"AND" | "OR">("AND")
   const [policyLocaleScope, setPolicyLocaleScope] = useState("")
@@ -276,12 +298,17 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
     setMessage(null)
     try {
       const conditions = policyConditions
-        .map((c) => ({ ...c, key: c.key.trim() }))
+        .map((c) => ({
+          ...c,
+          key: c.key.trim(),
+          value: normalizePolicyConditionValue(c.operator, c.value),
+        }))
         .filter((c) => c.key.length > 0)
       const response = await fetch(`/api/agent-hq/resources/${encodeURIComponent(resourceId)}/policies`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          effect: policyEffect,
           allowedActions: policyActions,
           conditions,
           logicalOperator: policyLogical,
@@ -296,6 +323,7 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
       setMessage("Policy created.")
       setShowPolicyForm(false)
       setPolicyLabel("")
+      setPolicyEffect("allow")
       setPolicyLocaleScope("")
       setPolicyConditions([{ key: "", operator: "equals", value: "" }])
       void loadAccess()
@@ -304,7 +332,7 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
     } finally {
       setBusy(false)
     }
-  }, [loadAccess, policyActions, policyConditions, policyLabel, policyLocaleScope, policyLogical, resourceId])
+  }, [loadAccess, policyActions, policyConditions, policyEffect, policyLabel, policyLocaleScope, policyLogical, resourceId])
 
   const deletePolicy = useCallback(
     async (policyId: string) => {
@@ -586,6 +614,9 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
                 <div className="min-w-0 space-y-0.5">
                   <p className="truncate font-medium">{policy.label}</p>
                   <p className="text-muted-foreground">
+                    <span className={policy.effect === "deny" ? "font-medium text-destructive" : "font-medium text-emerald-600"}>
+                      {policy.effect}
+                    </span>{" "}
                     {policy.allowedActions.join(", ")} when{" "}
                     {policy.conditions
                       .map((c) => `${c.key} ${c.operator} ${Array.isArray(c.value) ? c.value.join("|") : c.value}`)
@@ -615,6 +646,18 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
                   className="h-8 text-xs"
                 />
                 <div className="flex flex-wrap gap-1">
+                  {(["allow", "deny"] as const).map((effect) => (
+                    <button
+                      key={effect}
+                      type="button"
+                      onClick={() => setPolicyEffect(effect)}
+                      className={`rounded border px-1.5 py-0.5 text-[11px] ${policyEffect === effect ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground"}`}
+                    >
+                      {effect}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-1">
                   {grantableVerbs.map((verb) => (
                     <button
                       key={verb}
@@ -643,7 +686,9 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
                       onChange={(event) =>
                         setPolicyConditions((cur) =>
                           cur.map((c, i) =>
-                            i === index ? { ...c, operator: event.target.value as ConditionOperator } : c,
+                            i === index
+                              ? { ...c, operator: event.target.value as ConditionOperator, value: "" }
+                              : c,
                           ),
                         )
                       }
@@ -660,7 +705,15 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
                           cur.map((c, i) => (i === index ? { ...c, value: event.target.value } : c)),
                         )
                       }
-                      placeholder={cond.operator === "exists" ? "(ignored)" : "value"}
+                      placeholder={
+                        cond.operator === "exists"
+                          ? "(ignored)"
+                          : cond.operator === "in"
+                            ? "comma,separated,values"
+                            : ["gt", "gte", "lt", "lte"].includes(cond.operator)
+                              ? "number"
+                              : "value"
+                      }
                       disabled={cond.operator === "exists"}
                       className="h-7 flex-1 text-[11px]"
                     />
@@ -709,7 +762,7 @@ export function ResourceAclPanel({ resourceId, resourceName, onClose }: Resource
                   disabled={busy || policyActions.length === 0}
                   onClick={() => void createPolicy()}
                 >
-                  Create policy
+                  Create {policyEffect} policy
                 </Button>
               </div>
             ) : null}
