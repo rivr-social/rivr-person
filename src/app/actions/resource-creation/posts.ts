@@ -17,8 +17,9 @@ import { getActiveSubscription, hasEntitlement } from "@/lib/billing";
 import { embedResource, scheduleEmbedding } from "@/lib/ai";
 import { getAgent } from "@/lib/queries/agents";
 import { syncMurmurationsProfilesForActor } from "@/lib/murmurations";
-import { getHostedNodeForOwner, queueEntityExportEvents } from "@/lib/federation";
+import { ensureLocalNode, queueEntityExportEvents } from "@/lib/federation";
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/index";
+import { routeWrite } from "@/lib/federation/write-router";
 
 import {
   resolveAuthenticatedUserId,
@@ -39,7 +40,9 @@ async function maybeCreateLinkedMeetingBundle(params: {
   groupId?: string;
   liveLocation?: { lat: number; lng: number } | null;
   localeId?: string | null;
+  regionId?: string | null;
   scopedLocaleIds?: string[];
+  scopedRegionIds?: string[];
   scopedGroupIds?: string[];
   scopedUserIds?: string[];
   isGlobal?: boolean;
@@ -62,7 +65,9 @@ async function maybeCreateLinkedMeetingBundle(params: {
     ownerId: params.groupId,
     groupId: params.groupId,
     localeId: params.localeId ?? null,
+    regionId: params.regionId ?? null,
     scopedLocaleIds: params.scopedLocaleIds,
+    scopedRegionIds: params.scopedRegionIds,
     scopedGroupIds: Array.from(new Set([params.groupId, ...(params.scopedGroupIds ?? [])])),
     scopedUserIds: params.scopedUserIds,
     isGlobal: params.isGlobal,
@@ -149,11 +154,14 @@ export async function createPostResource(input: {
   offeringType?: string;
   eventId?: string;
   groupId?: string;
+  ownerId?: string;
   imageUrl?: string | null;
   localeId?: string | null;
+  regionId?: string | null;
   gratitudeRecipientId?: string | null;
   gratitudeRecipientName?: string | null;
   scopedLocaleIds?: string[];
+  scopedRegionIds?: string[];
   scopedGroupIds?: string[];
   scopedUserIds?: string[];
   isGlobal?: boolean;
@@ -204,6 +212,22 @@ export async function createPostResource(input: {
     }
   }
 
+  // Posting AS a group (group-owned content) is allowed for admins/members with
+  // write access. The post is owned by the group and homes on the group's
+  // instance, mirroring group-owned offerings — versus the default author-owned
+  // post, which homes on the author and is merely surfaced INTO a group.
+  const ownerId = input.ownerId ?? userId;
+  if (ownerId !== userId) {
+    const allowedOwner = await hasGroupWriteAccess(userId, ownerId);
+    if (!allowedOwner) {
+      return {
+        success: false,
+        message: "You do not have permission to post as this group.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+  }
+
   const fallbackTitle = input.content.trim().slice(0, 80);
   const scopedLocaleIds = Array.from(
     new Set(
@@ -213,19 +237,33 @@ export async function createPostResource(input: {
       ].filter((id) => id && id !== "all"),
     ),
   );
+  // Regions (bioregions/basins) are place-typed agents like locales, just at a
+  // larger geographic scope. They ride the same place-scope machinery: their ids
+  // join `chapterTags` so place-aware feeds surface the content, while
+  // `scopedRegionIds` is persisted distinctly so region scope stays
+  // distinguishable from locale scope for UI and discovery.
+  const scopedRegionIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(input.scopedRegionIds) ? input.scopedRegionIds : []),
+        ...(input.regionId && input.regionId !== "all" ? [input.regionId] : []),
+      ].filter((id) => id && id !== "all"),
+    ),
+  );
   const scopedGroupIds = Array.isArray(input.scopedGroupIds) ? input.scopedGroupIds : [];
   const scopedUserIds = Array.isArray(input.scopedUserIds) ? input.scopedUserIds : [];
-  const chapterTags = scopedLocaleIds;
+  const chapterTags = Array.from(new Set([...scopedLocaleIds, ...scopedRegionIds]));
   const groupTags = Array.from(new Set([...(input.groupId ? [input.groupId] : []), ...scopedGroupIds]));
   const scopeTags = Array.from(new Set([...chapterTags, ...groupTags, ...scopedUserIds]));
   const hasScopedLocales = scopedLocaleIds.length > 0;
+  const hasScopedRegions = scopedRegionIds.length > 0;
   const hasScopedGroups = scopedGroupIds.length > 0;
   const hasScopedUsers = scopedUserIds.length > 0;
   const wantsGlobal = input.isGlobal !== false;
   let visibility: VisibilityLevel = "public";
   if (hasScopedGroups || hasScopedUsers) {
     visibility = "private";
-  } else if (hasScopedLocales || !wantsGlobal) {
+  } else if (hasScopedLocales || hasScopedRegions || !wantsGlobal) {
     visibility = "locale";
   }
 
@@ -235,22 +273,33 @@ export async function createPostResource(input: {
     ? new Date(Date.now() + 60 * 60 * 1000).toISOString()
     : null;
 
-  // Embed author identity in metadata so post cards render correctly without a separate fetch.
-  const authorAgent = await getAgent(userId);
+  // Embed author identity in metadata so post cards render correctly without a
+  // separate fetch. When posting AS a group (ownerId !== userId), the post's
+  // displayed author is the group itself — matching its ownership.
+  const authorAgent = await getAgent(ownerId);
 
   // Scope tags encode chapter/group visibility hints used by feed and discovery queries.
   //
-  // A post is the AUTHOR'S content placed into a group — not the group's own
-  // content. It is homed on the author's instance (canonical home) and surfaced
-  // in the group + global via the POST_CREATED domain event below. It must NOT
-  // be routed to the group's home instance: a federated group whose home
-  // resolves to global (no local node, no parent) sent the post off-box to a
-  // mutation endpoint that never durably materialized it, so the author kept no
-  // copy and the group feed never showed it (while the facade still reported
-  // success). Offerings already home on the author (`targetAgentId = ownerId`);
-  // posts now match. Group write access was already enforced above.
-  const targetAgentId = userId;
-  const facadeResult = await updateFacade.execute(
+  // A default post is the AUTHOR'S content placed into a group — not the group's
+  // own content. It is homed on the author's instance (canonical home) and
+  // surfaced in the group + global via the POST_CREATED domain event below. It
+  // must NOT be routed to the group's home instance: a federated group whose
+  // home resolves to global (no local node, no parent) sent the post off-box to
+  // a mutation endpoint that never durably materialized it, so the author kept
+  // no copy and the group feed never showed it (while the facade still reported
+  // success).
+  //
+  // A group-owned post (ownerId set to a group the actor has write access to)
+  // instead homes on the group — `targetAgentId = ownerId` — mirroring
+  // group-owned offerings. When ownerId === userId this collapses back to the
+  // author-homed default. Write access for either path was enforced above.
+  const targetAgentId = ownerId;
+  // Group-owned posts may be homed on a sovereign group instance. Use the
+  // current write router so that cross-instance requests carry the scoped peer
+  // secret and actor binding; the legacy UpdateFacade only forwarded the node
+  // admin key and caused correctly authorized MCP calls to fail remotely with
+  // "Authentication required".
+  const facadeResult = await routeWrite(
     {
       type: "createPostResource",
       actorId: userId,
@@ -263,6 +312,7 @@ export async function createPostResource(input: {
         type: "post",
         content: input.content,
         visibility,
+        ownerId,
         tags: scopeTags,
         embeds: input.embeds ?? [],
         ...(isLive && input.liveLocation ? { location: input.liveLocation } : {}),
@@ -276,6 +326,7 @@ export async function createPostResource(input: {
           offeringType: input.offeringType ?? null,
           eventId: input.eventId ?? null,
           groupId: input.groupId ?? null,
+          ownerId,
           gratitudeRecipientId: input.gratitudeRecipientId ?? null,
           gratitudeRecipientName: input.gratitudeRecipientName ?? null,
           imageUrl: input.imageUrl ?? null,
@@ -283,6 +334,7 @@ export async function createPostResource(input: {
           chapterTags,
           groupTags,
           scopedLocaleIds,
+          scopedRegionIds,
           scopedGroupIds,
           scopedUserIds,
           isGlobal: wantsGlobal,
@@ -318,26 +370,45 @@ export async function createPostResource(input: {
             groupId: input.groupId,
             liveLocation: input.liveLocation,
             localeId: input.localeId ?? null,
+            regionId: input.regionId ?? null,
             scopedLocaleIds,
+            scopedRegionIds,
             scopedGroupIds,
             scopedUserIds,
             isGlobal: wantsGlobal,
           })
         : null;
 
-    emitDomainEvent({
-      eventType: EVENT_TYPES.POST_CREATED,
-      entityType: "resource",
-      entityId: actionResult.resourceId,
-      actorId: userId,
-      // `id` is required by the resource-cards projection on peer instances —
-      // without it the federated row never materializes.
-      payload: {
-        id: actionResult.resourceId,
-        postType: input.postType ?? "social",
-        groupId: input.groupId ?? null,
-      },
-    }).catch(() => {});
+    // Only the HOME instance projects this post into federation. When the
+    // write was forwarded to a sovereign home (e.g. a group-owned post homed
+    // on the group's own instance), that instance materializes the resource and
+    // emits/exports its own POST_CREATED + full snapshot upsert. Emitting here
+    // too would project a SECOND, thin manifest reference originating from THIS
+    // instance — placeholder title ("Federated resource …"), wrong canonical
+    // URL (this instance instead of the group's), and no author ledger edge —
+    // which then shadows the real one in global discovery. Gate on the router's
+    // execution location so the dual-emit only fires for locally homed writes.
+    if (facadeResult.executedOn === "local") {
+      emitDomainEvent({
+        eventType: EVENT_TYPES.POST_CREATED,
+        entityType: "resource",
+        entityId: actionResult.resourceId,
+        actorId: userId,
+        // Carry the resource's real visibility so the exported federation event
+        // is scoped correctly. Without it the event defaulted to "public",
+        // leaking locale/members posts to the public pull and materializing a
+        // public shell (is_public=t) on peers for a non-public post.
+        visibility,
+        // `id` is required by the resource-cards projection on peer instances —
+        // without it the federated row never materializes.
+        payload: {
+          id: actionResult.resourceId,
+          postType: input.postType ?? "social",
+          groupId: input.groupId ?? null,
+          ownerId,
+        },
+      }).catch(() => {});
+    }
 
     if (linkedBundle) {
       return {
@@ -418,9 +489,11 @@ export async function createPostCommerceResource(input: {
   groupId?: string;
   imageUrl?: string | null;
   localeId?: string | null;
+  regionId?: string | null;
   gratitudeRecipientId?: string | null;
   gratitudeRecipientName?: string | null;
   scopedLocaleIds?: string[];
+  scopedRegionIds?: string[];
   scopedGroupIds?: string[];
   scopedUserIds?: string[];
   isGlobal?: boolean;
@@ -632,19 +705,32 @@ export async function createPostCommerceResource(input: {
       ].filter((id) => id && id !== "all"),
     ),
   );
+  // Regions are place-typed agents (metadata.placeType region/basin) just like
+  // locales. They scope content the same way locales do — merged into the
+  // place-scope (chapterTags) set and drive the place-scoped "locale"
+  // visibility level — but are tracked distinctly in metadata.scopedRegionIds.
+  const scopedRegionIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(input.scopedRegionIds) ? input.scopedRegionIds : []),
+        ...(input.regionId && input.regionId !== "all" ? [input.regionId] : []),
+      ].filter((id) => id && id !== "all"),
+    ),
+  );
   const scopedGroupIds = Array.isArray(input.scopedGroupIds) ? input.scopedGroupIds : [];
   const scopedUserIds = Array.isArray(input.scopedUserIds) ? input.scopedUserIds : [];
-  const chapterTags = scopedLocaleIds;
+  const chapterTags = Array.from(new Set([...scopedLocaleIds, ...scopedRegionIds]));
   const groupTags = Array.from(new Set([...(input.groupId ? [input.groupId] : []), ...scopedGroupIds]));
   const scopeTags = Array.from(new Set([...chapterTags, ...groupTags, ...scopedUserIds]));
   const hasScopedLocales = scopedLocaleIds.length > 0;
+  const hasScopedRegions = scopedRegionIds.length > 0;
   const hasScopedGroups = scopedGroupIds.length > 0;
   const hasScopedUsers = scopedUserIds.length > 0;
   const wantsGlobal = input.isGlobal !== false;
   let visibility: VisibilityLevel = "public";
   if (hasScopedGroups || hasScopedUsers) {
     visibility = "private";
-  } else if (hasScopedLocales || !wantsGlobal) {
+  } else if (hasScopedLocales || hasScopedRegions || !wantsGlobal) {
     visibility = "locale";
   }
   const isLive = (input.isLiveInvitation ?? false) && input.liveLocation != null;
@@ -661,18 +747,11 @@ export async function createPostCommerceResource(input: {
     typeof input.dealDurationHours === "number" && input.dealDurationHours > 0
       ? input.dealDurationHours
       : 24;
-  const federationNode =
-    input.federate === true ? await getHostedNodeForOwner(userId) : null;
-  if (input.federate === true && !federationNode) {
-    return {
-      success: false,
-      message: "Federation is not enabled for this account.",
-      error: {
-        code: "FORBIDDEN",
-        details: "Only hosted-node owners can federate content from this deployment.",
-      },
-    };
-  }
+  // Anchor commerce-post federation on this instance's own self-node so every
+  // public/locale/members post + inline offering circulates to global without
+  // requiring an explicit `federate` flag (normal creates never set it).
+  // queueEntityExportEvents' visibility filter keeps private content local.
+  const federationNode = await ensureLocalNode();
 
   // Paid inline offerings require "seller" tier (or higher).
   if (input.createOffering) {
@@ -747,6 +826,7 @@ export async function createPostCommerceResource(input: {
             priceCents: item.priceCents,
           })),
           scopedLocaleIds,
+          scopedRegionIds,
           scopedGroupIds,
           scopedUserIds,
           isGlobal: wantsGlobal,
@@ -861,6 +941,7 @@ export async function createPostCommerceResource(input: {
             chapterTags,
             groupTags,
             scopedLocaleIds,
+            scopedRegionIds,
             scopedGroupIds,
             scopedUserIds,
             isGlobal: wantsGlobal,
@@ -969,18 +1050,22 @@ export async function createPostCommerceResource(input: {
   const commerceActionResult = commerceFacadeResult.data as ActionResult;
 
   if (commerceActionResult?.success && commerceActionResult.resourceId) {
-    emitDomainEvent({
-      eventType: EVENT_TYPES.POST_CREATED,
-      entityType: "resource",
-      entityId: commerceActionResult.resourceId,
-      actorId: userId,
-      payload: {
-        id: commerceActionResult.resourceId,
-        postType: input.postType ?? "social",
-        commerce: true,
-        groupId: input.groupId ?? null,
-      },
-    }).catch(() => {});
+    // Only the HOME instance projects to federation (see note on the main emit).
+    if (commerceFacadeResult.executedOn === "local") {
+      emitDomainEvent({
+        eventType: EVENT_TYPES.POST_CREATED,
+        entityType: "resource",
+        entityId: commerceActionResult.resourceId,
+        actorId: userId,
+        visibility,
+        payload: {
+          id: commerceActionResult.resourceId,
+          postType: input.postType ?? "social",
+          commerce: true,
+          groupId: input.groupId ?? null,
+        },
+      }).catch(() => {});
+    }
   }
 
   return commerceActionResult;

@@ -23,6 +23,9 @@ import { agents, ledger } from "@/db/schema";
 import { eq, and, or, ilike, isNull, sql, desc, inArray } from "drizzle-orm";
 import type { Agent, AgentType } from "@/db/schema";
 import { toContainsLikePattern } from "@/lib/sql-like";
+import { GROUP_AGENT_TYPES } from "@/lib/agent-types";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * Maps a raw SQL row (`snake_case` columns) into the typed `Agent` shape.
@@ -655,6 +658,10 @@ export async function getPlacesByPlaceType(
  * ```
  */
 export async function getGroupsForUser(userId: string, limit = 50): Promise<Agent[]> {
+  const groupTypeList = sql.join(
+    GROUP_AGENT_TYPES.map((t) => sql`${t}`),
+    sql`, `,
+  );
   const result = await db.execute(sql`
     SELECT DISTINCT ON (a.id) a.*
     FROM agents a
@@ -665,7 +672,7 @@ export async function getGroupsForUser(userId: string, limit = 50): Promise<Agen
       AND l.verb IN ('join', 'belong')
       AND l.is_active = true
     WHERE a.deleted_at IS NULL
-      AND a.type = 'organization'
+      AND lower(a.type::text) IN (${groupTypeList})
       AND (
         a.metadata->'memberIds' @> ${JSON.stringify([userId])}::jsonb
         OR a.metadata->>'creatorId' = ${userId}
@@ -677,6 +684,51 @@ export async function getGroupsForUser(userId: string, limit = 50): Promise<Agen
   `);
 
   return (result as Record<string, unknown>[]).map(rowToAgent);
+}
+
+/**
+ * Returns the authoritative active ledger role for each requested group.
+ *
+ * Federated group projections do not always carry `adminIds` in their agent
+ * metadata. Their locally reconciled membership edge is therefore the source
+ * of truth for role-sensitive consumers such as the Autobot system prompt.
+ */
+export async function getGroupMembershipRolesForUser(
+  userId: string,
+  groupIds: string[],
+): Promise<Map<string, string>> {
+  const uniqueGroupIds = [...new Set(groupIds)].filter((id) => UUID_PATTERN.test(id));
+  if (!UUID_PATTERN.test(userId) || uniqueGroupIds.length === 0) return new Map();
+
+  const groupIdList = sql.join(
+    uniqueGroupIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  const result = await db.execute(sql`
+    SELECT DISTINCT ON (object_id) object_id, role
+    FROM ledger
+    WHERE subject_id = ${userId}::uuid
+      AND object_id IN (${groupIdList})
+      AND object_type = 'agent'
+      AND verb IN ('join', 'belong', 'manage', 'own')
+      AND is_active = true
+      AND (expires_at IS NULL OR expires_at > NOW())
+    ORDER BY object_id,
+      CASE role
+        WHEN 'creator' THEN 3
+        WHEN 'admin' THEN 2
+        ELSE 1
+      END DESC
+  `);
+
+  return new Map(
+    (result as Array<Record<string, unknown>>)
+      .filter(
+        (row): row is Record<string, unknown> & { object_id: string; role: string } =>
+          typeof row.object_id === "string" && typeof row.role === "string",
+      )
+      .map((row) => [row.object_id, row.role]),
+  );
 }
 
 /**

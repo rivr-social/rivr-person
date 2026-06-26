@@ -21,6 +21,46 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { isPublicRoute } from "@/lib/route-access";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { REMOTE_VIEWER_COOKIE_NAME } from "@/lib/federation-remote-session-types";
+import {
+  decodeRemoteViewerSessionEdge,
+  resolveFederationSecretEdge,
+} from "@/lib/federation-remote-session-edge";
+
+/**
+ * Route prefixes that only the instance OWNER may reach. A federated visitor
+ * (non-owner) holding a valid `rivr_remote_viewer` cookie is authenticated for
+ * browsing but must be bounced off these sovereign control-plane surfaces:
+ * settings, autobot/agent-HQ control plane, persona/instance/recovery
+ * management, builder/bespoke authoring, and their backing APIs. The OWNER and
+ * any local NextAuth session pass through unaffected.
+ */
+const OWNER_ONLY_PREFIXES = [
+  "/settings",
+  "/autobot",
+  "/agent-hq",
+  "/recovery",
+  "/builder",
+  "/bespoke",
+  "/session-record",
+  "/sovereign-merge-confirm",
+  "/api/admin",
+  "/api/autobot",
+  "/api/agent-hq",
+  "/api/personas",
+  "/api/instance",
+  "/api/recovery",
+  "/api/builder",
+  "/api/bespoke",
+];
+
+/** Whether a path targets an owner-only control-plane surface. */
+function isOwnerOnlyPath(pathname: string): boolean {
+  return OWNER_ONLY_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
 
 /**
  * Builds a Content-Security-Policy header string with a per-request nonce.
@@ -292,24 +332,77 @@ export async function middleware(request: NextRequest) {
     secureCookie: isSecure,
   });
 
-  if (!token) {
-    if (pathname.startsWith("/api/")) {
-      const response = NextResponse.json(
-        { error: "Authentication required" },
-        { status: 401 }
-      );
-      return applySecurityHeaders(response, cspHeader, nonce);
-    }
-
-    const loginUrl = new URL("/auth/login", request.url);
-    loginUrl.searchParams.set("callbackUrl", pathname);
-    const response = NextResponse.redirect(loginUrl);
+  // A local NextAuth session is always the sovereign owner — pass through with
+  // full access to every surface, including the owner-only control plane.
+  if (token) {
+    const response = NextResponse.next({
+      request: { headers: requestHeaders },
+    });
     return applySecurityHeaders(response, cspHeader, nonce);
   }
 
-  const response = NextResponse.next({
-    request: { headers: requestHeaders },
-  });
+  // No NextAuth session: accept a verified cross-instance `rivr_remote_viewer`
+  // cookie as an authenticated browsing session. The cookie is HMAC-verified,
+  // instance-bound, and expiry-checked in the edge runtime (node:crypto is
+  // unavailable here). This is what lets an auto-signed-in federated visitor
+  // browse without being bounced to /auth/login.
+  const secret = resolveFederationSecretEdge();
+  const remoteViewerCookie = request.cookies.get(
+    REMOTE_VIEWER_COOKIE_NAME,
+  )?.value;
+  const { instanceId, primaryAgentId } = getInstanceConfig();
+  const remoteViewer = secret
+    ? await decodeRemoteViewerSessionEdge(
+        remoteViewerCookie,
+        secret,
+        instanceId,
+      )
+    : null;
+
+  if (remoteViewer) {
+    const isOwner =
+      primaryAgentId !== null && remoteViewer.actorId === primaryAgentId;
+
+    // Non-owner visitors get a read/browse session but are barred from the
+    // sovereign control plane. Owners (rare on this path, but possible) are
+    // unconstrained.
+    if (!isOwner && isOwnerOnlyPath(pathname)) {
+      if (pathname.startsWith("/api/")) {
+        const response = NextResponse.json(
+          { error: "Forbidden: owner-only resource" },
+          { status: 403 },
+        );
+        return applySecurityHeaders(response, cspHeader, nonce);
+      }
+      const homeUrl = new URL("/", request.url);
+      const response = NextResponse.redirect(homeUrl);
+      return applySecurityHeaders(response, cspHeader, nonce);
+    }
+
+    // Forward the verified visitor identity to downstream server components and
+    // route handlers via request headers (they cannot re-run the edge decoder).
+    requestHeaders.set("x-remote-viewer-id", remoteViewer.actorId);
+    requestHeaders.set("x-remote-viewer-home", remoteViewer.homeBaseUrl);
+    requestHeaders.set("x-remote-viewer-owner", isOwner ? "1" : "0");
+
+    const response = NextResponse.next({
+      request: { headers: requestHeaders },
+    });
+    return applySecurityHeaders(response, cspHeader, nonce);
+  }
+
+  // Neither a NextAuth session nor a valid remote-viewer cookie.
+  if (pathname.startsWith("/api/")) {
+    const response = NextResponse.json(
+      { error: "Authentication required" },
+      { status: 401 }
+    );
+    return applySecurityHeaders(response, cspHeader, nonce);
+  }
+
+  const loginUrl = new URL("/auth/login", request.url);
+  loginUrl.searchParams.set("callbackUrl", pathname);
+  const response = NextResponse.redirect(loginUrl);
   return applySecurityHeaders(response, cspHeader, nonce);
 }
 

@@ -155,6 +155,57 @@ describe("graph/profiles actions", () => {
 
         expect(result.posts.length).toBeLessThanOrEqual(1);
       }));
+
+    it("hides private posts from an anonymous (null) viewer", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db, { visibility: "public" });
+        const publicPost = await createTestPost(db, user.id, {
+          visibility: "public",
+        });
+        await createTestPost(db, user.id, { visibility: "private" });
+        vi.mocked(auth).mockResolvedValue(mockUnauthenticated());
+
+        const result = await fetchUserPosts(user.id, 30, null);
+
+        const ids = result.posts.map((p) => p.id);
+        expect(ids).toContain(publicPost.id);
+        expect(result.posts.every((p) => p.visibility === "public")).toBe(true);
+      }));
+
+    it("shows the owner their own private posts when they are the viewer", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db, { visibility: "public" });
+        const publicPost = await createTestPost(db, user.id, {
+          visibility: "public",
+        });
+        const privatePost = await createTestPost(db, user.id, {
+          visibility: "private",
+        });
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+
+        const result = await fetchUserPosts(user.id, 30, user.id);
+
+        const ids = result.posts.map((p) => p.id);
+        expect(ids).toContain(publicPost.id);
+        expect(ids).toContain(privatePost.id);
+      }));
+
+    it("filters by visibility before applying the limit", () =>
+      withTestTransaction(async (db) => {
+        // Insert private posts last so they sort first by recency; the limit
+        // must not be consumed by posts the anonymous viewer cannot see.
+        const user = await createTestAgent(db, { visibility: "public" });
+        const publicPost = await createTestPost(db, user.id, {
+          visibility: "public",
+        });
+        await createTestPost(db, user.id, { visibility: "private" });
+        await createTestPost(db, user.id, { visibility: "private" });
+        vi.mocked(auth).mockResolvedValue(mockUnauthenticated());
+
+        const result = await fetchUserPosts(user.id, 1, null);
+
+        expect(result.posts.map((p) => p.id)).toEqual([publicPost.id]);
+      }));
   });
 
   // ===========================================================================

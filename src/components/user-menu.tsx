@@ -131,16 +131,8 @@ export function UserMenu({ open, onClose }: UserMenuProps) {
               <span>My Profile</span>
             </Link>
             <Link
-              href="/settings"
-              onClick={() => handleNavigation("/settings")}
-              className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
-            >
-              <Settings className="h-5 w-5" />
-              <span>Settings</span>
-            </Link>
-            <Link
-              href="/?tab=groups"
-              onClick={() => handleNavigation("/?tab=groups")}
+              href="/profile?tab=groups"
+              onClick={() => handleNavigation("/profile?tab=groups")}
               className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
             >
               <Users className="h-5 w-5" />
@@ -155,8 +147,8 @@ export function UserMenu({ open, onClose }: UserMenuProps) {
               <span>Messages</span>
             </Link>
             <Link
-              href="/calendar"
-              onClick={() => handleNavigation("/calendar")}
+              href="/profile?tab=calendar"
+              onClick={() => handleNavigation("/profile?tab=calendar")}
               className="flex items-center gap-3 p-2 hover:bg-muted rounded-md transition-colors"
             >
               <Calendar className="h-5 w-5" />

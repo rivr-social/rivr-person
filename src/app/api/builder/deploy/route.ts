@@ -7,6 +7,7 @@ import {
   getDeployStatus,
   GitHubDeployError,
 } from "@/lib/deploy/github-deploy";
+import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -125,7 +126,8 @@ export async function POST(request: Request) {
   // Shared instance: GitHub deploy
   // -------------------------------------------------------------------------
   if (capability.deployMethod === "github") {
-    const connection = await getGitHubConnection(session.user.id);
+    const { directAgentId } = await resolveDirectAgent(session.user.id);
+    const connection = await getGitHubConnection(directAgentId);
 
     if (!connection) {
       return NextResponse.json(
@@ -213,7 +215,8 @@ export async function GET() {
 
   // For GitHub deploy, include connection and status info
   if (capability.deployMethod === "github") {
-    const connection = await getGitHubConnection(session.user.id);
+    const { directAgentId } = await resolveDirectAgent(session.user.id);
+    const connection = await getGitHubConnection(directAgentId);
 
     if (!connection) {
       return NextResponse.json(

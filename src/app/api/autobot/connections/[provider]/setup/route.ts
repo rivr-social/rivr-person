@@ -12,6 +12,13 @@ import {
   type AutobotConnectionProvider,
 } from "@/lib/autobot-connectors";
 import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
+import {
+  ENCRYPTED_SECRET_PROVIDERS,
+  REDACTED_SECRET_PLACEHOLDER,
+  encryptConnectorConfigForProvider,
+  isSecretConfigKey,
+  redactConnectorConfig,
+} from "@/lib/autobot-connector-secrets";
 import { validateBotToken } from "@/lib/autobot-telegram-sync";
 
 export const dynamic = "force-dynamic";
@@ -78,6 +85,19 @@ function ensureHttpUrl(value: string, label: string): string {
   return trimmed;
 }
 
+function ensureAllowedSignalBridge(value: string): string {
+  const normalized = ensureHttpUrl(value, "Signal service URL");
+  const origin = new URL(normalized).origin;
+  const allowedOrigins = (process.env.SIGNAL_BRIDGE_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  if (!allowedOrigins.includes(origin)) {
+    throw new Error("Signal bridge origin is not in SIGNAL_BRIDGE_ALLOWED_ORIGINS.");
+  }
+  return normalized;
+}
+
 async function ensureExistingPath(pathValue: string, label: string): Promise<string> {
   const trimmed = pathValue.trim();
   if (!trimmed) {
@@ -124,9 +144,19 @@ export async function POST(request: Request, context: RouteContext) {
   const existingConnection = settings.connections.find(
     (connection) => connection.provider === definition.provider,
   );
+  // Drop redaction placeholders so a re-save (which echoes "__stored__" back for
+  // secret fields the UI never reveals) does not overwrite the stored encrypted
+  // secret with the placeholder. The merge below then preserves the existing
+  // encrypted value for any secret the client left untouched.
+  const incomingConfig = normalizeConfig(body.config);
+  for (const key of Object.keys(incomingConfig)) {
+    if (isSecretConfigKey(key) && incomingConfig[key] === REDACTED_SECRET_PLACEHOLDER) {
+      delete incomingConfig[key];
+    }
+  }
   const config = {
     ...(existingConnection?.config ?? {}),
-    ...normalizeConfig(body.config),
+    ...incomingConfig,
   };
 
   let status: AutobotConnection["status"] = "connected";
@@ -180,12 +210,42 @@ export async function POST(request: Request, context: RouteContext) {
         if (!serviceUrl) {
           throw new Error("Signal service URL is required.");
         }
-        config.serviceUrl = ensureHttpUrl(serviceUrl, "Signal service URL");
+        config.serviceUrl = ensureAllowedSignalBridge(serviceUrl);
         if (!config.phoneNumber?.trim()) {
           throw new Error("Signal phone number is required.");
         }
         accountLabel = accountLabel ?? "Signal";
         externalAccountId = externalAccountId ?? config.phoneNumber.trim();
+        break;
+      }
+      case "substack": {
+        const publicationUrl = config.publicationUrl?.trim();
+        if (!publicationUrl) throw new Error("Substack publication URL is required.");
+        config.publicationUrl = ensureHttpUrl(publicationUrl, "Substack publication URL");
+        if (config.feedUrl?.trim()) {
+          config.feedUrl = ensureHttpUrl(config.feedUrl, "Substack feed URL");
+        } else {
+          config.feedUrl = `${config.publicationUrl.replace(/\/$/, "")}/feed`;
+        }
+        accountLabel = accountLabel ?? new URL(config.publicationUrl).hostname;
+        externalAccountId = externalAccountId ?? config.publicationUrl;
+        break;
+      }
+      case "luma": {
+        const calendarUrl = config.calendarUrl?.trim();
+        if (!calendarUrl) throw new Error("Luma calendar URL is required.");
+        config.calendarUrl = ensureHttpUrl(calendarUrl, "Luma calendar URL");
+        accountLabel = accountLabel ?? "Luma Calendar";
+        externalAccountId = externalAccountId ?? config.calendarUrl;
+        break;
+      }
+      case "x": {
+        const handle = config.handle?.trim().replace(/^@/, "");
+        if (!handle) throw new Error("X handle is required.");
+        if (!config.bearerToken?.trim()) throw new Error("X bearer token is required.");
+        config.handle = handle;
+        accountLabel = accountLabel ?? `@${handle}`;
+        externalAccountId = externalAccountId ?? handle;
         break;
       }
       case "obsidian_vault": {
@@ -387,6 +447,54 @@ export async function POST(request: Request, context: RouteContext) {
         externalAccountId = externalAccountId ?? bskyData.did ?? handle;
         break;
       }
+      case "claude_code": {
+        // A4: the agent pastes its own Claude Code OAuth/API token. We do a
+        // light presence check only — the test route exercises the live
+        // api.anthropic.com call. The merged config holds the existing
+        // encrypted value when the client re-saves without re-entering it.
+        if (!config.token?.trim()) {
+          throw new Error("Claude Code token is required.");
+        }
+        accountLabel = accountLabel ?? "Claude Code";
+        externalAccountId = externalAccountId ?? "claude_code";
+        break;
+      }
+      case "cloudflare": {
+        // A7: DNS/deploy connector. Presence check only; the test route hits
+        // the Cloudflare token-verify endpoint.
+        if (!config.apiKey?.trim()) {
+          throw new Error("Cloudflare API token is required.");
+        }
+        accountLabel = accountLabel ?? "Cloudflare";
+        externalAccountId =
+          externalAccountId ?? config.accountId?.trim() ?? config.zoneId?.trim() ?? "cloudflare";
+        break;
+      }
+      case "squarespace": {
+        if (!config.apiKey?.trim()) {
+          throw new Error("Squarespace API key is required.");
+        }
+        if (!config.domain?.trim()) {
+          throw new Error("Squarespace domain is required.");
+        }
+        accountLabel = accountLabel ?? config.domain.trim();
+        externalAccountId = externalAccountId ?? config.domain.trim();
+        break;
+      }
+      case "namecheap": {
+        if (!config.apiKey?.trim()) {
+          throw new Error("Namecheap API key is required.");
+        }
+        if (!config.apiUser?.trim()) {
+          throw new Error("Namecheap API user is required.");
+        }
+        if (!config.domain?.trim()) {
+          throw new Error("Namecheap domain is required.");
+        }
+        accountLabel = accountLabel ?? config.domain.trim();
+        externalAccountId = externalAccountId ?? config.domain.trim();
+        break;
+      }
       default: {
         status = existingConnection?.status ?? "needs_auth";
       }
@@ -401,6 +509,12 @@ export async function POST(request: Request, context: RouteContext) {
     );
   }
 
+  // A7 (secretRef): encrypt secret-bearing config values at rest for the
+  // opted-in providers (claude_code, cloudflare, squarespace, namecheap) before
+  // persisting. Idempotent — already-encrypted values pass through, and
+  // non-opted-in providers are stored unchanged.
+  const storedConfig = encryptConnectorConfigForProvider(definition.provider, config);
+
   const nextConnection: AutobotConnection = {
     provider: definition.provider,
     status,
@@ -413,17 +527,24 @@ export async function POST(request: Request, context: RouteContext) {
     externalAccountId,
     lastSyncedAt: existingConnection?.lastSyncedAt,
     error: undefined,
-    config,
+    config: storedConfig,
   };
 
   const nextSettings = await saveAutobotUserSettings(actorId, {
     connections: upsertConnection(settings.connections, nextConnection),
   });
 
+  // Never ship secret material back to the browser. For encrypted providers,
+  // redact secret values to the "__stored__" placeholder in the response.
+  const redact = (connection: AutobotConnection): AutobotConnection =>
+    ENCRYPTED_SECRET_PROVIDERS.has(connection.provider)
+      ? { ...connection, config: redactConnectorConfig(connection.config) }
+      : connection;
+
   return NextResponse.json({
     ok: true,
-    connection: nextConnection,
-    connections: nextSettings.connections,
+    connection: redact(nextConnection),
+    connections: nextSettings.connections.map(redact),
     subject,
   });
 }

@@ -102,6 +102,12 @@ export interface NativeChatParams {
    */
   tools?: NativeChatToolSpec[];
   executeTool?: (name: string, input: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Optional Claude Code token from the agent's `claude_code` connector. When
+   * present it takes priority over the instance credential store / env var, so
+   * the agent's own pasted token is used for Anthropic calls (A4).
+   */
+  connectorToken?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,11 +157,23 @@ export function isRateLimitError(errorMessage: string): boolean {
 /**
  * Resolve the Claude (Max) OAuth access token for this instance.
  *
- * Prefers the live Claude CLI credential store (refreshed by the in-app
- * claude-auth flow), falling back to the ANTHROPIC_API_KEY env var. Returns the
- * raw `sk-ant-oat01-*` token used as a Bearer credential against the API.
+ * Resolution chain (highest priority first):
+ *   1. `connectorToken` — a Claude Code token pasted into the agent's
+ *      `claude_code` connector (per-agent credential; A4). When present and
+ *      non-empty it wins, so one pasted token drives BOTH autobot chat and the
+ *      builder for that agent.
+ *   2. The live Claude CLI credential store under `AGENT_HQ_CLAUDE_HOME`
+ *      (refreshed by the in-app claude-auth flow).
+ *   3. The `ANTHROPIC_API_KEY` env var.
+ *
+ * Returns the raw `sk-ant-oat01-*` token used as a Bearer credential.
  */
-export async function resolveClaudeOAuthToken(): Promise<string> {
+export async function resolveClaudeOAuthToken(
+  connectorToken?: string,
+): Promise<string> {
+  if (typeof connectorToken === "string" && connectorToken.trim().length > 0) {
+    return connectorToken.trim();
+  }
   const claudeHome = process.env.AGENT_HQ_CLAUDE_HOME;
   if (claudeHome) {
     const credentialsPath = path.join(claudeHome, ".claude", ".credentials.json");
@@ -210,7 +228,7 @@ function extractTextReply(blocks: AnthropicContentBlock[] | undefined): string {
 export async function chatViaAnthropic(
   params: NativeChatParams,
 ): Promise<CloudChatResult> {
-  const token = await resolveClaudeOAuthToken();
+  const token = await resolveClaudeOAuthToken(params.connectorToken);
   const modelId = params.selectedModel.slice("anthropic/".length);
 
   const systemBlocks: Array<{ type: "text"; text: string }> = [

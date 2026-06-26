@@ -1,26 +1,26 @@
 import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { getEnv } from "@/lib/env";
+import {
+  REMOTE_VIEWER_TOKEN_TYPE,
+  REMOTE_VIEWER_COOKIE_NAME,
+  type RemoteViewerSessionPayload,
+  type FederatedAssertionPersonaContext,
+} from "@/lib/federation-remote-session-types";
 
-const REMOTE_VIEWER_TOKEN_TYPE = "remote_viewer";
-export const REMOTE_VIEWER_COOKIE_NAME = "rivr_remote_viewer";
+// Re-export the edge-safe constants/types so existing node-side importers of
+// this module keep working unchanged. The canonical declarations live in
+// `federation-remote-session-types.ts` (no `node:crypto`) so edge code can
+// import them too.
+export {
+  REMOTE_VIEWER_TOKEN_TYPE,
+  REMOTE_VIEWER_COOKIE_NAME,
+} from "@/lib/federation-remote-session-types";
+export type {
+  RemoteViewerSessionPayload,
+  FederatedAssertionPersonaContext,
+} from "@/lib/federation-remote-session-types";
+
 export const REMOTE_VIEWER_TTL_MS = 30 * 60 * 1000;
-
-export type RemoteViewerSessionPayload = {
-  type: typeof REMOTE_VIEWER_TOKEN_TYPE;
-  actorId: string;
-  homeBaseUrl: string;
-  localInstanceId: string;
-  issuedAt: string;
-  expiresAt: string;
-  nonce: string;
-  persona?: FederatedAssertionPersonaContext;
-};
-
-export type FederatedAssertionPersonaContext = {
-  personaId: string;
-  personaDisplayName?: string;
-  parentAgentId: string;
-};
 
 export type FederatedAssertionPayload = {
   "@context": "https://universalmanifest.net/ns/universal-manifest/v0.1/schema.jsonld";

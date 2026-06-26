@@ -19,9 +19,14 @@ import {
 import { getMyWalletAction } from "@/app/actions/wallet";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { MCP_TOOL_DEFINITIONS } from "@/lib/federation/mcp-tools";
+import { getGroupMembershipRolesForUser } from "@/lib/queries/agents";
 import * as kgClient from "@/lib/kg/autobot-kg-client";
 import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
 import { readAgentSoul } from "@/lib/agent-docs";
+import { discoverAgentProjects, loadWorkspaceRegistry } from "@/lib/agent-hq";
+import type { AgentWorkspace } from "@/lib/agent-hq";
+import { BUILDER_CAPABILITIES_BLOCK } from "@/lib/bespoke/builder-system-prompt";
+import type { SiteFiles } from "@/lib/bespoke/site-files";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 
 // ---------------------------------------------------------------------------
@@ -165,6 +170,9 @@ I avoid brittle corporate tone, cliche futurism, hollow hype, empty abstraction.
 const MAX_CONTEXT_CHARS = 8000;
 const TRUNCATION_NOTICE = "\n... (truncated for context limit)";
 
+/** Max chars of build-session file contents to inline into the prompt. */
+const MAX_SITE_FILES_CHARS = 12_000;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -201,6 +209,70 @@ function summarizeResource(resource: SerializedResource): string {
 }
 
 // ---------------------------------------------------------------------------
+// Builder context formatters (apps filesystem + active build session)
+// ---------------------------------------------------------------------------
+
+function summarizeWorkspace(workspace: AgentWorkspace): string {
+  const parts = [`- ${workspace.label} (id: ${workspace.id}, scope: ${workspace.scope})`];
+  if (workspace.packageName) parts.push(`  package: ${workspace.packageName}`);
+  if (workspace.liveSubdomain) parts.push(`  live: ${workspace.liveSubdomain}`);
+  if (workspace.description) parts.push(`  ${workspace.description.slice(0, 140)}`);
+  return parts.join("\n");
+}
+
+/**
+ * Builds the apps-filesystem summary block: the discovered agent workspaces
+ * (foundation / app / shared) the assistant can build into. Falls back to the
+ * persisted workspace registry when live discovery fails (e.g. shared instances
+ * without host access). Returns an empty string when nothing is available.
+ */
+async function buildWorkspaceSummary(): Promise<string> {
+  let workspaces: AgentWorkspace[] = [];
+  try {
+    workspaces = await discoverAgentProjects();
+  } catch {
+    try {
+      workspaces = (await loadWorkspaceRegistry()).workspaces;
+    } catch {
+      workspaces = [];
+    }
+  }
+
+  if (workspaces.length === 0) return "";
+
+  return `\n## App Workspaces (filesystem)\nYou can build and edit files in these workspaces. Use the builder capabilities below to author site/app files for them:\n${workspaces
+    .map(summarizeWorkspace)
+    .join("\n")}\n`;
+}
+
+/**
+ * Builds the active build-session block: a listing of the current site files,
+ * with contents inlined up to a char budget (large files are noted but elided).
+ * Returns an empty string when no build session files are provided.
+ */
+function buildSiteFilesContext(siteFiles: SiteFiles | undefined): string {
+  if (!siteFiles) return "";
+  const fileNames = Object.keys(siteFiles);
+  if (fileNames.length === 0) return "";
+
+  let body = "";
+  let totalChars = 0;
+  for (const name of fileNames) {
+    const content = siteFiles[name] ?? "";
+    const header = `### ${name}\n\`\`\`\n`;
+    const footer = "\n```\n\n";
+    if (totalChars + header.length + content.length + footer.length > MAX_SITE_FILES_CHARS) {
+      body += `### ${name}\n(content omitted — ${content.length} characters)\n\n`;
+      continue;
+    }
+    body += header + content + footer;
+    totalChars += header.length + content.length + footer.length;
+  }
+
+  return `\n## Active Build Session (${fileNames.length} files)\nA site build is in progress. These are the current files — when the user asks for changes, output the COMPLETE updated files using the builder output format:\n\n${body}`;
+}
+
+// ---------------------------------------------------------------------------
 // Tool Definitions Formatter
 // ---------------------------------------------------------------------------
 
@@ -234,6 +306,18 @@ type BuildAutobotPromptOptions = {
   activePersonaId?: string;
   activePersonaName?: string;
   includedPersonaKgIds?: string[];
+  /**
+   * The current site files of an active build session. When provided, the
+   * prompt inlines them and folds in builder capabilities so the one assistant
+   * can both converse and build. Omit for a pure-chat turn.
+   */
+  buildSessionFiles?: SiteFiles;
+  /**
+   * Whether to include the apps-filesystem workspace summary + builder
+   * capabilities in the prompt. Defaults to `true` so the unified assistant
+   * always knows it can build; set `false` only for narrow chat-only callers.
+   */
+  includeBuilderContext?: boolean;
 };
 
 async function buildAdditionalPersonaKgContext(personaIds: string[]): Promise<string> {
@@ -269,6 +353,7 @@ export async function buildAutobotSystemPrompt(
   const includedPersonaKgIds = Array.from(
     new Set((options?.includedPersonaKgIds ?? []).filter((personaId) => personaId && personaId !== explicitActivePersonaId)),
   );
+  const includeBuilderContext = options?.includeBuilderContext ?? true;
 
   // Load soul identity document and user context in parallel
   const [
@@ -283,8 +368,8 @@ export async function buildAutobotSystemPrompt(
     walletResult,
   ] = await Promise.all([
     resolveAutobotSoulContent(promptActorId),
-    fetchProfileData(userId).catch(() => null),
-    fetchUserPosts(userId, 20).catch(() => ({ posts: [] as SerializedResource[], owner: null })),
+    fetchProfileData(userId, userId).catch(() => null),
+    fetchUserPosts(userId, 20, userId).catch(() => ({ posts: [] as SerializedResource[], owner: null })),
     fetchUserEvents(userId, 20).catch(() => [] as SerializedAgent[]),
     fetchUserGroups(userId, 30).catch(() => [] as SerializedAgent[]),
     fetchUserConnections(userId).catch(() => [] as SerializedAgent[]),
@@ -304,14 +389,26 @@ export async function buildAutobotSystemPrompt(
   const tagline = (meta.tagline as string) ?? "";
 
   // Format groups
+  const groupMembershipRoles = await getGroupMembershipRolesForUser(
+    userId,
+    groups.map((group) => group.id),
+  ).catch(() => new Map<string, string>());
   const groupSummary = groups.length > 0
     ? groups.map((g) => {
         const gMeta = (g.metadata ?? {}) as Record<string, unknown>;
-        const role = Array.isArray(gMeta.adminIds) && (gMeta.adminIds as string[]).includes(userId)
-          ? "admin"
-          : Array.isArray(gMeta.creatorId) || gMeta.creatorId === userId
-            ? "creator"
-            : "member";
+        const ledgerRole = groupMembershipRoles.get(g.id);
+        const isPrimeAgent = gMeta.creatorId === userId;
+        const isAdmin =
+          (Array.isArray(gMeta.adminIds) && (gMeta.adminIds as string[]).includes(userId)) ||
+          ledgerRole === "admin" ||
+          ledgerRole === "creator";
+        const role = isPrimeAgent && isAdmin
+          ? "prime agent and admin"
+          : isPrimeAgent
+            ? "prime agent"
+            : isAdmin
+              ? "admin"
+              : ledgerRole ?? "member";
         return `- ${g.name} (id: ${g.id}, role: ${role})`;
       }).join("\n")
     : "No groups.";
@@ -358,6 +455,16 @@ export async function buildAutobotSystemPrompt(
   // ingested documents. This gives the autobot access to the user's
   // external knowledge alongside their Rivr data.
   const personKgContext = await buildPersonKgContext(promptActorId);
+
+  // Builder context — the apps filesystem the assistant can build into, plus the
+  // current build-session files (if any), plus the shared builder capabilities.
+  // This folds the dedicated builder prompt into the one assistant prompt so a
+  // single agent drives both chat and building.
+  const workspaceSummary = includeBuilderContext ? await buildWorkspaceSummary() : "";
+  const siteFilesContext = buildSiteFilesContext(options?.buildSessionFiles);
+  const builderContext = includeBuilderContext
+    ? `\n---\n\n# Builder Context\n${workspaceSummary}${siteFilesContext}\n${BUILDER_CAPABILITIES_BLOCK}\n`
+    : siteFilesContext;
 
   // Build the prompt — soul identity first, then structured context
   return `${soul.content}
@@ -408,51 +515,27 @@ ${toolDefs}
 
 ## Behavioral Guidelines
 
-### CRITICAL: Preview Before Execute
-You must NEVER auto-execute any action. When the user asks you to create, update, or modify anything:
-1. Draft the action with all parameters.
-2. Present a preview using the tool-preview format (see below).
-3. Wait for the user to confirm before executing.
-4. Only execute when the user explicitly says "yes", "confirm", "do it", "go ahead", "post it", "send it", etc.
+### CRITICAL: You have REAL tools — call them. Never fake an execution.
+You have real, executable tools in this session (rivr.posts.create, rivr.events.create, rivr.offerings.create, rivr.places.list, etc.). When you decide to act, you INVOKE the tool directly through your tool-calling capability and you get a real result back. There is no separate "confirm card" — typing a fenced \`tool-preview\` block does NOTHING and is forbidden. Acting means actually calling the tool.
+
+How to handle a write request (create/post/update):
+1. Resolve required parameters FIRST using read-only tools. For a post scoped to a place ("post on the Boulder locale"), call rivr.places.list to resolve the place NAME to its id, then pass it as localeId (and/or regionId). To post AS a group the user administers ("as Regen Hub"), pass ownerId = that group's agent id. Keep isGlobal: true so it federates to the global instance.
+2. Confirmation: if the user has ALREADY told you to post/do it (including a draft they approved, or a follow-up "yes"/"confirm"/"post it"/"do it"/"send it"), CALL THE TOOL NOW. Do not ask again, do not wait for anything — you are the thing that executes. If the request is ambiguous or potentially destructive (delete), show the draft/params and ask once; on their approval, immediately call the tool.
+3. Report only the REAL outcome. You have performed a write ONLY after the tool returns a success result. Then report it factually and include the returned id/url. If the tool returns an error, say so and show the error. NEVER say "Done", "Posted", "Created", "Sent", or imply success unless a tool actually returned success — fabricating completion is a critical failure.
+
+Read-only tools (rivr.places.list, rivr.instance.get_context, rivr.profile.get_my_profile, rivr.personas.list) may be called freely at any time to gather ids/context.
 
 ### Multi-Hop Reasoning
-When the user makes a request, think through the full context:
-- If they say "post my bike for sale", check their offerings/resources for bike-related items, identify relevant groups (marketplace, bikers, local chapter), suggest a price if context exists, and draft a proper marketplace listing.
-- If they mention a group by partial name, match it to their actual group memberships.
-- If they want to create an event, check what groups they could host it in and suggest appropriate ones.
-- Always consider: What do they likely MEAN, not just what they literally said?
+When the user makes a request, think through the full context, then ACT with the real tools:
+- If they say "post my bike for sale", check their offerings/resources for bike-related items, identify the relevant group/marketplace, then call rivr.posts.create / rivr.offerings.create.
+- If they mention a group or place by partial name, resolve it (rivr.places.list / context) to the real id before calling the write tool.
+- Always consider: What do they likely MEAN, not just what they literally said — then do it.
 
 ### Response Format
-For normal conversation, respond naturally in markdown.
-
-When you want to propose a tool action, use EXACTLY this format in your response:
-
-\`\`\`tool-preview:<tool_name>
-{
-  "param1": "value1",
-  "param2": "value2"
-}
-\`\`\`
-
-For example, to propose creating a marketplace post:
-
-\`\`\`tool-preview:rivr.posts.create
-{
-  "title": "Trek Mountain Bike - $500",
-  "content": "Selling my Trek mountain bike, great condition. Perfect for trail riding in Boulder. Asking $500 OBO.",
-  "postType": "marketplace",
-  "groupId": "some-group-id-here",
-  "isGlobal": true
-}
-\`\`\`
-
-The user will see this as a formatted preview card with Confirm/Edit buttons.
-
-### When User Confirms
-When the user confirms (responds with "yes", "do it", "post it", "confirm", "go ahead", "looks good", etc.), the system will detect the confirmation and execute the tool. You should then report the result.
+For normal conversation, respond naturally in markdown. To take an action, call the tool — do not describe calling it, actually call it. After the tool result comes back, summarize what happened (including the created post's id/url) in plain language.
 
 ### When User Wants Changes
-If the user asks for modifications ("change the price to $420", "make it 24 hours", "post it in bikers group too"), update the preview and show a new tool-preview block with the adjusted parameters.
+If the user asks for modifications ("change the price to $420", "make it 24 hours", "scope it to Denver too") BEFORE you've executed, adjust the parameters and, once they approve, call the tool with the updated values. If they want changes AFTER a successful post, use the appropriate update/delete tool.
 
 ### Tone and Style
 - Be concise but helpful.
@@ -460,7 +543,7 @@ If the user asks for modifications ("change the price to $420", "make it 24 hour
 - Show enthusiasm for the user's activities.
 - When suggesting, explain your reasoning briefly ("I see you're in the Boulder Bikers group, which would be a great place to list this").
 - If you're unsure about something, ask rather than guess.
-${personKgContext}${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}`;
+${personKgContext}${activePersonaHeader}${activePersonaKgContext}${additionalPersonaKgContext}${builderContext}`;
 }
 
 // ---------------------------------------------------------------------------

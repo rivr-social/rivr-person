@@ -16,7 +16,8 @@ import { auth } from "@/auth";
 import { buildAutobotSystemPrompt } from "@/lib/bespoke/autobot-system-prompt";
 import { isPersonaOf } from "@/lib/persona";
 import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
-import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
+import { resolveAssistantConnectionScope } from "@/lib/autobot-connection-scope";
+import { resolveClaudeCodeConnectorToken } from "@/lib/autobot-connector-secrets";
 import {
   chatViaGemini,
   chatViaOllama,
@@ -171,7 +172,9 @@ export async function POST(request: Request) {
       : DEFAULT_MODEL;
 
   const ownerId = session.user.id;
-  const subject = await resolveAutobotConnectionScope(ownerId);
+  // A3: the assistant IS the direct agent and inherits the agent's connectors —
+  // resolve the assistant's scope from the direct agent, not the persona cookie.
+  const subject = await resolveAssistantConnectionScope(ownerId);
   let promptActorId = subject.actorId;
   let resolvedPersonaId: string | null = subject.scopeType === "persona" ? subject.actorId : null;
   let resolvedPersonaName: string | null =
@@ -188,6 +191,12 @@ export async function POST(request: Request) {
 
   const actorSettings = await getAutobotUserSettings(promptActorId).catch(() => null);
   const includedPersonaKgIds = actorSettings?.includedPersonaKgIds ?? [];
+  // A4: the assistant runs on the agent's own pasted Claude Code token when its
+  // `claude_code` connector is configured; otherwise nativeCloudChat falls back
+  // to the instance credential store / ANTHROPIC_API_KEY.
+  const claudeConnectorToken = resolveClaudeCodeConnectorToken(
+    actorSettings?.connections,
+  );
   const username = resolvedPersonaName || session.user.name || session.user.email || "rivr-user";
   const sessionKey = [
     resolvedPersonaId ? "agent:persona:rivr" : "agent:main:rivr",
@@ -304,6 +313,7 @@ export async function POST(request: Request) {
       message,
       tools,
       executeTool,
+      connectorToken: claudeConnectorToken,
     });
 
     return NextResponse.json({

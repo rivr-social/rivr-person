@@ -7,7 +7,8 @@ import { sendThanksTokensAction } from "@/app/actions/interactions/thanks-tokens
 import { toggleJoinGroup } from "@/app/actions/interactions/social";
 import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
-import { deleteResource } from "@/app/actions/resource-creation/lifecycle";
+import { deleteResource, updateResource } from "@/app/actions/resource-creation/lifecycle";
+import type { UpdateResourceInput } from "@/app/actions/resource-creation/types";
 import { createEventResource } from "@/app/actions/resource-creation/events";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import {
@@ -30,6 +31,8 @@ import {
 import { db } from "@/db";
 import { agents, resources } from "@/db/schema";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { getPlacesByPlaceType } from "@/lib/queries/agents";
+import { GLOBAL_BASE_URL } from "@/lib/global-base-url";
 import * as kg from "@/lib/kg/autobot-kg-client";
 import { nativeCloudChat, DEFAULT_MODEL } from "@/lib/ai/native-chat";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
@@ -98,7 +101,7 @@ function getLocation(value: unknown): { lat: number; lng: number } | null {
 
 async function buildMyProfileBundle(actorId: string) {
   const [profile, savedListingIds, wallet, wallets, transactions, ticketPurchases, subscriptions, receipts, posts, events, groups, marketplaceListings, reactionCounts, connections, homeInstance] = await Promise.all([
-    fetchProfileData(actorId).catch(() => null),
+    fetchProfileData(actorId, actorId).catch(() => null),
     fetchMySavedListingIds().catch(() => [] as string[]),
     getMyWalletAction().catch(() => ({ success: false as const })),
     getMyWalletsAction().catch(() => ({ success: false as const })),
@@ -106,7 +109,7 @@ async function buildMyProfileBundle(actorId: string) {
     getMyTicketPurchasesAction().catch(() => ({ success: false as const })),
     getAllSubscriptionStatusesAction().catch(() => []),
     fetchMyReceipts().catch(() => ({ receipts: [] })),
-    fetchUserPosts(actorId, 30).catch(() => ({ posts: [], owner: null })),
+    fetchUserPosts(actorId, 30, actorId).catch(() => ({ posts: [], owner: null })),
     fetchUserEvents(actorId, 30).catch(() => []),
     fetchUserGroups(actorId, 30).catch(() => []),
     fetchMarketplaceListings(50).catch(() => []),
@@ -199,6 +202,99 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     },
   },
   {
+    name: "rivr.places.list",
+    description: "List the places (locales/chapters and regions/bioregions) that posts, events, and offerings can be scoped to. Call this to resolve a place NAME (e.g. \"Boulder\") to the canonical id you pass as localeId/regionId (or scopedLocaleIds/scopedRegionIds) on the create tools. The catalog is the federation-wide canonical directory served by the global instance (the same list the locale switcher shows), NOT just places that happen to live on this sovereign instance. Optionally filter by name substring (query) and/or restrict to a kind (placeType: \"locale\" or \"region\").",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", description: "Optional case-insensitive substring to match against place name." },
+        placeType: { type: "string", enum: ["locale", "region", "all"], description: "Restrict to locales/chapters, regions/bioregions, or both (default)." },
+        limit: { type: "number", description: "Max places per kind. Defaults to 50." },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const query = getString(args.query)?.trim().toLowerCase() ?? null;
+      const placeType = getString(args.placeType) ?? "all";
+      const limit = getNumber(args.limit) ?? 50;
+      const wantLocales = placeType === "all" || placeType === "locale";
+      const wantRegions = placeType === "all" || placeType === "region";
+      const matches = (name: string) => !query || name.toLowerCase().includes(query);
+
+      // The canonical place catalog (Boulder, Denver, the basins/regions, etc.)
+      // lives on the GLOBAL instance, not in this sovereign instance's local DB
+      // (ticket #109: the locale switcher reads the same global directory rather
+      // than whatever happens to be projected locally). Fetch global's
+      // /api/locales — it returns every chapter agent plus its parent basin,
+      // from which we derive the region list. Fall back to the local place
+      // agents if global is unreachable.
+      type PlaceEntry = { id: string; name: string; kind: "locale" | "region"; slug: string | null; basinId?: string | null; basinName?: string | null };
+      let locales: PlaceEntry[] = [];
+      let regions: PlaceEntry[] = [];
+      let source = "global";
+
+      try {
+        const res = await fetch(`${GLOBAL_BASE_URL}/api/locales`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`global /api/locales responded ${res.status}`);
+        const data = (await res.json()) as {
+          locales?: Array<Record<string, unknown>>;
+        };
+        const rows = Array.isArray(data.locales) ? data.locales : [];
+        locales = rows.map((row) => ({
+          id: String(row.id ?? row.slug ?? ""),
+          name: String(row.name ?? row.slug ?? ""),
+          kind: "locale" as const,
+          slug: typeof row.slug === "string" ? row.slug : null,
+          basinId: typeof row.basinId === "string" ? row.basinId : null,
+          basinName: typeof row.basinName === "string" ? row.basinName : null,
+        })).filter((p) => p.id);
+
+        // Regions/basins are denormalized onto each locale row — dedupe them.
+        const regionById = new Map<string, PlaceEntry>();
+        for (const loc of locales) {
+          if (loc.basinId && loc.basinName && !regionById.has(loc.basinId)) {
+            regionById.set(loc.basinId, {
+              id: loc.basinId,
+              name: loc.basinName,
+              kind: "region",
+              slug: null,
+            });
+          }
+        }
+        regions = Array.from(regionById.values());
+      } catch {
+        // Global unreachable — degrade to whatever place agents this instance
+        // has locally so the tool still returns something usable offline.
+        source = "local";
+        const toLocal = (kind: "locale" | "region") => (agent: { id: string; name: string; metadata?: Record<string, unknown> | null }) => {
+          const metadata = (agent.metadata ?? {}) as Record<string, unknown>;
+          return {
+            id: agent.id,
+            name: agent.name,
+            kind,
+            slug:
+              (metadata.slug as string | undefined) ??
+              (metadata.username as string | undefined) ??
+              null,
+          } satisfies PlaceEntry;
+        };
+        const [localLocales, localRegions] = await Promise.all([
+          getPlacesByPlaceType("locale", limit),
+          getPlacesByPlaceType("region", limit),
+        ]);
+        locales = localLocales.map(toLocal("locale"));
+        regions = localRegions.map(toLocal("region"));
+      }
+
+      return {
+        source,
+        locales: wantLocales ? locales.filter((p) => matches(p.name)).slice(0, limit) : [],
+        regions: wantRegions ? regions.filter((p) => matches(p.name)).slice(0, limit) : [],
+      };
+    },
+  },
+  {
     name: "rivr.personas.list",
     description: "List personas owned by the current controller and return the active persona.",
     inputSchema: {
@@ -254,7 +350,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.posts.create",
-    description: "Create a post as the active actor or into a group where the actor has write access. When isGlobal is true (default), the post is also federated to the configured registry so it surfaces on the global instance.",
+    description: "Create a post as the active actor, into a group where the actor has write access (groupId), or AS a group the actor administers (ownerId — the post is then owned by and homes on that group). Scope the post to a place by passing localeId (a locale/chapter) and/or regionId (a region/bioregion); use rivr.places.list to resolve a place name to its id. When isGlobal is true (default), the post is also federated to the configured registry so it surfaces on the global instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -264,7 +360,28 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         content: { type: "string" },
         postType: { type: "string" },
         groupId: { type: "string" },
-        localeId: { type: "string" },
+        ownerId: {
+          type: "string",
+          description: "Post AS this group (the actor must have write access). The post is owned by and homes on the group, rather than the actor surfacing their own post into it.",
+        },
+        localeId: {
+          type: "string",
+          description: "Scope the post to this locale/chapter (a place-typed agent id, e.g. \"Boulder\"). Resolve names to ids with rivr.places.list. Place-scoping makes the post discoverable in that locale's feed.",
+        },
+        regionId: {
+          type: "string",
+          description: "Scope the post to this region/bioregion (a place-typed agent id, e.g. a basin or front-range region). Resolve names to ids with rivr.places.list. May be combined with localeId.",
+        },
+        scopedLocaleIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Scope the post to multiple locales/chapters at once (place-typed agent ids).",
+        },
+        scopedRegionIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Scope the post to multiple regions/bioregions at once (place-typed agent ids).",
+        },
         imageUrl: { type: "string" },
         isGlobal: { type: "boolean" },
         federate: { type: "boolean" },
@@ -292,7 +409,11 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         content,
         postType: getString(args.postType) ?? "social",
         groupId: getString(args.groupId) ?? undefined,
+        ownerId: getString(args.ownerId) ?? undefined,
         localeId: getString(args.localeId) ?? undefined,
+        regionId: getString(args.regionId) ?? undefined,
+        scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedRegionIds: getStringArray(args.scopedRegionIds),
         imageUrl: getString(args.imageUrl),
         isGlobal,
         federate: getBoolean(args.federate, isGlobal),
@@ -302,13 +423,19 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.posts.delete",
-    description: "Soft-delete a post the active actor owns. Emits a resource.deleted federation event so peer instances mirror the delete.",
+    description:
+      "Soft-delete a resource (post/event/offering/etc.) the active actor owns, OR one owned by a group the actor administers — including groups homed on a PEER instance. Emits a resource.deleted federation event so peer instances clear the projection. When the resource is homed on a peer (e.g. a post owned by a group on its own sovereign instance), pass ownerId (the owning group/agent id) so the delete is routed to and authorized on that home instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["resourceId"],
       properties: {
         resourceId: { type: "string" },
+        ownerId: {
+          type: "string",
+          description:
+            "The agent id that OWNS this resource (and whose instance HOMES it). Required when the resource is homed on a peer instance this instance keeps no local copy of — e.g. deleting a post owned by a group on the group's own sovereign instance. The home instance re-authorizes the actor's admin rights there.",
+        },
       },
     },
     enabledFor: ["session", "token"],
@@ -317,7 +444,74 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       if (!resourceId) {
         throw new Error("resourceId is required.");
       }
-      return deleteResource(resourceId);
+      const ownerId = getString(args.ownerId) ?? undefined;
+      return deleteResource(resourceId, ownerId ? { targetAgentId: ownerId } : undefined);
+    },
+  },
+  {
+    name: "rivr.resources.update",
+    description:
+      "Update a resource (post/event/offering/project/etc.) the active actor owns, OR one owned by a group the actor administers — including groups homed on a PEER instance. Patch any of: name/title, description, content (post body), tags, visibility (public|locale|members|private), and metadata fields (metadataPatch is shallow-merged). When the resource is homed on a peer (e.g. owned by a group on its own sovereign instance), pass ownerId so the update is routed to and authorized on that home instance.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["resourceId"],
+      properties: {
+        resourceId: { type: "string" },
+        ownerId: {
+          type: "string",
+          description:
+            "The agent id that OWNS this resource (and whose instance HOMES it). Required when the resource is homed on a peer instance this instance keeps no local copy of. The home instance re-authorizes the actor's admin rights there.",
+        },
+        name: { type: "string", description: "New name/title for the resource." },
+        description: { type: "string", description: "New description." },
+        content: { type: "string", description: "New body content (e.g. a post body)." },
+        tags: { type: "array", items: { type: "string" }, description: "Replacement tag list." },
+        visibility: {
+          type: "string",
+          enum: ["public", "locale", "members", "private"],
+          description: "New visibility level.",
+        },
+        metadataPatch: {
+          type: "object",
+          additionalProperties: true,
+          description: "Metadata fields to shallow-merge into the resource's existing metadata.",
+        },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args) => {
+      const resourceId = getString(args.resourceId);
+      if (!resourceId) {
+        throw new Error("resourceId is required.");
+      }
+      const input: UpdateResourceInput = { resourceId };
+      const ownerId = getString(args.ownerId);
+      if (ownerId) input.targetAgentId = ownerId;
+      // Only patch fields the caller actually provided (presence-checked on the
+      // raw args), so an omitted field is never coerced to null/empty and the
+      // existing value is preserved.
+      if (args.name !== undefined) {
+        const name = getString(args.name);
+        if (name) input.name = name;
+      }
+      if (args.description !== undefined) {
+        input.description = getString(args.description);
+      }
+      if (args.content !== undefined) {
+        input.content = getString(args.content);
+      }
+      if (args.tags !== undefined) {
+        input.tags = getStringArray(args.tags);
+      }
+      if (args.visibility !== undefined) {
+        const visibility = getString(args.visibility);
+        if (visibility) input.visibility = visibility as UpdateResourceInput["visibility"];
+      }
+      if (args.metadataPatch && typeof args.metadataPatch === "object" && !Array.isArray(args.metadataPatch)) {
+        input.metadataPatch = args.metadataPatch as Record<string, unknown>;
+      }
+      return updateResource(input);
     },
   },
   {
@@ -331,9 +525,17 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         title: { type: "string" },
         content: { type: "string" },
         groupId: { type: "string" },
-        localeId: { type: "string" },
+        localeId: {
+          type: "string",
+          description: "Scope the invite to this locale/chapter (a place-typed agent id). Resolve names to ids with rivr.places.list.",
+        },
+        regionId: {
+          type: "string",
+          description: "Scope the invite to this region/bioregion (a place-typed agent id). Resolve names to ids with rivr.places.list.",
+        },
         isGlobal: { type: "boolean" },
-        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        scopedLocaleIds: { type: "array", items: { type: "string" }, description: "Scope to multiple locales/chapters (place-typed agent ids)." },
+        scopedRegionIds: { type: "array", items: { type: "string" }, description: "Scope to multiple regions/bioregions (place-typed agent ids)." },
         scopedGroupIds: { type: "array", items: { type: "string" } },
         scopedUserIds: { type: "array", items: { type: "string" } },
         liveLocation: {
@@ -362,10 +564,12 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         postType: "social",
         groupId,
         localeId: getString(args.localeId) ?? undefined,
+        regionId: getString(args.regionId) ?? undefined,
         isLiveInvitation: true,
         liveLocation,
         isGlobal: getBoolean(args.isGlobal, true),
         scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedRegionIds: getStringArray(args.scopedRegionIds),
         scopedGroupIds: getStringArray(args.scopedGroupIds),
         scopedUserIds: getStringArray(args.scopedUserIds),
       });
@@ -373,7 +577,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.events.create",
-    description: "Create an event as the active actor, or in a target group/locale. If the group is homed on another Rivr instance, route the write to that instance.",
+    description: "Create an event as the active actor, or in a target group/locale/region. Scope the event to a place by passing localeId (a locale/chapter) and/or regionId (a region/bioregion); use rivr.places.list to resolve a place name to its id. If the group is homed on another Rivr instance, route the write to that instance.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -391,8 +595,16 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         groupId: { type: "string", description: "Optional group/ring id; remote groups route to their home instance." },
         projectId: { type: "string" },
         venueId: { type: "string" },
-        localeId: { type: "string" },
-        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        localeId: {
+          type: "string",
+          description: "Scope the event to this locale/chapter (a place-typed agent id, e.g. \"Boulder\"). Resolve names to ids with rivr.places.list.",
+        },
+        regionId: {
+          type: "string",
+          description: "Scope the event to this region/bioregion (a place-typed agent id). Resolve names to ids with rivr.places.list. May be combined with localeId.",
+        },
+        scopedLocaleIds: { type: "array", items: { type: "string" }, description: "Scope to multiple locales/chapters (place-typed agent ids)." },
+        scopedRegionIds: { type: "array", items: { type: "string" }, description: "Scope to multiple regions/bioregions (place-typed agent ids)." },
         scopedGroupIds: { type: "array", items: { type: "string" } },
         scopedUserIds: { type: "array", items: { type: "string" } },
         isGlobal: { type: "boolean", description: "Defaults true; false creates a scoped/private event." },
@@ -428,7 +640,9 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         projectId: getString(args.projectId),
         venueId: getString(args.venueId),
         localeId: getString(args.localeId),
+        regionId: getString(args.regionId),
         scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedRegionIds: getStringArray(args.scopedRegionIds),
         scopedGroupIds: getStringArray(args.scopedGroupIds),
         scopedUserIds: getStringArray(args.scopedUserIds),
         isGlobal: getBoolean(args.isGlobal, true),
@@ -441,7 +655,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "rivr.offerings.create",
-    description: "Create an offering/listing as the active actor. Global visibility plus scoped locale/group ids makes it discoverable across Rivr; remote scoped groups receive a projection.",
+    description: "Create an offering/listing as the active actor. Global visibility plus scoped locale/region/group ids makes it discoverable across Rivr; remote scoped groups receive a projection. Resolve place names to scopedLocaleIds/scopedRegionIds with rivr.places.list.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -458,7 +672,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         tags: { type: "array", items: { type: "string" } },
         targetAgentTypes: { type: "array", items: { type: "string" } },
         ownerId: { type: "string" },
-        scopedLocaleIds: { type: "array", items: { type: "string" } },
+        scopedLocaleIds: { type: "array", items: { type: "string" }, description: "Scope to one or more locales/chapters (place-typed agent ids). Resolve names with rivr.places.list." },
+        scopedRegionIds: { type: "array", items: { type: "string" }, description: "Scope to one or more regions/bioregions (place-typed agent ids). Resolve names with rivr.places.list." },
         scopedGroupIds: { type: "array", items: { type: "string" } },
         scopedUserIds: { type: "array", items: { type: "string" } },
         postToFeed: { type: "boolean" },
@@ -505,6 +720,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         targetAgentTypes: getStringArray(args.targetAgentTypes),
         ownerId: getString(args.ownerId) ?? undefined,
         scopedLocaleIds: getStringArray(args.scopedLocaleIds),
+        scopedRegionIds: getStringArray(args.scopedRegionIds),
         scopedGroupIds: getStringArray(args.scopedGroupIds),
         scopedUserIds: getStringArray(args.scopedUserIds),
         postToFeed: getBoolean(args.postToFeed, true),

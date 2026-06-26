@@ -69,6 +69,7 @@ import type {
 } from "@/lib/bespoke/types";
 import { GitHubDeploySettings } from "@/components/github-deploy-settings";
 import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
+import { BuilderTablesPanel } from "@/components/builder-tables-panel";
 
 // ---------------------------------------------------------------------------
 // Workspace target types
@@ -335,6 +336,8 @@ export default function BuilderPage() {
   const [showFileExplorer, setShowFileExplorer] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [dataExpanded, setDataExpanded] = useState(false);
+  // "Data" right-panel sub-tab: builder-owned tables vs. data-source bindings.
+  const [dataSubTab, setDataSubTab] = useState<"tables" | "sources">("tables");
 
   // Solid Pod import state
   const [solidDialogOpen, setSolidDialogOpen] = useState(false);
@@ -2517,6 +2520,34 @@ export default function BuilderPage() {
               {/* ----- DATA PANEL ----- */}
               {rightPanelView === "data" && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {/* Data sub-tabs: builder-owned tables vs. data-source bindings */}
+                  <div className="flex items-center gap-1 border-b">
+                    <button
+                      className={`px-2 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                        dataSubTab === "tables"
+                          ? "border-primary text-foreground"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setDataSubTab("tables")}
+                    >
+                      Tables
+                    </button>
+                    <button
+                      className={`px-2 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                        dataSubTab === "sources"
+                          ? "border-primary text-foreground"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setDataSubTab("sources")}
+                    >
+                      Sources
+                    </button>
+                  </div>
+
+                  {dataSubTab === "tables" && <BuilderTablesPanel />}
+
+                  {dataSubTab === "sources" && (
+                  <>
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-medium">Available Profile Data</h3>
                     <Button
@@ -2741,6 +2772,8 @@ export default function BuilderPage() {
                     </div>
                   ) : (
                     <Skeleton className="h-32" />
+                  )}
+                  </>
                   )}
 
                 </div>

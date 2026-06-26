@@ -3,6 +3,11 @@ import { db } from "@/db";
 import { resources } from "@/db/schema";
 import type { AutobotConnection } from "@/lib/autobot-connectors";
 import type { ConnectorSyncResult } from "@/lib/autobot-google-sync";
+import {
+  facetedTagsFromVaultPath,
+  flattenFacetedTags,
+  serializeFacetedTagsToMetadata,
+} from "@/lib/parachute-doc";
 
 const PROVIDER_KEY = "parachute";
 
@@ -91,7 +96,11 @@ export async function importParachuteFile(
   const title = extractTitle(file.path);
   const contentType = inferContentType(file.mimeType, file.path);
 
-  const metadata: Record<string, unknown> = {
+  // The vault folder structure IS the faceted hierarchy (T2.5): persist the
+  // path-derived tag-paths under metadata.facetedTags and project them — plus
+  // the provider markers — into the flat `tags` column for existing search.
+  const facetedTags = facetedTagsFromVaultPath(file.path);
+  const baseMetadata: Record<string, unknown> = {
     entityType: "document",
     resourceKind: "document",
     personalOwnerId: userId,
@@ -104,6 +113,13 @@ export async function importParachuteFile(
       importedAt: now.toISOString(),
     },
   };
+  const metadata = serializeFacetedTagsToMetadata(baseMetadata, facetedTags);
+  const tags = [
+    "parachute",
+    "vault",
+    "imported",
+    ...flattenFacetedTags(facetedTags),
+  ];
 
   if (existingId) {
     await db
@@ -113,6 +129,7 @@ export async function importParachuteFile(
         description: "Imported from Parachute vault",
         content: file.content,
         contentType,
+        tags,
         metadata,
         updatedAt: now,
       })
@@ -128,7 +145,7 @@ export async function importParachuteFile(
     contentType,
     ownerId: userId,
     visibility: "private",
-    tags: ["parachute", "vault", "imported"],
+    tags,
     metadata,
   });
   return "created";

@@ -10,6 +10,11 @@ import {
   getAutobotConnectorDefinition,
   type AutobotConnectionProvider,
 } from "@/lib/autobot-connectors";
+import { decryptConnectorSecret } from "@/lib/autobot-connector-secrets";
+import {
+  ANTHROPIC_OAUTH_BETA,
+  ANTHROPIC_VERSION,
+} from "@/lib/ai/native-chat";
 import { validateBotToken } from "@/lib/autobot-telegram-sync";
 import { testSlackConnection } from "@/lib/autobot-slack-sync";
 import { testDiscordConnection } from "@/lib/autobot-discord-sync";
@@ -140,6 +145,7 @@ export async function POST(_request: Request, context: RouteContext) {
     switch (provider) {
       case "google_docs":
       case "google_calendar":
+      case "gmail":
         result = await testOAuthTokenValid(
           actorId,
           "google_workspace",
@@ -255,6 +261,91 @@ export async function POST(_request: Request, context: RouteContext) {
         break;
       }
 
+      case "claude_code": {
+        const token = decryptConnectorSecret(connection?.config.token).trim();
+        if (!token) {
+          result = { valid: false, error: "No Claude Code token configured." };
+          break;
+        }
+        try {
+          const response = await fetch("https://api.anthropic.com/v1/models", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "anthropic-version": ANTHROPIC_VERSION,
+              "anthropic-beta": ANTHROPIC_OAUTH_BETA,
+            },
+            cache: "no-store",
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!response.ok) {
+            result = {
+              valid: false,
+              error: `Anthropic API returned ${response.status}. Token may be invalid or expired.`,
+            };
+          } else {
+            result = { valid: true, label: "Claude Code token valid" };
+          }
+        } catch (error) {
+          result = {
+            valid: false,
+            error: error instanceof Error ? error.message : "Claude Code token test failed.",
+          };
+        }
+        break;
+      }
+
+      case "cloudflare": {
+        const apiKey = decryptConnectorSecret(connection?.config.apiKey).trim();
+        if (!apiKey) {
+          result = { valid: false, error: "No Cloudflare API token configured." };
+          break;
+        }
+        try {
+          const response = await fetch(
+            "https://api.cloudflare.com/client/v4/user/tokens/verify",
+            {
+              headers: { Authorization: `Bearer ${apiKey}` },
+              cache: "no-store",
+              signal: AbortSignal.timeout(10_000),
+            },
+          );
+          if (!response.ok) {
+            result = {
+              valid: false,
+              error: `Cloudflare API returned ${response.status}. Token may be invalid.`,
+            };
+          } else {
+            const data = (await response.json()) as {
+              result?: { status?: string };
+            };
+            const active = data.result?.status === "active";
+            result = {
+              valid: active,
+              label: active ? "Cloudflare token active" : undefined,
+              error: active ? undefined : "Cloudflare token is not active.",
+            };
+          }
+        } catch (error) {
+          result = {
+            valid: false,
+            error: error instanceof Error ? error.message : "Cloudflare token test failed.",
+          };
+        }
+        break;
+      }
+
+      case "squarespace":
+      case "namecheap": {
+        // No safe unauthenticated probe endpoint — validate that a key is set.
+        const apiKey = decryptConnectorSecret(connection?.config.apiKey).trim();
+        result = {
+          valid: Boolean(apiKey),
+          label: apiKey ? `${definition.label} key stored` : undefined,
+          error: apiKey ? undefined : `No ${definition.label} API key configured.`,
+        };
+        break;
+      }
+
       case "wolfram": {
         const licenseKey = connection?.config.licenseKey?.trim();
         if (!licenseKey) {
@@ -291,6 +382,15 @@ export async function POST(_request: Request, context: RouteContext) {
           result = { valid: false, error: "No Signal service URL configured." };
           break;
         }
+        const origin = new URL(serviceUrl).origin;
+        const allowedOrigins = (process.env.SIGNAL_BRIDGE_ALLOWED_ORIGINS ?? "")
+          .split(",")
+          .map((entry) => entry.trim().replace(/\/$/, ""))
+          .filter(Boolean);
+        if (!allowedOrigins.includes(origin)) {
+          result = { valid: false, error: "Signal bridge origin is not in SIGNAL_BRIDGE_ALLOWED_ORIGINS." };
+          break;
+        }
         try {
           const response = await fetch(`${serviceUrl}/v1/about`, { cache: "no-store" });
           result = {
@@ -319,6 +419,49 @@ export async function POST(_request: Request, context: RouteContext) {
           break;
         }
         result = { valid: true, label: `Phone: ${phoneNumberId}` };
+        break;
+      }
+
+      case "substack": {
+        const publicationUrl = connection?.config.publicationUrl?.trim();
+        if (!publicationUrl) {
+          result = { valid: false, error: "No Substack publication URL configured." };
+          break;
+        }
+        const url = new URL(publicationUrl);
+        if (url.protocol !== "https:" || !(url.hostname === "substack.com" || url.hostname.endsWith(".substack.com"))) {
+          result = { valid: false, error: "Publication must be an https://*.substack.com URL." };
+          break;
+        }
+        const response = await fetch(`${url.origin}/feed`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        result = { valid: response.ok, label: response.ok ? url.hostname : undefined, error: response.ok ? undefined : `Substack feed returned ${response.status}.` };
+        break;
+      }
+
+      case "luma": {
+        const calendarUrl = connection?.config.calendarUrl?.trim();
+        if (!calendarUrl) {
+          result = { valid: false, error: "No Luma calendar URL configured." };
+          break;
+        }
+        const url = new URL(calendarUrl);
+        if (url.protocol !== "https:" || !(url.hostname === "lu.ma" || url.hostname.endsWith(".lu.ma"))) {
+          result = { valid: false, error: "Calendar must be an https://lu.ma URL." };
+          break;
+        }
+        const response = await fetch(url, { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        result = { valid: response.ok, label: response.ok ? url.pathname.replace(/^\//, "") || "Luma" : undefined, error: response.ok ? undefined : `Luma returned ${response.status}.` };
+        break;
+      }
+
+      case "x": {
+        const bearerToken = connection?.config.bearerToken?.trim();
+        if (!bearerToken) {
+          result = { valid: false, error: "No X bearer token configured." };
+          break;
+        }
+        const response = await fetch("https://api.x.com/2/users/me", { headers: { Authorization: `Bearer ${bearerToken}` }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        result = { valid: response.ok, label: response.ok ? connection?.accountLabel : undefined, error: response.ok ? undefined : `X API returned ${response.status}.` };
         break;
       }
 

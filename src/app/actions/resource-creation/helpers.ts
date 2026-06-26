@@ -14,7 +14,7 @@ import { rateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { embedResource, scheduleEmbedding } from "@/lib/ai";
 import { syncMurmurationsProfilesForActor } from "@/lib/murmurations";
-import { getHostedNodeForOwner, queueEntityExportEvents } from "@/lib/federation";
+import { ensureLocalNode, queueEntityExportEvents } from "@/lib/federation";
 import { getExecutionContext } from "@/lib/federation/execution-context";
 import { hasEntitlement } from "@/lib/billing";
 import type { MembershipTier } from "@/db/schema";
@@ -222,24 +222,20 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
 
   try {
     const userId = resolvedUserId;
-    const federationNode =
-      input.federate === true ? await getHostedNodeForOwner(userId) : null;
-    if (input.federate === true && !federationNode) {
-      return {
-        success: false,
-        message: "Federation is not enabled for this account.",
-        error: {
-          code: "FORBIDDEN",
-          details: "Only hosted-node owners can federate content from this deployment.",
-        },
-      };
-    }
+    // Every public/locale/members resource created on this sovereign instance
+    // must circulate to the global hub. Anchor the export on this instance's
+    // own self-node (the canonical federation origin) rather than gating on an
+    // explicit `federate` flag or an owner-hosted node — normal creates never
+    // set the flag, and group-owned content is authored by members who are not
+    // the node owner. queueEntityExportEvents applies the visibility filter
+    // (public/locale/members only), so private resources still stay local.
+    const federationNode = await ensureLocalNode();
     const ownerId = input.ownerId ?? userId;
     if (ownerId !== userId) {
       const [owner] = await db
         .select({ id: agents.id })
         .from(agents)
-        .where(and(eq(agents.id, ownerId), eq(agents.type, "organization")))
+        .where(and(eq(agents.id, ownerId), inArray(agents.type, [...GROUP_LIKE_OWNER_AGENT_TYPES])))
         .limit(1);
       if (!owner || !(await hasGroupWriteAccess(userId, ownerId))) {
         return {
@@ -275,6 +271,13 @@ export async function createResourceWithLedger(input: CreateResourceInput): Prom
           tags: input.tags ?? [],
           embeds: input.embeds ?? [],
           metadata: input.metadata ?? {},
+          ...(input.file ? {
+            ...(input.file.url ? { url: input.file.url } : {}),
+            ...(input.file.storageKey ? { storageKey: input.file.storageKey } : {}),
+            ...(input.file.storageProvider ? { storageProvider: input.file.storageProvider } : {}),
+            ...(input.file.contentType ? { contentType: input.file.contentType } : {}),
+            ...(typeof input.file.fileSize === "number" ? { fileSize: input.file.fileSize } : {}),
+          } : {}),
           ...(input.location ? {
             location: {
               type: "Point" as const,

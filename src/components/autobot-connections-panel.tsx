@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -26,6 +27,7 @@ import {
   ExternalLink,
   FileText,
   FolderOpen,
+  Globe,
   KeyRound,
   Loader2,
   MessageSquare,
@@ -33,6 +35,7 @@ import {
   Phone,
   RefreshCw,
   Settings2,
+  Share2,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -46,6 +49,13 @@ import {
   type AutobotConnectorDefinition,
 } from "@/lib/autobot-connectors";
 
+/**
+ * A connection as returned to the UI. The API annotates a persona-scope view
+ * with `inherited: true` for connectors shared down from the owning agent
+ * (read-only at the persona scope — A2/A3 inheritance).
+ */
+type ScopedAutobotConnection = AutobotConnection & { inherited?: boolean };
+
 type LinkedAccount = {
   provider: string;
   providerAccountId: string;
@@ -55,7 +65,7 @@ type LinkedAccount = {
 
 type ConnectionsResponse = {
   definitions?: AutobotConnectorDefinition[];
-  connections?: AutobotConnection[];
+  connections?: ScopedAutobotConnection[];
   linkedAccounts?: LinkedAccount[];
   availableAuthProviders?: Partial<Record<string, boolean>>;
   subject?: {
@@ -64,6 +74,7 @@ type ConnectionsResponse = {
     scopeType: "person" | "persona";
     scopeLabel: string;
     personaName?: string;
+    inheritedSharedOnly?: boolean;
   };
 };
 
@@ -106,6 +117,7 @@ const MODULE_ICON_MAP: Record<AutobotConnectionModule, typeof FileText> = {
   kg: Network,
   groups: MessageSquare,
   wallet: Wallet,
+  deploy: Globe,
 };
 
 const STATUS_TONE: Record<AutobotConnectionStatus, "outline" | "default" | "secondary" | "destructive"> = {
@@ -163,6 +175,21 @@ function getGuidedSetupFields(
         { key: "serviceUrl", label: "Signal Bridge URL", placeholder: "https://signal.example.com", inputType: "url" },
         { key: "phoneNumber", label: "Phone Number", placeholder: "+15551234567" },
         { key: "deviceName", label: "Device Name", placeholder: "Rivr Signal Bridge" },
+      ];
+    case "substack":
+      return [
+        { key: "publicationUrl", label: "Publication URL", placeholder: "https://example.substack.com", inputType: "url" },
+        { key: "feedUrl", label: "Feed URL", placeholder: "https://example.substack.com/feed", inputType: "url" },
+      ];
+    case "luma":
+      return [
+        { key: "calendarUrl", label: "Calendar URL", placeholder: "https://lu.ma/example", inputType: "url" },
+        { key: "apiKey", label: "API Key", placeholder: "Optional API key", inputType: "password" },
+      ];
+    case "x":
+      return [
+        { key: "handle", label: "X Handle", placeholder: "@example" },
+        { key: "bearerToken", label: "Bearer Token", placeholder: "X API bearer token", inputType: "password" },
       ];
     case "obsidian_vault":
     case "parachute_vault":
@@ -224,6 +251,23 @@ function getGuidedSetupFields(
         { key: "handle", label: "Handle", placeholder: "you.bsky.social" },
         { key: "appPassword", label: "App Password", placeholder: "xxxx-xxxx-xxxx-xxxx", inputType: "password" },
         { key: "pdsUrl", label: "PDS URL", placeholder: "https://bsky.social (optional)", inputType: "url", description: "Only needed for self-hosted PDS." },
+      ];
+    case "cloudflare":
+      return [
+        { key: "apiKey", label: "API Token", placeholder: "Cloudflare API token", inputType: "password", description: "Scoped token with DNS edit / deploy permissions. Stored encrypted at rest." },
+        { key: "zoneId", label: "Zone ID", placeholder: "Optional zone id" },
+        { key: "accountId", label: "Account ID", placeholder: "Optional account id" },
+      ];
+    case "squarespace":
+      return [
+        { key: "apiKey", label: "API Key", placeholder: "Squarespace developer API key", inputType: "password", description: "Stored encrypted at rest." },
+        { key: "domain", label: "Domain", placeholder: "example.com" },
+      ];
+    case "namecheap":
+      return [
+        { key: "apiKey", label: "API Key", placeholder: "Namecheap API key", inputType: "password", description: "Stored encrypted at rest." },
+        { key: "apiUser", label: "API User", placeholder: "Namecheap API username" },
+        { key: "domain", label: "Domain", placeholder: "example.com" },
       ];
     default:
       return [];
@@ -519,10 +563,14 @@ function getProviderSetupSteps(
   }
 }
 
-export function AutobotConnectionsPanel() {
+export function AutobotConnectionsPanel({
+  providers,
+}: {
+  providers?: AutobotConnectionProvider[];
+} = {}) {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const [connections, setConnections] = useState<AutobotConnection[]>([]);
+  const [connections, setConnections] = useState<ScopedAutobotConnection[]>([]);
   const [linkedAccounts, setLinkedAccounts] = useState<LinkedAccount[]>([]);
   const [availableAuthProviders, setAvailableAuthProviders] = useState<
     Partial<Record<string, boolean>>
@@ -684,6 +732,18 @@ export function AutobotConnectionsPanel() {
       const definition = getAutobotConnectorDefinition(provider);
       if (!definition) return;
 
+      // Inherited shared connectors are read-only at this scope (A3) — they are
+      // owned and edited by the parent agent, not the persona viewing them.
+      if (existing?.inherited) {
+        toast({
+          title: `${definition.label} is inherited`,
+          description:
+            "This connector is shared from your agent and can only be edited from the agent's own settings.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const nextConnection: AutobotConnection = {
         provider,
         status: patch.status ?? existing?.status ?? "disconnected",
@@ -694,10 +754,14 @@ export function AutobotConnectionsPanel() {
         lastSyncedAt: patch.lastSyncedAt ?? existing?.lastSyncedAt,
         error: patch.error ?? existing?.error,
         config: patch.config ?? existing?.config ?? {},
+        shared: patch.shared ?? existing?.shared,
       };
 
+      // Only OWNED connectors are written back; inherited entries stay read-only.
       const nextConnections = [
-        ...connections.filter((item) => item.provider !== provider),
+        ...connections.filter(
+          (item) => item.provider !== provider && !item.inherited,
+        ),
         nextConnection,
       ].sort((a, b) => a.provider.localeCompare(b.provider));
 
@@ -750,10 +814,12 @@ export function AutobotConnectionsPanel() {
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Network className="h-4 w-4" />
-            Person Connections
+            Agent connectors
           </CardTitle>
           <CardDescription>
-            Manage service connections for this Rivr person instance. Some of them can also be shared with Autobot after setup, but configuration starts here.
+            Connectors are owned by this agent. Your assistant inherits all of
+            them automatically. Use the &quot;Share with personas&quot; toggle on
+            a connector to also surface it to this agent&apos;s personas.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -764,7 +830,9 @@ export function AutobotConnectionsPanel() {
               </Badge>
               <span className="font-medium">{subject.scopeLabel}</span>
               <span className="text-muted-foreground">
-                These settings belong to this {subject.scopeType}. Person-level services like banking stay on the main profile.
+                {subject.inheritedSharedOnly
+                  ? "This persona inherits connectors shared from your agent (read-only here). Edit shared connectors from the agent's own settings; add persona-specific connectors below."
+                  : "These connectors belong to this agent and are inherited by your assistant. Person-level services like banking stay on the main profile."}
               </span>
             </div>
           ) : null}
@@ -790,8 +858,10 @@ export function AutobotConnectionsPanel() {
         </CardContent>
       </Card>
 
-      {definitions.map((definition) => {
-        const connection =
+      {definitions
+        .filter((definition) => !providers || providers.includes(definition.provider))
+        .map((definition) => {
+        const connection: ScopedAutobotConnection =
           connections.find((item) => item.provider === definition.provider) ?? {
             provider: definition.provider,
             status: "disconnected" as const,
@@ -800,6 +870,10 @@ export function AutobotConnectionsPanel() {
             config: {},
           };
         const isSaving = savingProvider === definition.provider;
+        // Sharing is only meaningful at an owning scope (not a persona's
+        // inherited-shared-only view) and never for an inherited connector.
+        const canShareConnection =
+          !subject?.inheritedSharedOnly && !connection.inherited;
 
         return (
           <ConnectorCard
@@ -813,6 +887,7 @@ export function AutobotConnectionsPanel() {
             syncingProvider={syncingProvider}
             testingProvider={testingProvider}
             saving={isSaving}
+            canShare={canShareConnection}
             onSave={upsertConnection}
             onTest={async (provider) => {
               setTestingProvider(provider);
@@ -1086,9 +1161,10 @@ function ConnectorCard({
   onConnect,
   onSync,
   onSetup,
+  canShare,
 }: {
   definition: AutobotConnectorDefinition;
-  connection: AutobotConnection;
+  connection: ScopedAutobotConnection;
   linkedAccounts: LinkedAccount[];
   availableAuthProviders: Partial<Record<string, boolean>>;
   connectingProvider: string | null;
@@ -1096,6 +1172,8 @@ function ConnectorCard({
   syncingProvider: AutobotConnectionProvider | null;
   testingProvider: AutobotConnectionProvider | null;
   saving: boolean;
+  /** Whether the current scope owns this connector and may toggle sharing. */
+  canShare: boolean;
   onSave: (
     provider: AutobotConnectionProvider,
     patch: Partial<AutobotConnection>,
@@ -1284,7 +1362,20 @@ function ConnectorCard({
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
-            <CardTitle className="text-sm font-medium">{definition.label}</CardTitle>
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              {definition.label}
+              {connection.inherited ? (
+                <Badge variant="secondary" className="gap-1 text-[10px]">
+                  <Share2 className="h-3 w-3" />
+                  Inherited from agent
+                </Badge>
+              ) : connection.shared ? (
+                <Badge variant="outline" className="gap-1 text-[10px]">
+                  <Share2 className="h-3 w-3" />
+                  Shared
+                </Badge>
+              ) : null}
+            </CardTitle>
             <CardDescription>{definition.description}</CardDescription>
           </div>
           <Badge variant={STATUS_TONE[derivedStatus]}>{derivedStatus}</Badge>
@@ -1368,6 +1459,29 @@ function ConnectorCard({
             </Button>
           </div>
         </div>
+
+        {canShare ? (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-4 py-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium flex items-center gap-2">
+                <Share2 className="h-3.5 w-3.5" />
+                Share with personas
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Your assistant always inherits this connector. Turn this on to
+                also share it with this agent&apos;s personas.
+              </p>
+            </div>
+            <Switch
+              checked={connection.shared === true}
+              disabled={saving}
+              onCheckedChange={(checked) =>
+                void onSave(definition.provider, { shared: checked })
+              }
+              aria-label={`Share ${definition.label} with personas`}
+            />
+          </div>
+        ) : null}
 
         {connection.lastSyncedAt || connection.error ? (
           <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">

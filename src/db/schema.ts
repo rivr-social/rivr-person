@@ -1984,6 +1984,60 @@ export const builderDataSources = pgTable(
 export type BuilderDataSourceRecord = typeof builderDataSources.$inferSelect;
 export type NewBuilderDataSourceRecord = typeof builderDataSources.$inferInsert;
 
+/**
+ * Builder-owned tables (Wave 2 / T2.4). The "Data" tab in the builder is the
+ * set of tables the builder defines for the app/site it is working on. Each row
+ * here is a table definition: a name + a JSONB column schema
+ * (`{ key, label, type }[]`, see `src/lib/builder/tables.ts`). Tables are scoped
+ * to the owning agent (the direct/builder agent) and a `siteSlug` so one agent
+ * can keep distinct table sets per site.
+ * Created by migration 0054_builder_tables.
+ */
+export const builderTables = pgTable(
+  'builder_tables',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id').notNull(),
+    siteSlug: text('site_slug').notNull().default('default'),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** Column schema: { key, label, type }[] (type ∈ text|number|boolean|date). */
+    columns: jsonb('columns').$type<Array<{ key: string; label: string; type: string }>>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('btbl_agent_id_idx').on(table.agentId),
+    index('btbl_agent_site_idx').on(table.agentId, table.siteSlug),
+  ]
+);
+
+export type BuilderTableRecord = typeof builderTables.$inferSelect;
+export type NewBuilderTableRecord = typeof builderTables.$inferInsert;
+
+/**
+ * Rows belonging to a builder-owned table. `data` is a JSONB object keyed by the
+ * parent table's column keys, with values coerced to each column's type by
+ * `validateRow` before insert. Deleting a table cascades its rows.
+ * Created by migration 0054_builder_tables.
+ */
+export const builderTableRows = pgTable(
+  'builder_table_rows',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tableId: uuid('table_id')
+      .notNull()
+      .references(() => builderTables.id, { onDelete: 'cascade' }),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('btblrow_table_id_idx').on(table.tableId)]
+);
+
+export type BuilderTableRowRecord = typeof builderTableRows.$inferSelect;
+export type NewBuilderTableRowRecord = typeof builderTableRows.$inferInsert;
+
 // ---------------------------------------------------------------------------
 // Credential sync queue (federation-auth #15)
 // ---------------------------------------------------------------------------
@@ -2484,3 +2538,100 @@ export const mcpDeviceCodes = pgTable(
 
 export type McpDeviceCodeRecord = typeof mcpDeviceCodes.$inferSelect;
 export type NewMcpDeviceCodeRecord = typeof mcpDeviceCodes.$inferInsert;
+
+/**
+ * federated_visitor_settings — owner-configurable policy for cross-instance
+ * SSO visitors (the global→home pre-authenticated handoff that lands at
+ * /api/federation/sso/land).
+ *
+ * Single-row-per-instance (UNIQUE on instance_id, mirrors peer_smtp_config).
+ * When no row exists the resolver falls back to a safe default: visitor
+ * auto-sign-in ENABLED with a read-only scope (see resolveVisitorScope()).
+ *
+ * Scope model:
+ * - Every authenticated visitor implicitly holds the baseline `read`
+ *   capability. `allowed_capabilities` lists the EXTRA capabilities the
+ *   owner has granted federated visitors beyond reading (e.g. "react",
+ *   "comment", "rsvp"). The instance owner (PRIMARY_AGENT_ID) is never
+ *   constrained by this scope — they get a full session on landing.
+ */
+export const federatedVisitorSettings = pgTable(
+  'federated_visitor_settings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    instanceId: uuid('instance_id').notNull(),
+    /** Master switch for auto-signing-in non-owner federated visitors. */
+    enabled: boolean('enabled').notNull().default(true),
+    /** Extra capabilities granted to visitors beyond the implicit `read`. */
+    allowedCapabilities: jsonb('allowed_capabilities')
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    /** Lifetime of the minted visitor session cookie, in minutes. */
+    sessionTtlMinutes: integer('session_ttl_minutes').notNull().default(30),
+    /** When true, each landing is appended to federated_visit_log. */
+    recordVisits: boolean('record_visits').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('federated_visitor_settings_instance_id_idx').on(
+      table.instanceId,
+    ),
+  ],
+);
+
+export type FederatedVisitorSettingsRecord =
+  typeof federatedVisitorSettings.$inferSelect;
+export type NewFederatedVisitorSettingsRecord =
+  typeof federatedVisitorSettings.$inferInsert;
+
+/**
+ * federated_visit_log — append-only record of cross-instance SSO landings.
+ *
+ * One row per successful landing at /api/federation/sso/land. Follows the
+ * mcp_provenance_log append-only convention (INSERT only, never updated).
+ * `visitor_actor_id` is the REMOTE actor's id from the verified assertion;
+ * it is intentionally NOT a foreign key because the visitor may have no
+ * projected agent row on this instance.
+ */
+export const federatedVisitLog = pgTable(
+  'federated_visit_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    instanceId: uuid('instance_id').notNull(),
+    /** Remote actor id carried by the verified SSO assertion. */
+    visitorActorId: uuid('visitor_actor_id').notNull(),
+    /** True when the visitor is this instance's owner (PRIMARY_AGENT_ID). */
+    isOwner: boolean('is_owner').notNull().default(false),
+    /** Visitor's sovereign home base URL (referral origin). */
+    homeBaseUrl: text('home_base_url'),
+    /** Global identity authority that vouched for the visitor. */
+    globalIssuerBaseUrl: text('global_issuer_base_url'),
+    /** The sanitized in-app path the visitor was heading to (`next`). */
+    landingPath: text('landing_path'),
+    /** HTTP Referer header at landing time, when present. */
+    referrer: text('referrer'),
+    /** Visitor display name from the assertion, when disclosed. */
+    visitorName: text('visitor_name'),
+    userAgent: text('user_agent'),
+    /** Snapshot of the capabilities granted for this visit. */
+    grantedScope: jsonb('granted_scope').$type<string[]>().notNull().default([]),
+    authMethod: text('auth_method').notNull().default('federated-sso'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('federated_visit_log_instance_id_idx').on(table.instanceId),
+    index('federated_visit_log_visitor_actor_id_idx').on(table.visitorActorId),
+    index('federated_visit_log_created_at_idx').on(table.createdAt),
+  ],
+);
+
+export type FederatedVisitLogRecord = typeof federatedVisitLog.$inferSelect;
+export type NewFederatedVisitLogRecord = typeof federatedVisitLog.$inferInsert;

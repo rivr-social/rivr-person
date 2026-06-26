@@ -7,10 +7,16 @@ import { resolveHomeInstance } from "@/lib/federation/resolution";
 import {
   authorizeFederationRequest,
   bindAuthorizedFederationActor,
+  resolveLocalActorId,
 } from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
 import { REMOTE_VIEWER_COOKIE_NAME, validateRemoteViewerToken } from "@/lib/federation-remote-session";
+import {
+  requiredVisitorCapability,
+  resolveVisitorScope,
+  visitorCan,
+} from "@/lib/federation/visitor-scope";
 import { isPersonaOf } from "@/lib/persona";
 import type {
   FederatedInteractionRequest,
@@ -175,6 +181,34 @@ export async function POST(request: Request) {
 
     const body = (await request.json()) as MutationRequestBody;
 
+    // ── Visitor capability gating ────────────────────────────────────
+    // When the request is authenticated ONLY by a `rivr_remote_viewer` cookie
+    // (a federated visitor, not a trusted peer) and the actor is NOT the
+    // instance owner, constrain the action to the owner-configured visitor
+    // scope. Owners and peer-authenticated instances are unaffected.
+    const isCookieVisitor =
+      !!remoteViewerSession &&
+      (!config.primaryAgentId ||
+        remoteViewerSession.actorId !== config.primaryAgentId);
+    if (isCookieVisitor) {
+      const required = requiredVisitorCapability(body.action ?? body.type);
+      const scope = await resolveVisitorScope();
+      if (required === null || !visitorCan(scope, required)) {
+        return NextResponse.json(
+          {
+            success: false,
+            accepted: false,
+            error:
+              required === null
+                ? "This action is not available to federated visitors."
+                : `Visitor scope does not grant '${required}' on this instance.`,
+            errorCode: "VISITOR_CAPABILITY_DENIED",
+          },
+          { status: 403 },
+        );
+      }
+    }
+
     // ── Validate routing provenance if present ──────────────────────
     const routedFrom = body.routedFrom ?? null;
     if (routedFrom) {
@@ -221,9 +255,21 @@ export async function POST(request: Request) {
       );
     }
 
+    // Normalize the peer-supplied actor id to this instance's local agent id.
+    // Under peer-secret (server-to-server) trust the bound actorId is the
+    // FORWARDING instance's local id for the human; downstream authority checks
+    // run against THIS instance's graph and must see the receiver-local id. The
+    // mapping comes from federation_entity_map (read-only — never minted here).
+    // peerNodeId/peerTrusted ride on the original authorization (a persona
+    // binding only narrows actorId, never the peer fields). Unmapped actors pass
+    // through unchanged.
+    const effectiveActorId = authorization.peerTrusted
+      ? await resolveLocalActorId(authorization.peerNodeId, actorBinding.actorId)
+      : actorBinding.actorId;
+
     return handleLegacyMutation(
       body,
-      actorBinding.actorId,
+      effectiveActorId,
       config,
       remoteInstanceSlug,
       remoteInstanceId,

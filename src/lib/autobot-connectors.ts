@@ -2,6 +2,7 @@ export type AutobotConnectionProvider =
   | "teller"
   | "google_docs"
   | "google_calendar"
+  | "gmail"
   | "proton_docs"
   | "notion"
   | "parachute_vault"
@@ -17,12 +18,19 @@ export type AutobotConnectionProvider =
   | "signal"
   | "facebook"
   | "instagram"
+  | "substack"
+  | "luma"
+  | "x"
   | "wolfram"
   | "github"
   | "email_smtp"
   | "matrix"
   | "mastodon"
   | "bluesky"
+  | "claude_code"
+  | "cloudflare"
+  | "squarespace"
+  | "namecheap"
   | "generic_oauth2";
 
 export type AutobotConnectionModule =
@@ -32,7 +40,8 @@ export type AutobotConnectionModule =
   | "media"
   | "kg"
   | "groups"
-  | "wallet";
+  | "wallet"
+  | "deploy";
 
 export type AutobotConnectionAuthStrategy =
   | "oauth2"
@@ -73,6 +82,15 @@ export interface AutobotConnection {
   lastSyncedAt?: string;
   error?: string;
   config: Record<string, string>;
+  /**
+   * Whether this agent-owned connector is shared down to the agent's personas
+   * (and surfaced to the agent's assistant). The assistant inherits ALL of its
+   * direct agent's connectors; personas inherit only the shared subset. Owned
+   * (non-inherited) connectors are always available to their owning agent.
+   * Defaults to `false` — connectors are private to the owning agent until the
+   * owner explicitly shares them.
+   */
+  shared?: boolean;
 }
 
 export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
@@ -90,14 +108,25 @@ export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
   },
   {
     provider: "google_docs",
-    label: "Google Docs",
-    description: "Two-way document sync, including structured doc imports for KG ingestion.",
+    label: "Google Drive",
+    description: "Connect Drive files and Google Docs for document sync and knowledge ingestion.",
     authStrategy: "oauth2",
     authProvider: "google",
     modules: ["docs", "kg"],
     capabilities: ["read_docs", "write_docs", "sync_tabs", "kg_ingest"],
     configHints: ["folderId", "defaultDocId", "maxResults"],
     supportsSync: true,
+  },
+  {
+    provider: "gmail",
+    label: "Gmail",
+    description: "Connect Gmail for email ingestion, drafting, sending, and notifications.",
+    authStrategy: "oauth2",
+    authProvider: "google",
+    modules: ["messages", "kg"],
+    capabilities: ["read_email", "send_email", "kg_ingest"],
+    configHints: ["labelIds", "fromAddress"],
+    supportsSync: false,
   },
   {
     provider: "google_calendar",
@@ -269,6 +298,36 @@ export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
     supportsSync: true,
   },
   {
+    provider: "substack",
+    label: "Substack",
+    description: "Connect a publication feed for post import and publishing context.",
+    authStrategy: "manual",
+    modules: ["docs", "media", "kg"],
+    capabilities: ["read_posts", "kg_ingest"],
+    configHints: ["publicationUrl", "feedUrl"],
+    supportsSync: false,
+  },
+  {
+    provider: "luma",
+    label: "Luma",
+    description: "Connect a Luma calendar for event import and registration links.",
+    authStrategy: "token",
+    modules: ["calendar", "groups"],
+    capabilities: ["read_events", "sync_events"],
+    configHints: ["calendarUrl", "apiKey"],
+    supportsSync: false,
+  },
+  {
+    provider: "x",
+    label: "X",
+    description: "Connect an X account for social publishing and timeline ingestion.",
+    authStrategy: "token",
+    modules: ["messages", "media", "kg"],
+    capabilities: ["read_posts", "write_posts", "kg_ingest"],
+    configHints: ["handle", "bearerToken"],
+    supportsSync: false,
+  },
+  {
     provider: "wolfram",
     label: "Wolfram",
     description: "Attach Wolfram credentials/runtime for symbolic computation and knowledge tools.",
@@ -330,6 +389,50 @@ export const AUTOBOT_CONNECTOR_DEFINITIONS: AutobotConnectorDefinition[] = [
     supportsSync: false,
   },
   {
+    provider: "claude_code",
+    label: "Claude Code",
+    description:
+      "Paste a Claude Code token so this agent's assistant and builder both run on your Claude. One token powers chat and code generation for this agent.",
+    authStrategy: "token",
+    modules: ["kg", "deploy"],
+    capabilities: ["assistant_llm", "builder_llm", "code_generation"],
+    configHints: ["token"],
+    supportsSync: false,
+  },
+  {
+    provider: "cloudflare",
+    label: "Cloudflare DNS",
+    description:
+      "Connect a Cloudflare API token to point DNS at builder-generated static sites and sovereign deployments.",
+    authStrategy: "api_key",
+    modules: ["deploy"],
+    capabilities: ["manage_dns", "point_domain"],
+    configHints: ["apiKey", "zoneId", "accountId"],
+    supportsSync: false,
+  },
+  {
+    provider: "squarespace",
+    label: "Squarespace Domains",
+    description:
+      "Connect a Squarespace domains API key to manage DNS records for builder static-site pointing.",
+    authStrategy: "api_key",
+    modules: ["deploy"],
+    capabilities: ["manage_dns", "point_domain"],
+    configHints: ["apiKey", "domain"],
+    supportsSync: false,
+  },
+  {
+    provider: "namecheap",
+    label: "Namecheap DNS",
+    description:
+      "Connect a Namecheap API key to manage DNS host records for builder static-site pointing and sovereign deploys.",
+    authStrategy: "api_key",
+    modules: ["deploy"],
+    capabilities: ["manage_dns", "point_domain"],
+    configHints: ["apiKey", "apiUser", "domain"],
+    supportsSync: false,
+  },
+  {
     provider: "generic_oauth2",
     label: "Generic OAuth2",
     description: "Store a generic OAuth2 connector definition for future app/service integrations.",
@@ -346,6 +449,40 @@ export const AUTOBOT_CONNECTION_PROVIDER_SET = new Set(
   AUTOBOT_CONNECTOR_DEFINITIONS.map((definition) => definition.provider),
 );
 
+/**
+ * The connectors a sovereign user can connect from the per-agent connector
+ * surfaces (settings Connectors tab + the assistant's Connectors tab). Keep
+ * this list in sync with the settings catalog test.
+ */
+export const USER_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
+  "google_docs",
+  "google_calendar",
+  "gmail",
+  "notion",
+  "telegram",
+  "whatsapp_business",
+  "signal",
+  "slack",
+  "facebook",
+  "instagram",
+  "substack",
+  "luma",
+  "x",
+];
+
+/**
+ * DNS/deploy connectors surfaced under the assistant's Connectors tab so the
+ * agent can point domains at builder-generated sites (A7). Their secret config
+ * (`apiKey`) is encrypted at rest. Kept separate from
+ * {@link USER_CONNECTABLE_PROVIDERS} (messaging/docs catalog) so the deploy
+ * surface renders its own section.
+ */
+export const DEPLOY_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
+  "cloudflare",
+  "squarespace",
+  "namecheap",
+];
+
 export const AUTOBOT_CONNECTION_MODULE_SET = new Set<AutobotConnectionModule>([
   "docs",
   "calendar",
@@ -354,6 +491,7 @@ export const AUTOBOT_CONNECTION_MODULE_SET = new Set<AutobotConnectionModule>([
   "kg",
   "groups",
   "wallet",
+  "deploy",
 ]);
 
 export function getAutobotConnectorDefinition(
@@ -432,7 +570,20 @@ export function sanitizeAutobotConnection(
         ? input.error.trim().slice(0, 500)
         : undefined,
     config,
+    shared: input.shared === true ? true : undefined,
   };
+}
+
+/**
+ * Filters a set of agent-owned connectors down to the subset that is shared
+ * with personas. Personas inherit only shared connectors (A3 inheritance:
+ * "Personas show SHARED connectors only"). The assistant, by contrast,
+ * inherits the agent's FULL set (use the unfiltered list for the assistant).
+ */
+export function filterSharedConnections(
+  connections: AutobotConnection[],
+): AutobotConnection[] {
+  return connections.filter((connection) => connection.shared === true);
 }
 
 export function sanitizeAutobotConnections(input: unknown): AutobotConnection[] {
