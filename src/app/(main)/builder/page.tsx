@@ -68,7 +68,6 @@ import type {
   BuilderDataSource,
 } from "@/lib/bespoke/types";
 import { GitHubDeploySettings } from "@/components/github-deploy-settings";
-import { BuilderAgentsPanel } from "@/components/builder-agents-panel";
 import { BuilderTablesPanel } from "@/components/builder-tables-panel";
 import { BuilderReaScopePicker } from "@/components/builder-rea-scope-picker";
 
@@ -132,7 +131,7 @@ interface ChatMessage {
 // Panels
 // ---------------------------------------------------------------------------
 
-type RightPanelView = "preview" | "files" | "data" | "history" | "deploy" | "agents";
+type RightPanelView = "preview" | "files" | "data" | "history" | "deploy";
 
 interface FileTreeNode {
   name: string;
@@ -1706,9 +1705,8 @@ export default function BuilderPage() {
   // -------------------------------------------------------------------------
   // Main layout
   // -------------------------------------------------------------------------
-  const isAgentView = rightPanelView === "agents";
-  const showChatPane = !isAgentView && mobilePrimaryView === "chat";
-  const showRightPane = isAgentView || mobilePrimaryView === "panel";
+  const showChatPane = mobilePrimaryView === "chat";
+  const showRightPane = mobilePrimaryView === "panel";
 
   return (
     <div className="flex flex-col h-[calc(100dvh-4rem)] overflow-hidden">
@@ -2114,8 +2112,7 @@ export default function BuilderPage() {
       )}
 
       {/* Mobile primary view switch */}
-      {!isAgentView && (
-        <div className="lg:hidden flex items-center gap-1 border-b bg-muted/20 px-3 py-1.5">
+      <div className="lg:hidden flex items-center gap-1 border-b bg-muted/20 px-3 py-1.5">
           <button
             onClick={() => setMobilePrimaryView("chat")}
             className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -2136,8 +2133,7 @@ export default function BuilderPage() {
           >
             Builder
           </button>
-        </div>
-      )}
+      </div>
 
       {/* Main content: Chat (left) | Preview/Files/Data/Agent HQ (right) */}
       <div className="flex-1 flex min-h-0">
@@ -2285,15 +2281,13 @@ export default function BuilderPage() {
         <div className={`${showRightPane ? "flex" : "hidden"} lg:flex flex-1 flex-col min-h-0`}>
           {/* Panel tabs */}
           <div className="flex items-center gap-1 px-3 py-1.5 border-b bg-muted/30">
-            {!isAgentView && (
-              <button
-                onClick={() => setMobilePrimaryView("chat")}
-                className="lg:hidden flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
-              >
-                <MessageSquare className="h-3.5 w-3.5" />
-                Chat
-              </button>
-            )}
+            <button
+              onClick={() => setMobilePrimaryView("chat")}
+              className="lg:hidden flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              Chat
+            </button>
             <button
               onClick={() => handleSelectRightPanelView("preview")}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
@@ -2339,17 +2333,6 @@ export default function BuilderPage() {
               History
             </button>
             <button
-              onClick={() => handleSelectRightPanelView("agents")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                rightPanelView === "agents"
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              Agent HQ
-            </button>
-            <button
               onClick={() => handleSelectRightPanelView("deploy")}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 rightPanelView === "deploy"
@@ -2364,24 +2347,22 @@ export default function BuilderPage() {
             <div className="flex-1" />
 
             {/* File explorer toggle */}
-            {!isAgentView ? (
-              <button
-                onClick={() => setShowFileExplorer(!showFileExplorer)}
-                className="hidden lg:inline-flex p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                title={showFileExplorer ? "Hide file explorer" : "Show file explorer"}
-              >
-                {showFileExplorer ? (
-                  <PanelLeftClose className="h-3.5 w-3.5" />
-                ) : (
-                  <PanelLeftOpen className="h-3.5 w-3.5" />
-                )}
-              </button>
-            ) : null}
+            <button
+              onClick={() => setShowFileExplorer(!showFileExplorer)}
+              className="hidden lg:inline-flex p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title={showFileExplorer ? "Hide file explorer" : "Show file explorer"}
+            >
+              {showFileExplorer ? (
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              ) : (
+                <PanelLeftOpen className="h-3.5 w-3.5" />
+              )}
+            </button>
           </div>
 
           <div className="flex-1 flex min-h-0">
             {/* File explorer sidebar */}
-            {!isAgentView && showFileExplorer && (
+            {showFileExplorer && (
               <div className="hidden md:block w-48 border-r bg-muted/20 overflow-y-auto py-2">
                 <div className="flex items-center gap-1.5 px-3 pb-2 text-xs font-medium text-muted-foreground">
                   <FolderOpen className="h-3 w-3" />
@@ -2968,14 +2949,6 @@ export default function BuilderPage() {
                 </div>
               )}
 
-              {/* ----- AGENT HQ PANEL ----- */}
-              {rightPanelView === "agents" && (
-                <div className="flex-1 overflow-y-auto p-3">
-                  <BuilderAgentsPanel
-                    workspaceId={targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT ? targetWorkspaceId : undefined}
-                  />
-                </div>
-              )}
             </div>
           </div>
         </div>
