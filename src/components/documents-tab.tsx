@@ -51,6 +51,25 @@ function resourceIdFromDbPath(path: string): { id: string; name: string } | null
   return null
 }
 
+/**
+ * Resolve the owning resource for any node within a document's database subtree.
+ *
+ * A document Resource is the directory `resources/{type}/{id}` (or
+ * `@{agentId}/resources/{type}/{id}`); its body lives in child file leaves
+ * (`record.json`, `metadata.json`, `content.md`). This resolves the resource
+ * from either the resource directory itself or from one of those child files by
+ * walking up the path, so selecting a document's content shows its permissions.
+ */
+function resourceFromDbNodePath(path: string): { id: string; name: string } | null {
+  const direct = resourceIdFromDbPath(path)
+  if (direct) return direct
+  const parent = path.split("/").filter(Boolean).slice(0, -1).join("/")
+  if (parent && parent !== path) {
+    return resourceIdFromDbPath(parent)
+  }
+  return null
+}
+
 interface FsWorkspace {
   id: string
   label: string
@@ -636,8 +655,8 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
                 onToggleDirectory={(node) => {
                   if (node.id === "db:__root__" || node.id === "fs:__root__") return
                   if (node.source === "db") {
-                    const resource = resourceIdFromDbPath(node.path)
-                    setAclResource(resource)
+                    const resource = resourceFromDbNodePath(node.path)
+                    if (resource) setAclResource(resource)
                     void toggleDbDirectory(node)
                     return
                   }
@@ -645,6 +664,8 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
                 }}
                 onSelectFile={(node) => {
                   if (node.source === "db") {
+                    const resource = resourceFromDbNodePath(node.path)
+                    if (resource) setAclResource(resource)
                     void loadDbFile(node.path)
                     return
                   }
