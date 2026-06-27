@@ -42,6 +42,11 @@ import { serializeAgent } from "@/lib/graph-serializers";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDeployCapability, type InstanceDeployCapability } from "@/lib/deploy/capability";
 import { getAutobotSandbox, getSandboxSummary, isOperationAllowed } from "@/lib/autobot/isolation";
+import {
+  runConnectorSync,
+  ConnectorSyncError,
+  SYNCABLE_CONNECTOR_PROVIDERS,
+} from "@/lib/autobot-connector-sync";
 import type { PersonaContext } from "@/lib/federation/execution-context";
 
 export type McpToolCallContext = {
@@ -1313,6 +1318,54 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       }
 
       return { success: false, error: `Unsupported dispatch provider: ${provider}` };
+    },
+  },
+
+  // ── Connector Sync ────────────────────────────────────────────────────
+  {
+    name: "rivr.connectors.sync",
+    description:
+      "Trigger a sync of one of the active actor's configured autobot connector lanes " +
+      "(e.g. pull Notion pages / Google Docs into Rivr documents, sync Google Calendar, " +
+      "import Slack/Discord/Dropbox/Zoom content). The connector must already be configured " +
+      "on the actor's connections; this runs the same lane the settings 'Sync now' button runs, " +
+      "scoped to the calling actor, then ingests the synced resources into the knowledge graph. " +
+      `Supported providers: ${SYNCABLE_CONNECTOR_PROVIDERS.join(", ")}.`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["provider"],
+      properties: {
+        provider: {
+          type: "string",
+          enum: SYNCABLE_CONNECTOR_PROVIDERS,
+          description:
+            "The connector provider to sync. Must be a provider the actor has configured.",
+        },
+      },
+    },
+    enabledFor: ["session", "token"],
+    handler: async (args, context) => {
+      const provider = getString(args.provider);
+      if (!provider) {
+        throw new Error("provider is required.");
+      }
+
+      try {
+        const { result, kgIngest, connections } = await runConnectorSync(
+          context.actorId,
+          provider,
+        );
+        return { success: true, result, kgIngest, connections };
+      } catch (error) {
+        if (error instanceof ConnectorSyncError) {
+          // Return a structured failure (not a throw) so the central provenance
+          // logger records resultStatus="error" off the `{ success: false }`
+          // shape, the same way blocked server actions are recorded.
+          return { success: false, code: error.code, error: error.message };
+        }
+        throw error;
+      }
     },
   },
 ];
