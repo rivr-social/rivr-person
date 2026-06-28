@@ -34,6 +34,13 @@ export type TranscriptionResult = {
   language?: string;
 };
 
+/**
+ * Provider identifier for a completed transcription. Derived from
+ * {@link TranscriptionResult} so the faceted-vault doc layer can name the
+ * producing provider without re-declaring the union.
+ */
+export type TranscriptionProvider = TranscriptionResult["provider"];
+
 /** Status of a live event transcription session. */
 export type TranscriptionStatus = "idle" | "recording" | "processing" | "complete" | "error";
 
