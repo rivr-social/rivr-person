@@ -29,6 +29,14 @@ import type { Group, User, Post } from "@/lib/types";
 import type { Document } from "@/types/domain";
 import { createPersonalDocumentAction } from "@/app/actions/create-resources";
 import { ProfileMediaTab } from "@/components/profile-media-tab";
+import { MediaGallery } from "@/components/media-gallery";
+import { collectGalleryItems, type GallerySourcePost, type GallerySourceResource } from "@/lib/gallery";
+import {
+  readProfileTabVisibility,
+  isProfileTabVisibleToViewer,
+  type ProfileViewerRelation,
+} from "@/lib/profile-tab-visibility";
+import type { ProfileTabKey } from "@/lib/types";
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 const PUBLIC_PROFILE_TABS = ["about", "posts", "docs", "media", "events", "groups", "photos", "offerings", "activity"] as const;
@@ -132,12 +140,28 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
       : new Set(manifest?.sections.map((section) => section.id) ?? DEFAULT_VISIBLE_PUBLIC_PROFILE_SECTIONS),
     [manifest, isOwnProfile]
   );
-  const visibleTabs = useMemo(
-    () => isOwnProfile
-      ? [...PUBLIC_PROFILE_TABS]
-      : PUBLIC_PROFILE_TABS.filter((tab) => visibleSectionIds.has(PUBLIC_PROFILE_TAB_SECTIONS[tab])),
-    [visibleSectionIds, isOwnProfile]
+  // Owner-configured per-tab visibility overrides (sparse; absent = default-on).
+  const profileTabVisibility = useMemo(
+    () => readProfileTabVisibility((agent?.metadata ?? null) as Record<string, unknown> | null),
+    [agent?.metadata]
   );
+  // The viewer's relation to this profile. The OWNER (self) always sees every
+  // tab; an accepted connection (active follow edge) sees connections-level
+  // tabs; everyone else is treated as public. The server-side bundle remains the
+  // authoritative content-visibility boundary — this only gates the tab strip.
+  const viewerRelation: ProfileViewerRelation = isOwnProfile
+    ? "self"
+    : connectActive
+      ? "connections"
+      : "public";
+  const visibleTabs = useMemo(() => {
+    if (isOwnProfile) return [...PUBLIC_PROFILE_TABS];
+    return PUBLIC_PROFILE_TABS.filter(
+      (tab) =>
+        visibleSectionIds.has(PUBLIC_PROFILE_TAB_SECTIONS[tab]) &&
+        isProfileTabVisibleToViewer(profileTabVisibility, tab as ProfileTabKey, viewerRelation),
+    );
+  }, [visibleSectionIds, isOwnProfile, profileTabVisibility, viewerRelation]);
   const showPersonaInsights = isOwnProfile || visibleSectionIds.has("persona-insights");
   const showConnections = isOwnProfile || visibleSectionIds.has("connections");
 
@@ -248,62 +272,38 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
     [profileResources]
   );
 
-  const profilePhotos = useMemo(() => {
-    const seen = new Set<string>();
-    const photos: Array<{ src: string; label: string; id: string; createdAt: string }> = [];
+  // Build the Photos-tab gallery from the SAME sources the inline grid used
+  // (uploaded profile photos, post images, resource media) via the shared
+  // `collectGalleryItems` helper so profiles and groups behave identically.
+  const galleryItems = useMemo(() => {
     const metadataProfilePhotos = Array.isArray(metadata.profilePhotos)
       ? metadata.profilePhotos.filter((value): value is string => typeof value === "string" && value.length > 0)
       : [];
 
-    for (const [index, image] of metadataProfilePhotos.entries()) {
-      if (seen.has(image)) continue;
-      seen.add(image);
-      photos.push({
-        src: image,
-        label: "Profile photo",
-        id: `profile-photo-${index}`,
-        createdAt: getStableTimestamp(profileUser.joinedAt, profileUser.joinDate),
-      });
-    }
+    const galleryPosts: GallerySourcePost[] = userPosts.map((post) => ({
+      id: post.id,
+      content: post.content,
+      images: Array.isArray(post.images) ? post.images : [],
+      createdAt: post.createdAt,
+      timestamp: post.timestamp,
+    }));
 
-    for (const post of userPosts) {
-      const imageList = Array.isArray(post.images) ? post.images : [];
-      for (const image of imageList) {
-        if (!image || seen.has(image)) continue;
-        seen.add(image);
-        photos.push({
-          src: image,
-          label: post.content?.slice(0, 48) || "Post image",
-          id: post.id,
-          createdAt: getStableTimestamp(post.createdAt, post.timestamp),
-        });
-      }
-    }
+    const galleryResources: GallerySourceResource[] = profileResources.map((resource) => ({
+      id: resource.id,
+      name: resource.name,
+      type: resource.type,
+      url: resource.url,
+      createdAt: resource.createdAt,
+      metadata: asRecord(resource.metadata),
+    }));
 
-    for (const resource of profileResources) {
-      const meta = asRecord(resource.metadata);
-      const imageCandidates = [
-        ...(Array.isArray(meta.images) ? (meta.images as string[]) : []),
-        typeof meta.imageUrl === "string" ? meta.imageUrl : "",
-        typeof resource.url === "string" ? resource.url : "",
-      ].filter((value): value is string => typeof value === "string" && value.length > 0);
-
-      for (const image of imageCandidates) {
-        if (seen.has(image)) continue;
-        seen.add(image);
-        photos.push({
-          src: image,
-          label: resource.name || "Resource image",
-          id: resource.id,
-          createdAt: resource.createdAt,
-        });
-      }
-    }
-
-    return photos
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, 60);
-  }, [metadata.profilePhotos, profileResources, profileUser.joinedAt, userPosts]);
+    return collectGalleryItems({
+      profilePhotos: metadataProfilePhotos,
+      profilePhotosTimestamp: getStableTimestamp(profileUser.joinedAt, profileUser.joinDate),
+      posts: galleryPosts,
+      resources: galleryResources,
+    });
+  }, [metadata.profilePhotos, profileResources, profileUser.joinedAt, profileUser.joinDate, userPosts]);
 
   const getUser = useMemo(
     () => (id: string): User =>
@@ -947,27 +947,7 @@ export function PublicProfilePageClient({ agentId }: { agentId?: string } = {}) 
 
           {visibleTabs.includes("photos") ? (
             <TabsContent value="photos" className="mt-4">
-              {profilePhotos.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No photos yet.</p>
-              ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                  {profilePhotos.map((photo) => (
-                    <Card key={`${photo.id}-${photo.src}`} className="overflow-hidden">
-                      <Image
-                        src={photo.src}
-                        alt={photo.label}
-                        width={420}
-                        height={260}
-                        className="h-40 w-full object-cover"
-                        unoptimized
-                      />
-                      <CardContent className="py-2">
-                        <p className="text-xs text-muted-foreground truncate">{photo.label}</p>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              )}
+              <MediaGallery items={galleryItems} emptyMessage="No photos yet." />
             </TabsContent>
           ) : null}
 

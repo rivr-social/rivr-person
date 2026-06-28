@@ -27,6 +27,8 @@ import { EventFeed } from "@/components/event-feed"
 import { PeopleFeed } from "@/components/people-feed"
 import { GroupCalendar } from "@/components/group-calendar"
 import { resourceToPost, resourceToMarketplaceListing } from "@/lib/graph-adapters"
+import { MediaGallery } from "@/components/media-gallery"
+import { collectGalleryItems, type GallerySourcePost, type GallerySourceResource } from "@/lib/gallery"
 import { createGovernanceProposalAction } from "@/app/actions/create-resources"
 import { AboutDocumentsCard } from "@/components/about-documents-card"
 import { AgentGraph } from "@/components/agent-graph"
@@ -164,8 +166,8 @@ export function GroupTabsClient({
   const visibleTabs = useMemo(
     () => (
       isBasicGroup
-        ? ["about", "feed", "events", "groups", "members", "documents"]
-        : ["about", "feed", "events", "groups", "members", "documents", "jobs", "marketplace", "governance", "badges", "stake", "press", "treasury"]
+        ? ["about", "feed", "events", "groups", "members", "documents", "gallery"]
+        : ["about", "feed", "events", "groups", "members", "documents", "gallery", "jobs", "marketplace", "governance", "badges", "stake", "press", "treasury"]
     ),
     [isBasicGroup]
   )
@@ -203,6 +205,32 @@ export function GroupTabsClient({
     () => groupPostResources.map((r) => resourceToPost(r) as Post),
     [groupPostResources]
   )
+
+  // Group media gallery: drawn from the group's posts plus its image/video and
+  // listing/offering resources (same source model as the user profile gallery).
+  const galleryItems = useMemo(() => {
+    const galleryPosts: GallerySourcePost[] = posts.map((post) => ({
+      id: post.id,
+      content: post.content,
+      images: Array.isArray(post.images) ? post.images : [],
+      createdAt: post.createdAt,
+      timestamp: post.timestamp,
+    }))
+    const toSource = (r: SerializedResource): GallerySourceResource => ({
+      id: r.id,
+      name: r.name,
+      type: r.type,
+      url: r.url,
+      createdAt: r.createdAt,
+      metadata: (r.metadata ?? {}) as Record<string, unknown>,
+    })
+    const galleryResources: GallerySourceResource[] = [
+      ...groupPostResources.map(toSource),
+      ...listingResources.map(toSource),
+      ...eventResources.map(toSource),
+    ]
+    return collectGalleryItems({ posts: galleryPosts, resources: galleryResources })
+  }, [posts, groupPostResources, listingResources, eventResources])
 
   const eventItems = useMemo(
     () =>
@@ -429,6 +457,7 @@ export function GroupTabsClient({
           <TabsTrigger value="groups" className="shrink-0">Groups</TabsTrigger>
           <TabsTrigger value="members" className="shrink-0">Members</TabsTrigger>
           <TabsTrigger value="documents" className="shrink-0">Docs</TabsTrigger>
+          <TabsTrigger value="gallery" className="shrink-0">Gallery</TabsTrigger>
           {!isBasicGroup && (
             <>
               <TabsTrigger value="jobs" className="shrink-0">Jobs</TabsTrigger>
@@ -630,6 +659,11 @@ export function GroupTabsClient({
           documents={documentResources}
           docsPath={`/groups/${groupId}/docs`}
         />
+      </TabsContent>
+
+      {/* ── Gallery ── */}
+      <TabsContent value="gallery" className="mt-4">
+        <MediaGallery items={galleryItems} emptyMessage="No media yet." />
       </TabsContent>
 
       {/* ── Jobs ── */}
