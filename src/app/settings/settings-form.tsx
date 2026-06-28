@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, Globe, MapPin, Moon, Plus, Shield, Sun, User, Store, CheckCircle2, AlertCircle, ExternalLink, Loader2, X, Sparkles, Brain, Eye, Wallet, Activity, UserCheck, Fingerprint, Upload, Trash2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { updateProfileAction, updateProfileImageAction } from "@/app/actions/settings";
+import { updateMyProfileTabVisibility } from "@/app/actions/interactions/profile";
 import { saveMyPersonInstanceSetupAction, verifyMyPersonInstanceSetupAction } from "@/app/actions/person-instance";
 import {
   linkAtprotoIdentityAction,
@@ -31,6 +32,9 @@ import { SearchableSelect } from "@/components/searchable-select";
 import { HomeLocaleSelector } from "@/components/home-locale-selector";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageUpload } from "@/components/image-upload";
+import { SocialLinksEditor } from "@/components/social-links-editor";
+import { ProfileTabVisibilityEditor } from "@/components/profile-tab-visibility-editor";
+import type { ProfileTabVisibilitySettings } from "@/lib/types";
 import type { FederationIdentityStatus } from "@/lib/federation-identities";
 import type { AppReleaseStatus } from "@/lib/app-release";
 import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
@@ -62,6 +66,7 @@ export type SettingsInitialData = {
   profilePhotos: string[];
   privacySettings: Partial<PrivacySettings>;
   notificationSettings: Omit<NotificationSettings, "murmurationsPublishing">;
+  profileTabVisibility: ProfileTabVisibilitySettings;
 };
 
 type SettingsTab =
@@ -212,17 +217,6 @@ type FederationSettingsState =
   | { status: "idle" | "loading" | "error"; error?: string }
   | ({ status: "ready" } & FederationIdentityStatus);
 
-const SOCIAL_PLATFORM_OPTIONS = [
-  { value: "website", label: "Website" },
-  { value: "x", label: "X (Twitter)" },
-  { value: "instagram", label: "Instagram" },
-  { value: "linkedin", label: "LinkedIn" },
-  { value: "telegram", label: "Telegram" },
-  { value: "signal", label: "Signal" },
-  { value: "phone", label: "Phone" },
-  { value: "email", label: "Email" },
-] as const;
-
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "U";
@@ -356,6 +350,13 @@ export function SettingsForm({
     textSize: 3,
     colorTheme: "primary",
   });
+  // Sparse per-tab visibility overrides for the public profile. Persisted via a
+  // dedicated server action (`updateMyProfileTabVisibility`) separate from the
+  // main profile save so it can normalize + emit its own domain event.
+  const [profileTabVisibility, setProfileTabVisibility] = useState<ProfileTabVisibilitySettings>(
+    initialData.profileTabVisibility
+  );
+  const [savingTabVisibility, setSavingTabVisibility] = useState(false);
   const [federationSettings, setFederationSettings] = useState<FederationSettingsState>(
     initialFederationStatus
       ? { status: "ready", ...initialFederationStatus }
@@ -640,6 +641,34 @@ export function SettingsForm({
     }
   }
 
+  async function onSaveProfileTabVisibility() {
+    setSavingTabVisibility(true);
+    try {
+      const result = await updateMyProfileTabVisibility(profileTabVisibility);
+      if (!result.success) {
+        toast({
+          title: "Unable to save tab visibility",
+          description: result.message ?? "Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({
+        title: "Profile tabs updated",
+        description: "Your public profile tab visibility was saved.",
+      });
+      router.refresh();
+    } catch (error) {
+      toast({
+        title: "Unable to save tab visibility",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingTabVisibility(false);
+    }
+  }
+
   return (
     <div className="container max-w-4xl mx-auto px-4 py-6">
       <div className="flex items-center gap-4 mb-6">
@@ -858,82 +887,12 @@ export function SettingsForm({
                 <Globe className="h-4 w-4 text-muted-foreground" />
                 <label className="text-sm font-medium">Social Links</label>
               </div>
-              <div className="space-y-2">
-                {Object.entries(profile.socialLinks).map(([platform, url]) => {
-                  const usedPlatforms = Object.keys(profile.socialLinks).filter((k) => k !== platform);
-                  const inputType = platform === "phone" ? "tel" : platform === "email" ? "email" : "url";
-                  const inputPlaceholder = platform === "phone" ? "(555) 123-4567" : platform === "email" ? "you@example.com" : "https://...";
-                  return (
-                    <div key={platform} className="flex items-center gap-2">
-                      <Select
-                        value={platform}
-                        onValueChange={(newPlatform) => {
-                          setProfile((prev) => {
-                            const entries = Object.entries(prev.socialLinks);
-                            const updated = Object.fromEntries(
-                              entries.map(([k, v]) => (k === platform ? [newPlatform, v] : [k, v]))
-                            );
-                            return { ...prev, socialLinks: updated };
-                          });
-                        }}
-                      >
-                        <SelectTrigger className="w-1/3">
-                          <SelectValue placeholder="Platform" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {SOCIAL_PLATFORM_OPTIONS.filter((opt) => !usedPlatforms.includes(opt.value)).map((opt) => (
-                            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <input
-                        type={inputType}
-                        className="p-2 border rounded-md flex-1 bg-background text-foreground"
-                        placeholder={inputPlaceholder}
-                        value={url}
-                        onChange={(e) =>
-                          setProfile((prev) => ({
-                            ...prev,
-                            socialLinks: { ...prev.socialLinks, [platform]: e.target.value },
-                          }))
-                        }
-                      />
-                      <button
-                        type="button"
-                        aria-label={`Remove ${platform} link`}
-                        className="p-2 hover:text-destructive"
-                        onClick={() =>
-                          setProfile((prev) => {
-                            const { [platform]: _, ...rest } = prev.socialLinks;
-                            return { ...prev, socialLinks: rest };
-                          })
-                        }
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={Object.keys(profile.socialLinks).length >= SOCIAL_PLATFORM_OPTIONS.length}
-                onClick={() => {
-                  const usedPlatforms = Object.keys(profile.socialLinks);
-                  const nextPlatform = SOCIAL_PLATFORM_OPTIONS.find((opt) => !usedPlatforms.includes(opt.value));
-                  if (nextPlatform) {
-                    setProfile((prev) => ({
-                      ...prev,
-                      socialLinks: { ...prev.socialLinks, [nextPlatform.value]: "" },
-                    }));
-                  }
-                }}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add Link
-              </Button>
+              {/* Shared editor; values are validated/normalized server-side in
+                  updateProfileAction (validateSocialLinks) on Save. */}
+              <SocialLinksEditor
+                value={profile.socialLinks}
+                onChange={(next) => setProfile((prev) => ({ ...prev, socialLinks: next }))}
+              />
             </div>
 
             <Separator className="my-6" />
@@ -1329,6 +1288,35 @@ export function SettingsForm({
                       value={privacySettings.attributeAvatar}
                       onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeAvatar: v }))}
                     />
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Public Profile Tabs */}
+                <AccordionItem value="profile-tabs">
+                  <AccordionTrigger className="text-base font-semibold">
+                    <div className="flex items-center gap-2">
+                      <User className="h-4 w-4 text-teal-500" />
+                      Public Profile Tabs
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pt-2">
+                    <p className="text-xs text-muted-foreground">
+                      Choose who can see each tab on your public profile. You always
+                      see every tab; &quot;Hidden&quot; removes a tab for everyone.
+                    </p>
+                    <ProfileTabVisibilityEditor
+                      value={profileTabVisibility}
+                      onChange={setProfileTabVisibility}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={onSaveProfileTabVisibility}
+                      disabled={savingTabVisibility}
+                    >
+                      {savingTabVisibility ? "Saving..." : "Save Tab Visibility"}
+                    </Button>
                   </AccordionContent>
                 </AccordionItem>
 

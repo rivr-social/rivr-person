@@ -11,6 +11,11 @@ import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
 import { federatedWrite } from "@/lib/federation/remote-write";
 import { resolveActiveActorAgentId } from "@/lib/persona";
 import {
+  normalizeProfileTabVisibility,
+  PROFILE_TAB_VISIBILITY_METADATA_KEY,
+} from "@/lib/profile-tab-visibility";
+import type { ProfileTabVisibilitySettings } from "@/lib/types";
+import {
   getCurrentUserId,
   toggleLedgerInteraction,
 } from "./helpers";
@@ -115,6 +120,88 @@ export async function updateMyProfile(payload: {
   }).catch(() => {});
 
   return facadeResult.data ?? { success: true, message: "Profile updated." };
+}
+
+/**
+ * Persists the owner's per-tab visibility settings for the public profile page
+ * onto `agents.metadata.profileTabVisibility`.
+ *
+ * Security: the target agent is ALWAYS the server-resolved active actor (never a
+ * client-supplied id), matching the verified-principal model — the owner can
+ * only configure their own profile. Input is normalized server-side so a tampered
+ * payload (unknown tabs, group-only/invalid levels) can never widen access; only
+ * overrides that diverge from the default-on default are stored (sparse).
+ *
+ * @param settings - Map of profile tab key to visibility level.
+ * @returns {Promise<ActionResult>} Update status and user-facing message.
+ */
+export async function updateMyProfileTabVisibility(
+  settings: ProfileTabVisibilitySettings,
+): Promise<ActionResult> {
+  // Persona-aware: tab visibility lives with the active actor's profile row so a
+  // selected persona configures its own public profile, falling back to the
+  // controller otherwise.
+  const activeActor = await resolveActiveActorAgentId();
+  const userId = activeActor?.actorId ?? (await getCurrentUserId());
+  if (!userId) return { success: false, message: "You must be logged in to update your profile." };
+
+  const limit = await rateLimit(`settings:${userId}`, RATE_LIMITS.SETTINGS.limit, RATE_LIMITS.SETTINGS.windowMs);
+  if (!limit.success) return { success: false, message: "Rate limit exceeded. Please try again later." };
+
+  const normalized = normalizeProfileTabVisibility(settings);
+
+  const facadeResult = await federatedWrite<{ [PROFILE_TAB_VISIBILITY_METADATA_KEY]: ProfileTabVisibilitySettings }, ActionResult>(
+    {
+      type: "updateMyProfileTabVisibility",
+      actorId: userId,
+      targetAgentId: userId,
+      payload: { [PROFILE_TAB_VISIBILITY_METADATA_KEY]: normalized },
+    },
+    async () => {
+      const [existing] = await db
+        .select({ metadata: agents.metadata })
+        .from(agents)
+        .where(eq(agents.id, userId))
+        .limit(1);
+
+      if (!existing) {
+        throw new Error("User not found.");
+      }
+
+      const existingMeta = ((existing.metadata ?? {}) as Record<string, unknown>);
+      const mergedMetadata: Record<string, unknown> = {
+        ...existingMeta,
+        [PROFILE_TAB_VISIBILITY_METADATA_KEY]: normalized,
+        updatedVia: "profile-tab-visibility",
+      };
+
+      await db.execute(sql`
+        UPDATE agents
+        SET metadata = ${JSON.stringify(mergedMetadata)}::jsonb,
+            updated_at = NOW()
+        WHERE id = ${userId}
+      `);
+
+      revalidatePath("/settings");
+      revalidatePath("/profile");
+
+      return { success: true, message: "Profile tab visibility updated." } as ActionResult;
+    },
+  );
+
+  if (!facadeResult.success) {
+    return { success: false, message: facadeResult.error ?? "Unable to update profile tab visibility." };
+  }
+
+  emitDomainEvent({
+    eventType: EVENT_TYPES.AGENT_UPDATED,
+    entityType: "agent",
+    entityId: userId,
+    actorId: userId,
+    payload: { action: "update_profile_tab_visibility" },
+  }).catch(() => {});
+
+  return facadeResult.data ?? { success: true, message: "Profile tab visibility updated." };
 }
 
 /**

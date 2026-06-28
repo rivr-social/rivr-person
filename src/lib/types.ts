@@ -1050,3 +1050,63 @@ export type AppContextType = {
   toggleJoinGroup: (groupId: string) => void
   toggleFollowUser: (userId: string) => void
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Profile tab-visibility
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical tab keys for the public profile page (`/profile/[username]`).
+ * These mirror the person public-profile client's `PUBLIC_PROFILE_TABS`
+ * (and the hideable section ids) so the stored setting and the rendered
+ * tab strip share one vocabulary. Adapted from global to the tabs this
+ * sovereign person app actually renders (adds docs/media/activity; the
+ * person app has no "thanks" tab).
+ */
+export const PROFILE_TAB_KEYS = [
+  "about", "posts", "docs", "media", "events", "groups", "photos", "offerings", "activity",
+] as const
+export type ProfileTabKey = (typeof PROFILE_TAB_KEYS)[number]
+
+/**
+ * Visibility level controlling who can see a person's profile tab. Distinct from
+ * the group tab-visibility set: a person has "connections"/"self" where a group
+ * has "members"/"admin". "public" and "hidden" are shared semantics. The profile
+ * resolver defensively coerces stray group-only levels back to a safe default so
+ * a legacy/tampered payload can never widen access.
+ */
+export type ProfileTabVisibilityLevel = "public" | "connections" | "self" | "hidden"
+
+/** Human-readable label for each profile tab key. */
+export const PROFILE_TAB_LABELS: Record<ProfileTabKey, string> = {
+  about: "About",
+  posts: "Posts",
+  docs: "Docs",
+  media: "Media",
+  events: "Events",
+  groups: "Groups",
+  photos: "Photos",
+  offerings: "Offerings",
+  activity: "Activity",
+}
+
+/**
+ * Default visibility for each profile tab when the owner has not set an explicit
+ * override in `metadata.profileTabVisibility`. Every profile tab defaults to
+ * "public" (default-on), matching the current behavior where all sections are
+ * shown — owners opt INTO restriction, never out of it by accident.
+ */
+export const DEFAULT_PROFILE_TAB_VISIBILITY: Record<ProfileTabKey, ProfileTabVisibilityLevel> = {
+  about: "public",
+  posts: "public",
+  docs: "public",
+  media: "public",
+  events: "public",
+  groups: "public",
+  photos: "public",
+  offerings: "public",
+  activity: "public",
+}
+
+/** Per-tab visibility settings stored in a person agent's metadata. */
+export type ProfileTabVisibilitySettings = Partial<Record<ProfileTabKey, ProfileTabVisibilityLevel>>

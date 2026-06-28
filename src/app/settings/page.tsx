@@ -31,6 +31,7 @@ import { buildAppReleaseStatus, type AppReleaseStatus } from "@/lib/app-release"
 import { resolveActiveActorAgentId } from "@/lib/persona";
 import { PersonaCreator } from "@/components/persona-creator";
 import { serializeAgent } from "@/lib/graph-serializers";
+import { readProfileTabVisibility } from "@/lib/profile-tab-visibility";
 
 /**
  * Generates a URL-safe fallback username from the user's display name.
@@ -177,6 +178,8 @@ export default async function SettingsPage() {
     notificationSettings: metadata.notificationSettings && typeof metadata.notificationSettings === "object" && !Array.isArray(metadata.notificationSettings)
       ? metadata.notificationSettings as SettingsInitialData["notificationSettings"]
       : { pushNotifications: false, emailNotifications: true, eventReminders: true, newMessages: true },
+    // Sparse per-tab overrides for the public profile; absent tabs default-on.
+    profileTabVisibility: readProfileTabVisibility(metadata),
   };
 
   let initialFederationStatus: FederationIdentityStatus | null = null;
