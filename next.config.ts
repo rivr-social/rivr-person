@@ -50,6 +50,10 @@ const nextConfig: NextConfig = {
   middlewareClientMaxBodySize: 100 * 1024 * 1024,
   experimental: {
     staleTimes: { dynamic: 0, static: 0 },
+    // Barrel-import optimization: rewrite named imports from these large
+    // packages to direct deep imports so unused exports are tree-shaken out of
+    // the shared chunk.
+    optimizePackageImports: ["lucide-react", "date-fns", "recharts"],
     // Mirror for server actions (separate code path from route handlers).
     serverActions: { bodySizeLimit: "100mb" },
     // Next 15 still reads this from experimental even though there's a
