@@ -30,6 +30,12 @@ ENV NODE_ENV=production
 ENV AUTH_SECRET="build-placeholder"
 ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
 
+# Semantic parser v1 (NL IF/WHEN/THEN conditionals) rollout. Default "1" = ON:
+# the composer + command bar use src/lib/semantic/ instead of the legacy
+# parseNaturalLanguageV2. Override with --build-arg NEXT_PUBLIC_SEMANTIC_PARSER_V1=0.
+ARG NEXT_PUBLIC_SEMANTIC_PARSER_V1="1"
+ENV NEXT_PUBLIC_SEMANTIC_PARSER_V1=$NEXT_PUBLIC_SEMANTIC_PARSER_V1
+
 # Incremental Next.js build — the persistent cache at /app/.next/cache
 # holds webpack module cache + SWC/Terser output + TS type info. Without
 # this mount every deploy is a ~20-minute full compile; with it, only
