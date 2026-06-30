@@ -13,9 +13,25 @@ import { withApprovalCheck } from "@/lib/autobot/with-approval-check";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
+import { timingSafeEqual } from "node:crypto";
 import * as kg from "@/lib/kg/autobot-kg-client";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
+
+/**
+ * Constant-time string comparison (AUTH-SEC-006b). Length mismatch short-
+ * circuits (token lengths are not themselves secret), but equal-length inputs
+ * are compared with `timingSafeEqual` so a byte-by-byte timing side-channel
+ * cannot recover the high-value static AIAGENT_MCP_TOKEN.
+ */
+function secureEqualStrings(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
 
 type JsonRpcId = string | number | null;
 
@@ -188,7 +204,10 @@ async function authorizeMcpRequest(
     }
   }
 
-  if (!configuredToken || !providedToken || providedToken !== configuredToken) {
+  // Constant-time compare: the scoped-token path is HMAC-verified; the
+  // high-value static AIAGENT_MCP_TOKEN must not be probed via a byte-wise
+  // timing side-channel (AUTH-SEC-006b).
+  if (!configuredToken || !providedToken || !secureEqualStrings(providedToken, configuredToken)) {
     return null;
   }
 

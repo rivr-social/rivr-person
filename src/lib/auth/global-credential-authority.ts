@@ -61,10 +61,34 @@ interface SsoIssueResponse {
   globalIssuerBaseUrl?: string;
 }
 
+/**
+ * Resolve the global identity authority URL. Precedence:
+ *   1. explicit, valid `GLOBAL_IDENTITY_AUTHORITY_URL` env var (origin)
+ *   2. in production: NONE — fail closed (throw)
+ *   3. outside production: {@link DEFAULT_GLOBAL_IDENTITY_AUTHORITY_URL}
+ *
+ * Credential verification is delegated to this authority, so silently
+ * defaulting under an env omission/misconfig could route a sovereign instance's
+ * password checks at the wrong (e.g. non-prod) authority (AUTH-SEC-006a). In
+ * production we therefore require it to be explicitly configured and valid, and
+ * throw otherwise; non-prod still uses the default for local/dev.
+ */
 function resolveGlobalAuthorityUrl(): string {
-  const raw = process.env.GLOBAL_IDENTITY_AUTHORITY_URL?.trim();
-  const base = raw && raw.length > 0 ? raw : DEFAULT_GLOBAL_IDENTITY_AUTHORITY_URL;
-  return base.replace(/\/+$/, "");
+  const envUrl = process.env.GLOBAL_IDENTITY_AUTHORITY_URL?.trim();
+  if (envUrl) {
+    try {
+      return new URL(envUrl).origin;
+    } catch {
+      // Configured-but-malformed falls through to the not-configured handling.
+    }
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "GLOBAL_IDENTITY_AUTHORITY_URL must be set to a valid URL in production; " +
+        "refusing to fall back to a default credential authority.",
+    );
+  }
+  return DEFAULT_GLOBAL_IDENTITY_AUTHORITY_URL.replace(/\/+$/, "");
 }
 
 function resolveTargetBaseUrl(): string | null {
