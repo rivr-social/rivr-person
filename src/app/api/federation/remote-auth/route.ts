@@ -10,6 +10,7 @@ import {
 } from "@/lib/federation-remote-session";
 import type { RemoteAuthResult } from "@/lib/federation/cross-instance-types";
 import { verifySsoAssertion } from "@/lib/federation/sso-assertion";
+import { burnSsoNonce } from "@/lib/federation/sso-nonce-store";
 import { resolveRequestOrigin } from "@/lib/request-origin";
 
 function normalizeRedirectPath(path: string | null): string {
@@ -78,6 +79,44 @@ async function authenticateActor(
   }
 
   const { claims } = verification;
+
+  // AUTH-SEC-002 / F3 — single-use: atomically burn the assertion nonce before
+  // minting a session. A verified-but-replayed assertion (a captured POST body)
+  // must not grant a second cookie. Collapses to the same 401 as a verify
+  // failure so the route stays a non-oracle.
+  let burn: Awaited<ReturnType<typeof burnSsoNonce>>;
+  try {
+    burn = await burnSsoNonce({
+      issuer: claims.globalIssuerBaseUrl,
+      nonce: claims.nonce,
+      expUnixSec: claims.exp,
+      actorId: claims.actorId,
+    });
+  } catch (error) {
+    console.error("[federation/remote-auth] nonce burn threw:", error);
+    return {
+      ok: false,
+      response: buildError(
+        "Actor assertion verification failed",
+        "ASSERTION_VERIFICATION_FAILED",
+        401,
+      ),
+    };
+  }
+  if (!burn.ok) {
+    console.warn(
+      `[federation/remote-auth] rejected replayed assertion nonce: reason=${burn.reason}`,
+    );
+    return {
+      ok: false,
+      response: buildError(
+        "Actor assertion verification failed",
+        "ASSERTION_VERIFICATION_FAILED",
+        401,
+      ),
+    };
+  }
+
   const config = getInstanceConfig();
   const ownerError = enforcePersonInstanceOwner(claims.actorId);
   if (ownerError) {

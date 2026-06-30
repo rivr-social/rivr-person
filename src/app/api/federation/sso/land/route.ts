@@ -41,6 +41,7 @@ import {
   REMOTE_VIEWER_TTL_MS,
 } from "@/lib/federation-remote-session";
 import { verifySsoAssertion } from "@/lib/federation/sso-assertion";
+import { burnSsoNonce } from "@/lib/federation/sso-nonce-store";
 import {
   resolveVisitorScope,
   VISITOR_CAPABILITIES,
@@ -121,6 +122,33 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const { claims } = result;
+
+  // AUTH-SEC-002 / F3 — single-use: atomically burn the assertion nonce before
+  // minting a session. The assertion travels as a URL query param here, so a
+  // captured /sso/land link (history, referer, logs) is especially replayable;
+  // the first land wins and any re-presentation falls through unauthenticated.
+  let burn: Awaited<ReturnType<typeof burnSsoNonce>>;
+  try {
+    burn = await burnSsoNonce({
+      issuer: claims.globalIssuerBaseUrl,
+      nonce: claims.nonce,
+      expUnixSec: claims.exp,
+      actorId: claims.actorId,
+    });
+  } catch (error) {
+    console.error("[federation/sso/land] nonce burn threw:", error);
+    return NextResponse.redirect(new URL(next, localOrigin), {
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+  if (!burn.ok) {
+    console.warn(
+      `[federation/sso/land] rejected replayed assertion nonce: reason=${burn.reason}`,
+    );
+    return NextResponse.redirect(new URL(next, localOrigin), {
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
 
   // Owner vs. visitor. The instance owner (`PRIMARY_AGENT_ID`) always lands a
   // full, unconstrained session. Any OTHER verified actor is a federated

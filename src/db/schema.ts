@@ -826,6 +826,38 @@ export const nodePeers = pgTable(
 );
 
 /**
+ * Single-use enforcement for incoming SSO assertion nonces (AUTH-SEC-002 /
+ * F3 — SSO replay protection).
+ *
+ * A signed cross-instance SSO assertion already carries a `nonce` and an
+ * `exp`; verification proves it is authentic and in-window, but authenticity
+ * alone does not stop the SAME assertion from being presented twice inside
+ * its short validity window (a captured `/sso/land` URL, a replayed
+ * remote-auth POST body). The SSO accept paths burn `(issuer, nonce)` here
+ * BEFORE minting a session, and the first presentation wins. Keyed by
+ * `(issuer, nonce)` so two distinct issuers can never shadow each other.
+ */
+export const ssoNonces = pgTable(
+  'sso_nonces',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** Signed `globalIssuerBaseUrl` claim — namespaces the nonce. */
+    issuer: text('issuer').notNull(),
+    /** Signed `nonce` claim from the assertion. */
+    nonce: text('nonce').notNull(),
+    /** Optional actor id, stored for audit only; never used for trust. */
+    actorId: uuid('actor_id'),
+    /** Signed `exp` claim (UTC) — used as the prune TTL. */
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('sso_nonces_issuer_nonce_idx').on(table.issuer, table.nonce),
+    index('sso_nonces_expires_at_idx').on(table.expiresAt),
+  ]
+);
+
+/**
  * Membership of agents in node scopes
  */
 export const nodeMemberships = pgTable(
@@ -2635,3 +2667,6 @@ export const federatedVisitLog = pgTable(
 
 export type FederatedVisitLogRecord = typeof federatedVisitLog.$inferSelect;
 export type NewFederatedVisitLogRecord = typeof federatedVisitLog.$inferInsert;
+
+export type SsoNonceRecord = typeof ssoNonces.$inferSelect;
+export type NewSsoNonceRecord = typeof ssoNonces.$inferInsert;
