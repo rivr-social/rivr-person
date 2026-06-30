@@ -1181,7 +1181,21 @@ async function handleOfferingPurchaseSucceeded(pi: Stripe.PaymentIntent) {
 
   if (existingTx) return;
 
-  const payoutEligibleAt = await getPaymentIntentPayoutEligibleAt(pi.id);
+  // Rail gate (COM-DSN-002): a destination charge has already moved real funds
+  // to the seller's Connect account (createProvidePaymentAction sets
+  // transfer_data + settlementRail='connect'). Crediting the seller's internal
+  // balance/capital on top would mint unbacked in-platform currency — spendable
+  // via the wallet/transfer paths. So we record an audit-only ledger +
+  // wallet_transactions row and skip internal settlement. Only a platform-capital
+  // offering (no Connect destination, RIVR collected the full charge) settles
+  // internally. `pi.transfer_data.destination` is the authoritative signal — it
+  // reflects how Stripe actually routed the money.
+  const externallySettled =
+    Boolean(pi.transfer_data?.destination) || metadata.settlementRail === 'connect';
+
+  const payoutEligibleAt = externallySettled
+    ? null
+    : await getPaymentIntentPayoutEligibleAt(pi.id);
   const sellerWallet = await getSettlementWalletForAgent(sellerId);
   const platformWallet = await getPlatformWallet();
   const sellerCreditCents = Number(metadata.subtotalCents ?? 0);
@@ -1197,7 +1211,11 @@ async function handleOfferingPurchaseSucceeded(pi: Stripe.PaymentIntent) {
     if (existingInTx) return;
 
     await incrementListingInventory(tx, offeringId, requestedQuantity, bookingSelection);
-    await lockWallets(tx, [sellerWallet.id, platformWallet.id]);
+    // Only lock the wallets we are about to credit. On the externally-settled
+    // (Connect) rail no internal balances move, so no locks are taken.
+    if (!externallySettled) {
+      await lockWallets(tx, [sellerWallet.id, platformWallet.id]);
+    }
 
     // Create ledger entry for the purchase
     const [ledgerEntry] = await tx
@@ -1244,62 +1262,26 @@ async function handleOfferingPurchaseSucceeded(pi: Stripe.PaymentIntent) {
       },
     });
 
-    await tx
-      .update(wallets)
-      .set({
-        balanceCents: sql`${wallets.balanceCents} + ${sellerCreditCents}`,
-        updatedAt: new Date(),
-      })
-      .where(eq(wallets.id, sellerWallet.id));
-
-    const [sellerPayoutTx] = await tx.insert(walletTransactions).values({
-      type: 'marketplace_payout',
-      toWalletId: sellerWallet.id,
-      amountCents: sellerCreditCents,
-      feeCents: 0,
-      currency: 'usd',
-      description: `Offering settlement for ${offeringId}`,
-      referenceType: 'resource',
-      referenceId: offeringId,
-      ledgerEntryId: ledgerEntry.id,
-      status: 'completed',
-        metadata: {
-          source: 'stripe_offering_purchase',
-          paymentIntentId: pi.id,
-          sellerId,
-        offeringId,
-        payoutEligibleAt,
-      },
-    }).returning({ id: walletTransactions.id });
-
-    await creditWalletCapital(tx, sellerWallet.id, sellerCreditCents, {
-      settlementStatus: 'pending',
-      availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-      sourceType: 'stripe_offering_purchase',
-      sourceTransactionId: sellerPayoutTx.id,
-      metadata: {
-        paymentIntentId: pi.id,
-        stripePaymentIntentId: pi.id,
-        offeringId,
-      },
-    });
-
-    if (platformRevenueCents > 0) {
+    // Internal settlement runs ONLY on the platform-capital rail. On the
+    // externally-settled (Connect destination) rail the money already reached
+    // the seller's bank, so the ledger + wallet_transactions rows above are the
+    // audit trail and we credit no internal balance/capital (COM-DSN-002).
+    if (!externallySettled) {
       await tx
         .update(wallets)
         .set({
-          balanceCents: sql`${wallets.balanceCents} + ${platformRevenueCents}`,
+          balanceCents: sql`${wallets.balanceCents} + ${sellerCreditCents}`,
           updatedAt: new Date(),
         })
-        .where(eq(wallets.id, platformWallet.id));
+        .where(eq(wallets.id, sellerWallet.id));
 
-      const [platformFeeTx] = await tx.insert(walletTransactions).values({
-        type: 'service_fee',
-        toWalletId: platformWallet.id,
-        amountCents: platformRevenueCents,
+      const [sellerPayoutTx] = await tx.insert(walletTransactions).values({
+        type: 'marketplace_payout',
+        toWalletId: sellerWallet.id,
+        amountCents: sellerCreditCents,
         feeCents: 0,
         currency: 'usd',
-        description: `Platform fee for offering purchase ${offeringId}`,
+        description: `Offering settlement for ${offeringId}`,
         referenceType: 'resource',
         referenceId: offeringId,
         ledgerEntryId: ledgerEntry.id,
@@ -1307,22 +1289,64 @@ async function handleOfferingPurchaseSucceeded(pi: Stripe.PaymentIntent) {
         metadata: {
           source: 'stripe_offering_purchase',
           paymentIntentId: pi.id,
+          sellerId,
           offeringId,
-          platformFeeCents,
+          payoutEligibleAt,
         },
       }).returning({ id: walletTransactions.id });
 
-      await creditWalletCapital(tx, platformWallet.id, platformRevenueCents, {
+      await creditWalletCapital(tx, sellerWallet.id, sellerCreditCents, {
         settlementStatus: 'pending',
         availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-        sourceType: 'stripe_offering_platform_fee',
-        sourceTransactionId: platformFeeTx.id,
+        sourceType: 'stripe_offering_purchase',
+        sourceTransactionId: sellerPayoutTx.id,
         metadata: {
           paymentIntentId: pi.id,
           stripePaymentIntentId: pi.id,
           offeringId,
         },
       });
+
+      if (platformRevenueCents > 0) {
+        await tx
+          .update(wallets)
+          .set({
+            balanceCents: sql`${wallets.balanceCents} + ${platformRevenueCents}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(wallets.id, platformWallet.id));
+
+        const [platformFeeTx] = await tx.insert(walletTransactions).values({
+          type: 'service_fee',
+          toWalletId: platformWallet.id,
+          amountCents: platformRevenueCents,
+          feeCents: 0,
+          currency: 'usd',
+          description: `Platform fee for offering purchase ${offeringId}`,
+          referenceType: 'resource',
+          referenceId: offeringId,
+          ledgerEntryId: ledgerEntry.id,
+          status: 'completed',
+          metadata: {
+            source: 'stripe_offering_purchase',
+            paymentIntentId: pi.id,
+            offeringId,
+            platformFeeCents,
+          },
+        }).returning({ id: walletTransactions.id });
+
+        await creditWalletCapital(tx, platformWallet.id, platformRevenueCents, {
+          settlementStatus: 'pending',
+          availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
+          sourceType: 'stripe_offering_platform_fee',
+          sourceTransactionId: platformFeeTx.id,
+          metadata: {
+            paymentIntentId: pi.id,
+            stripePaymentIntentId: pi.id,
+            offeringId,
+          },
+        });
+      }
     }
 
     // Create notification for seller
