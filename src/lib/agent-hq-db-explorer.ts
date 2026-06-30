@@ -6,6 +6,7 @@ import { auth } from "@/auth";
 import { db } from "@/db";
 import { agentTypeEnum, agents, builderDataSources, ledger, resourceTypeEnum, resources, verbTypeEnum } from "@/db/schema";
 import { discoverAgentProjects, listAgentSessions } from "@/lib/agent-hq";
+import { SYSTEM_CONTROLLED_ATTRIBUTE_KEYS } from "@/lib/permissions";
 import {
   AGENTS_ROOT,
   agentFolderExists,
@@ -122,6 +123,23 @@ function parseJsonObject(value: string): Record<string, unknown> {
     throw new Error("Expected a JSON object.");
   }
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * Strip authority-provenanced attribute keys from a self-supplied agent metadata
+ * object before persisting it. Agent metadata feeds the ABAC actor-attribute map
+ * (`buildActorAttributes`); these reserved keys (`id`/`type`/`pathIds`) are
+ * sourced from authority columns and must never be settable from the client,
+ * otherwise a caller could write metadata that an ABAC allow-policy trusts and
+ * escalate (DBR-SEC-002). Returns a new object; never mutates the input.
+ */
+function stripReservedAttributeKeys(metadata: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (SYSTEM_CONTROLLED_ATTRIBUTE_KEYS.has(key)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
 }
 
 async function getViewerContext(): Promise<AgentHqDbViewerContext> {
@@ -974,7 +992,7 @@ export async function writeDbFile(relativePath: string, content: string): Promis
     if (!type || !id || !fileName) throw new Error("Agent file path is required.");
     if (!ctx.allOwnerIds.includes(id)) throw new Error("Agent not found.");
     if (fileName === "metadata.json") {
-      const metadata = parseJsonObject(content);
+      const metadata = stripReservedAttributeKeys(parseJsonObject(content));
       await db.update(agents).set({ metadata, updatedAt: new Date() }).where(eq(agents.id, id));
       return { relativePath: safeRelative, size };
     }
@@ -988,7 +1006,7 @@ export async function writeDbFile(relativePath: string, content: string): Promis
           image: typeof payload.image === "string" ? payload.image : undefined,
           visibility: typeof payload.visibility === "string" ? (payload.visibility as "public" | "locale" | "members" | "private") : undefined,
           metadata: payload.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata)
-            ? (payload.metadata as Record<string, unknown>)
+            ? stripReservedAttributeKeys(payload.metadata as Record<string, unknown>)
             : undefined,
           updatedAt: new Date(),
         })
