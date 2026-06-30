@@ -7,7 +7,6 @@ import { resolveHomeInstance } from "@/lib/federation/resolution";
 import {
   authorizeFederationRequest,
   bindAuthorizedFederationActor,
-  resolveLocalActorId,
 } from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
@@ -251,7 +250,13 @@ export async function POST(request: Request) {
     const effectiveAuthorization = actingActorId
       ? { ...authorization, actorId: actingActorId }
       : authorization;
-    const actorBinding = bindAuthorizedFederationActor(effectiveAuthorization, body.actorId);
+    // Strict actor binding. For peer-secret (server-to-server) requests this
+    // requires a pre-existing federation_entity_map row (peer→actor) and
+    // returns the receiver-local agent id (the forwarder's id is normalized
+    // inside the binding via the read-only resolveLocalActorId), so downstream
+    // authority checks run against THIS instance's graph. An arbitrary
+    // body-provided actorId on a shared secret is rejected (F1).
+    const actorBinding = await bindAuthorizedFederationActor(effectiveAuthorization, body.actorId);
     if (!actorBinding.authorized || !actorBinding.actorId) {
       return NextResponse.json(
         { success: false, error: actorBinding.reason ?? "Actor authorization failed" },
@@ -259,21 +264,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // Normalize the peer-supplied actor id to this instance's local agent id.
-    // Under peer-secret (server-to-server) trust the bound actorId is the
-    // FORWARDING instance's local id for the human; downstream authority checks
-    // run against THIS instance's graph and must see the receiver-local id. The
-    // mapping comes from federation_entity_map (read-only — never minted here).
-    // peerNodeId/peerTrusted ride on the original authorization (a persona
-    // binding only narrows actorId, never the peer fields). Unmapped actors pass
-    // through unchanged.
-    const effectiveActorId = authorization.peerTrusted
-      ? await resolveLocalActorId(authorization.peerNodeId, actorBinding.actorId)
-      : actorBinding.actorId;
-
     return handleLegacyMutation(
       body,
-      effectiveActorId,
+      actorBinding.actorId,
       config,
       remoteInstanceSlug,
       remoteInstanceId,
