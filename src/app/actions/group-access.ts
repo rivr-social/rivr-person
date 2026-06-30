@@ -19,6 +19,7 @@ import { headers } from "next/headers";
 import { rateLimit } from "@/lib/rate-limit";
 import { JoinType, type GroupJoinSettings, type JoinRequest } from "@/lib/types";
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation";
+import { isGroupAdmin } from "@/app/actions/group-admin";
 
 // =============================================================================
 // Constants
@@ -926,22 +927,3 @@ function isInviteSatisfied(inviteLink?: string, inviteToken?: string): boolean {
   }
 }
 
-async function isGroupAdmin(userId: string, groupId: string): Promise<boolean> {
-  const now = new Date();
-  const [adminEntry] = await db
-    .select({ id: ledger.id })
-    .from(ledger)
-    .where(
-      and(
-        eq(ledger.subjectId, userId),
-        eq(ledger.objectId, groupId),
-        eq(ledger.isActive, true),
-        or(eq(ledger.verb, "belong"), eq(ledger.verb, "join")),
-        or(eq(ledger.role, "admin"), eq(ledger.role, "moderator")),
-        or(isNull(ledger.expiresAt), sql`${ledger.expiresAt} > ${now}`)
-      )
-    )
-    .limit(1);
-
-  return !!adminEntry;
-}
