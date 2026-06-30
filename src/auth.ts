@@ -53,7 +53,23 @@ const MINIMUM_PASSWORD_LENGTH = 8;
  * into thinking a longer password provides additional entropy.
  */
 const MAXIMUM_PASSWORD_LENGTH = 72;
+/**
+ * Placeholder secret used ONLY during the Next.js production build phase, where
+ * `next build` evaluates this module to collect route metadata but no requests
+ * are ever signed/verified. It is never permitted at runtime: see the `secret`
+ * resolver below, which throws when `AUTH_SECRET` is missing outside the build
+ * phase. Falling back to a literal at runtime would make every JWT/session
+ * cookie forgeable by anyone who can read this source (AUTH-SEC-003).
+ */
 const buildFallbackAuthSecret = "build-only-auth-secret-not-for-runtime";
+
+/**
+ * True only while `next build` is collecting route metadata. Next.js sets
+ * `NEXT_PHASE` to `phase-production-build` for that pass and leaves it unset
+ * when the server actually handles requests.
+ */
+const isProductionBuildPhase =
+  process.env.NEXT_PHASE === "phase-production-build";
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
 const googleOAuthConfigured = Boolean(googleClientId && googleClientSecret);
@@ -299,15 +315,27 @@ export const authConfig: NextAuthConfig = {
   },
 
   secret: (() => {
-    const secret = process.env.AUTH_SECRET;
+    const secret = process.env.AUTH_SECRET?.trim();
     if (secret) {
       return secret;
     }
 
-    console.warn(
-      "AUTH_SECRET is not set. Using build-time placeholder secret; runtime deployment must provide AUTH_SECRET."
+    // The placeholder is acceptable ONLY during `next build` metadata
+    // collection, where nothing is signed or verified. At runtime an absent
+    // secret must hard-fail rather than silently sign sessions with a literal
+    // baked into the source — that would make every JWT/cookie forgeable
+    // (AUTH-SEC-003).
+    if (isProductionBuildPhase) {
+      console.warn(
+        "AUTH_SECRET is not set. Using build-time placeholder secret; runtime deployment must provide AUTH_SECRET."
+      );
+      return buildFallbackAuthSecret;
+    }
+
+    throw new Error(
+      "AUTH_SECRET environment variable is required. " +
+        "Generate one with: npx auth secret"
     );
-    return buildFallbackAuthSecret;
   })(),
 };
 
