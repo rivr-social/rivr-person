@@ -16,20 +16,11 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { signPackedPayload } from "@/lib/federation-remote-session";
+import { MCP_DEFAULT_SCOPES, clampMcpScopes } from "@/lib/federation/mcp-scopes";
 
 export const dynamic = "force-dynamic";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const DEFAULT_SCOPES = [
-  "mcp:tools",
-  "profile:read",
-  "profile:write",
-  "post:create",
-  "event:create",
-  "offering:create",
-  "group:write",
-  "federation:write",
-];
 
 type RouteContext = { params: Promise<{ deviceCode: string }> };
 
@@ -93,12 +84,15 @@ export async function GET(_request: Request, context: RouteContext) {
     const tokenJti = randomUUID();
     const tokenNow = Date.now();
 
-    // Merge requested scopes with defaults
-    const requestedScopes = Array.isArray(code.scopes) ? code.scopes as string[] : [];
-    const scopes = requestedScopes.length > 0
-      ? requestedScopes.filter((s) => DEFAULT_SCOPES.includes(s))
-      : DEFAULT_SCOPES;
-    // Always include mcp:tools
+    // Clamp the stored scopes to the server allow-list at mint time
+    // (AUTH-SEC-005), defense-in-depth against any un-grantable scope that
+    // reached the row. An empty stored set falls back to the full default
+    // allow-list (the autobot's intended working scopes).
+    const clampedScopes = clampMcpScopes(
+      Array.isArray(code.scopes) ? (code.scopes as string[]) : undefined,
+    );
+    const scopes = clampedScopes.length > 0 ? clampedScopes : [...MCP_DEFAULT_SCOPES];
+    // Always include mcp:tools (required by validateScopedMcpToken).
     if (!scopes.includes("mcp:tools")) scopes.unshift("mcp:tools");
 
     const payload = {
