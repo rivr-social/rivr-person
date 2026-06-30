@@ -892,9 +892,24 @@ export async function markEventsExported(eventIds: string[]) {
     .where(inArray(federationEvents.id, eventIds));
 }
 
+/** Canonical UUID shape — entity ids in this ecosystem are per-instance UUIDs. */
+const ENTITY_ID_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Resolves a remote entity ID to a local UUID via the federation_entity_map table.
- * If no mapping exists yet, generates a new UUID and creates the mapping.
+ *
+ * When no mapping exists yet, the new local id is the EXTERNAL id itself (not a
+ * fresh random UUID). This is the shared owner-id resolver: the federated-viewer
+ * projection (`ensureLocalActorAgent`) materializes a remote actor's local row
+ * keyed by its external id (`agents.id = actorId`), so minting a random local id
+ * here produced a SECOND, divergent agent for the same remote actor (the H2
+ * owner-id split / duplicate-agent bug — duplicate Flash/Spirit live). Keying
+ * both paths on the external id converges them on one row; the importer's
+ * placeholder-upgrade path then enriches the projection's stub in place. Falls
+ * back to a random UUID only for the defensive (not-expected-in-this-ecosystem)
+ * case where the external id is not a valid UUID, since `local_entity_id` is a
+ * `uuid` column.
  */
 async function resolveLocalEntityId(
   originNodeId: string,
@@ -913,13 +928,24 @@ async function resolveLocalEntityId(
     return existing.localEntityId;
   }
 
-  const localEntityId = crypto.randomUUID();
-  await db.insert(federationEntityMap).values({
-    originNodeId,
-    externalEntityId,
-    localEntityId,
-    entityType,
-  });
+  const localEntityId = ENTITY_ID_UUID_PATTERN.test(externalEntityId)
+    ? externalEntityId
+    : crypto.randomUUID();
+  await db
+    .insert(federationEntityMap)
+    .values({
+      originNodeId,
+      externalEntityId,
+      localEntityId,
+      entityType,
+    })
+    .onConflictDoNothing({
+      target: [
+        federationEntityMap.originNodeId,
+        federationEntityMap.externalEntityId,
+        federationEntityMap.entityType,
+      ],
+    });
 
   return localEntityId;
 }

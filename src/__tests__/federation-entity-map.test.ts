@@ -272,6 +272,50 @@ describe("importFederationEvents - entity namespace mapping", () => {
     expect(agentInsertCalls[0][0].id).not.toBe(REMOTE_AGENT_ID);
   });
 
+  it("keys a new mapping by the external id when it is a valid UUID (H2 owner-id convergence)", async () => {
+    // H2: a remote actor's external id IS a per-instance UUID, so the new local
+    // id must converge on the external id (not a fresh random UUID) — otherwise
+    // the importer and the federated-viewer projection mint two rows for one
+    // actor. Behavior is UUID-shape-gated; non-UUID ids keep the random fallback.
+    const UUID_AGENT_ID = "11111111-2222-3333-4444-555555555555";
+    setupStandardMocks();
+
+    const { importFederationEvents } = await loadFederationModule();
+
+    await importFederationEvents({
+      localNodeId: LOCAL_NODE_ID,
+      fromPeerSlug: PEER_SLUG,
+      events: [
+        makeAgentEvent({
+          payload: {
+            id: UUID_AGENT_ID,
+            name: "Remote Agent",
+            type: "person",
+            description: "An agent from a peer node",
+            image: null,
+            metadata: {},
+            parentId: null,
+            pathIds: null,
+          },
+        }),
+      ],
+    });
+
+    const entityMapInsert = mockValues.mock.calls.find(
+      (call) => call[0]?.externalEntityId === UUID_AGENT_ID && call[0]?.entityType === "agent",
+    );
+    expect(entityMapInsert).toBeDefined();
+    // localEntityId converges on the external UUID, not a random one.
+    expect(entityMapInsert![0].localEntityId).toBe(UUID_AGENT_ID);
+    // The agent row uses the same converged id.
+    const agentInsert = mockValues.mock.calls.find(
+      (call) => call[0]?.name === "Remote Agent" && !call[0]?.externalEntityId,
+    );
+    expect(agentInsert![0].id).toBe(UUID_AGENT_ID);
+    // The map insert is conflict-guarded so a concurrent project/import is a no-op.
+    expect(mockOnConflictDoNothing).toHaveBeenCalled();
+  });
+
   it("reuses existing mapping on re-import", async () => {
     const existingMapping = {
       id: "map-existing",
