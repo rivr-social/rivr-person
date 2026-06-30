@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 import { randomBytes, randomUUID } from "node:crypto";
 import { db } from "@/db";
 import { mcpDeviceCodes } from "@/db/schema";
+import { clampMcpScopes } from "@/lib/federation/mcp-scopes";
 
 export const dynamic = "force-dynamic";
 
@@ -43,9 +44,17 @@ export async function POST(request: Request) {
   }
 
   const clientName = typeof body.clientName === "string" ? body.clientName.slice(0, 100) : null;
-  const scopes = Array.isArray(body.scopes)
-    ? body.scopes.filter((s): s is string => typeof s === "string").slice(0, 20)
-    : ["mcp:tools"];
+  // Clamp caller-requested scopes to the server allow-list up front (AUTH-SEC-005)
+  // so (a) the row never stores scopes the server won't grant and (b) the
+  // approval screen (which renders the stored scopes) shows the human the
+  // EFFECTIVE scopes they are consenting to — not whatever the caller asked for.
+  // The poll-time token mint clamps again as defense-in-depth. Purely
+  // subtractive: an all-out-of-list request falls back to the minimal
+  // `mcp:tools`, never the full default set.
+  const requestedScopes = Array.isArray(body.scopes)
+    ? clampMcpScopes(body.scopes).slice(0, 20)
+    : [];
+  const scopes = requestedScopes.length > 0 ? requestedScopes : ["mcp:tools"];
 
   const deviceCode = randomUUID();
   const userCode = generateUserCode();

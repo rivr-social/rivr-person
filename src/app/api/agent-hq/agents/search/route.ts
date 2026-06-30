@@ -8,6 +8,11 @@ import { assertAgentHqAccess } from "@/lib/agent-hq";
 export const dynamic = "force-dynamic";
 
 const RESULT_LIMIT = 20;
+// Require a real query fragment. A blank/1-char query would otherwise
+// enumerate the entire agent graph, and matching on email turned the search
+// into an email-existence oracle (DBR-SEC-004). Share targets must be looked
+// up by a meaningful name/id fragment.
+const MIN_TERM_LENGTH = 2;
 
 /**
  * GET /api/agent-hq/agents/search?q=<term>
@@ -15,9 +20,11 @@ const RESULT_LIMIT = 20;
  * Searches the agent graph for permission-grant targets. Unlike
  * `/api/agent-hq/personas` (owner's personas only), this returns ANY agent so
  * a resource can be shared with any agent/persona/group — the permission model
- * is not limited to the owner's own personas. Matches on name/email/id
- * (case-insensitive), newest-relevant first, capped at {@link RESULT_LIMIT}.
- * Personas of the operating user are flagged for the picker.
+ * is not limited to the owner's own personas. Matches on name/id only
+ * (case-insensitive) — email is intentionally NOT a match predicate (no
+ * email-enumeration oracle) and never returned. Requires a query of at least
+ * {@link MIN_TERM_LENGTH} characters, capped at {@link RESULT_LIMIT}. Personas
+ * of the operating user are flagged for the picker.
  */
 export async function GET(request: Request) {
   try {
@@ -30,16 +37,15 @@ export async function GET(request: Request) {
 
     const term = new URL(request.url).searchParams.get("q")?.trim() ?? "";
 
-    const filters = [isNull(agents.deletedAt)];
-    if (term.length > 0) {
-      const like = `%${term}%`;
-      const match = or(
-        ilike(agents.name, like),
-        ilike(agents.email, like),
-        ilike(agents.id, like),
-      );
-      if (match) filters.push(match);
+    // Short-circuit on too-short queries rather than enumerating all agents.
+    if (term.length < MIN_TERM_LENGTH) {
+      return NextResponse.json({ agents: [] });
     }
+
+    const filters = [isNull(agents.deletedAt)];
+    const like = `%${term}%`;
+    const match = or(ilike(agents.name, like), ilike(agents.id, like));
+    if (match) filters.push(match);
 
     const rows = await db
       .select({
