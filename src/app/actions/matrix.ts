@@ -1,20 +1,29 @@
 "use server";
 
 /**
- * Matrix server actions for authenticated Matrix credential retrieval.
+ * Matrix server actions for authenticated Matrix chat operations.
  *
- * Purpose:
- * - Provide authenticated access to Matrix credentials for the current user.
- * - Look up Matrix user IDs for DM targeting.
- *
- * Key exports:
- * - `getMatrixCredentials` — returns the current user's Matrix credentials.
- * - `getDmRoomForUser` — returns the target user's Matrix user ID for DM creation.
+ * SECURITY (EVT-SEC-001 / EVT-SEC-002): every export in a `"use server"`
+ * module is a client-reachable server action, so each one must be safe to
+ * call with fully attacker-controlled arguments. The principal is ALWAYS
+ * derived from `auth()` — never from a client-supplied id, and never from the
+ * client-writable `dm_rooms` mirror. Concretely:
+ *  - Read actions are session-scoped (own credentials) or return only
+ *    non-secret identifiers.
+ *  - Membership-mutating actions (`ensureUserJoinedRoom`,
+ *    `addParticipantsToRoom`) are gated by `canActorMutateRoomMembership`,
+ *    which derives authority from the canonical ledger (group admin via
+ *    `isGroupAdmin`) or canonical Synapse membership (direct rooms) — never
+ *    the `dm_rooms` mirror.
+ *  - `ensureAgentMatrixIdentity` is a private (non-exported) helper that
+ *    returns only a non-secret Matrix user id; no exported action returns an
+ *    agent's access token except the session-scoped `getMatrixCredentials`.
  *
  * Dependencies:
  * - `@/auth` for session authentication.
  * - `@/db` for database queries.
  * - `@/db/schema` for the agents table.
+ * - `@/app/actions/group-admin` for canonical ledger-backed group-admin authz.
  */
 import { auth } from "@/auth";
 import { db } from "@/db";
@@ -28,6 +37,7 @@ import {
 } from "@/lib/matrix-admin";
 import { provisionMatrixUser } from "@/lib/matrix-admin";
 import { MatrixProvisioningError } from "@/lib/matrix-errors";
+import { isGroupAdmin } from "@/app/actions/group-admin";
 
 /**
  * Ensures an agent has a fully-provisioned Matrix identity, treating null
@@ -231,8 +241,16 @@ export async function getMatrixUserIdsForAgents(
 }
 
 /**
- * Force-joins the target user into a DM room so they see it immediately
+ * Force-joins the target user into a DM/group room so they see it immediately
  * without needing to manually accept an invite.
+ *
+ * This is a client-reachable server action that drives the privileged Synapse
+ * admin "force-join" endpoint, so it is authorized with the verified-principal
+ * model (EVT-SEC-001): the caller (derived from `auth()`, never the client
+ * payload) must be entitled to mutate the room's membership — i.e. be a
+ * canonical Synapse member of a direct room, or a ledger-derived admin of the
+ * room's owning group. An unauthorized caller is a silent no-op; we never let
+ * an arbitrary client force any user into any room.
  *
  * @param targetMatrixUserId - Full Matrix user ID to join
  * @param roomId - The Matrix room ID to join them into
@@ -251,6 +269,18 @@ export async function ensureUserJoinedRoom(
   }
   if (!roomId.startsWith("!")) {
     console.error("[matrix] ensureUserJoinedRoom: invalid roomId, must start with !");
+    return;
+  }
+
+  // Authorize the CALLER against canonical room authority before driving the
+  // admin force-join. Without this, any authenticated client could force any
+  // user into any room.
+  const authorization = await canActorMutateRoomMembership(session.user.id, roomId);
+  if (!authorization.authorized) {
+    console.error(
+      "[matrix] ensureUserJoinedRoom: caller not authorized to join users into this room:",
+      authorization.reason,
+    );
     return;
   }
 
@@ -298,16 +328,52 @@ export async function recordDmRoomMirror(
   );
 
   try {
+    // Never mirror over a canonical group room. Group authority comes from the
+    // ledger (see canActorMutateRoomMembership); allowing a dm_rooms row to be
+    // written against a group's matrixRoomId would let a client fabricate a
+    // mirror that shadows the group-admin gate (EVT-SEC-002).
+    const groupRoom = await db.query.groupMatrixRooms.findFirst({
+      where: and(
+        eq(groupMatrixRooms.matrixRoomId, matrixRoomId),
+        isNull(groupMatrixRooms.deletedAt),
+      ),
+      columns: { id: true },
+    });
+    if (groupRoom) {
+      console.error(
+        "[matrix] recordDmRoomMirror: refusing to mirror a canonical group room:",
+        matrixRoomId,
+      );
+      return;
+    }
+
     const existing = await db.query.dmRooms.findFirst({
       where: and(eq(dmRooms.matrixRoomId, matrixRoomId), isNull(dmRooms.deletedAt)),
-      columns: { id: true },
+      columns: { id: true, participants: true },
     });
 
     if (existing) {
+      const existingParticipants = Array.isArray(existing.participants)
+        ? existing.participants
+        : [];
+      // Only an existing participant may refresh the row. This prevents an
+      // attacker from rewriting the participant set of a room they don't belong
+      // to (which would otherwise pollute room reuse/discovery). New
+      // participants are MERGED in rather than overwritten.
+      if (!existingParticipants.includes(session.user.id)) {
+        console.error(
+          "[matrix] recordDmRoomMirror: caller is not a participant of the existing mirror; refusing to overwrite:",
+          matrixRoomId,
+        );
+        return;
+      }
+      const mergedParticipants = Array.from(
+        new Set([...existingParticipants, ...participants]),
+      );
       // Refresh updatedAt + participants in case the membership grew.
       await db
         .update(dmRooms)
-        .set({ participants, updatedAt: new Date() })
+        .set({ participants: mergedParticipants, updatedAt: new Date() })
         .where(eq(dmRooms.id, existing.id));
       return;
     }
@@ -354,6 +420,65 @@ export interface AddParticipantsResult {
 
 /** Maximum number of new participants accepted in one call (prevents abuse). */
 const MAX_PARTICIPANTS_PER_CALL = 50;
+
+/**
+ * Verified-principal authorization for mutating a Matrix room's membership
+ * (force-joining a user, or adding participants).
+ *
+ * Authority is derived from CANONICAL sources ONLY — never from the
+ * client-writable `dm_rooms` mirror (EVT-SEC-001 / EVT-SEC-002):
+ *  - Group rooms: checked FIRST so a poisoned `dm_rooms` mirror row can never
+ *    shadow a group room's admin gate. The actor must hold an admin/moderator
+ *    membership edge in the ledger for the owning group (`isGroupAdmin`).
+ *  - Direct rooms: the actor must be an actual Synapse member of the room,
+ *    verified against the admin `getRoomMembers` view and matched by the
+ *    actor's own provisioned Matrix user id. The mirror's `participants` column
+ *    is NOT consulted for the authorization decision.
+ */
+async function canActorMutateRoomMembership(
+  actorId: string,
+  roomId: string,
+): Promise<{ authorized: true } | { authorized: false; reason: string }> {
+  // Canonical group room? Derive admin authority from the ledger. Checked
+  // before any DM/mirror handling so a fabricated dm_rooms row pointing at a
+  // group's matrixRoomId cannot bypass the group-admin gate.
+  const groupRoom = await db.query.groupMatrixRooms.findFirst({
+    where: and(eq(groupMatrixRooms.matrixRoomId, roomId), isNull(groupMatrixRooms.deletedAt)),
+    columns: { groupAgentId: true },
+  });
+  if (groupRoom) {
+    const isAdmin = await isGroupAdmin(actorId, groupRoom.groupAgentId);
+    return isAdmin
+      ? { authorized: true }
+      : { authorized: false, reason: "Group admin access required to add people to this room." };
+  }
+
+  // Otherwise treat as a direct room and authorize against canonical Synapse
+  // membership, NOT the client-writable dm_rooms mirror.
+  const actor = await db.query.agents.findFirst({
+    where: eq(agents.id, actorId),
+    columns: { matrixUserId: true },
+  });
+  const actorMatrixUserId = actor?.matrixUserId;
+  if (typeof actorMatrixUserId !== "string" || actorMatrixUserId.length === 0) {
+    return { authorized: false, reason: "Your account has no Matrix identity yet." };
+  }
+
+  let members: string[];
+  try {
+    members = await getRoomMembers(roomId);
+  } catch (err) {
+    console.error(
+      `[matrix] canActorMutateRoomMembership: getRoomMembers failed for ${roomId}:`,
+      err,
+    );
+    return { authorized: false, reason: "Could not verify room membership." };
+  }
+
+  return members.includes(actorMatrixUserId)
+    ? { authorized: true }
+    : { authorized: false, reason: "Only existing room participants can add people to this room." };
+}
 
 /**
  * Adds one or more agents to an existing Matrix room. For each agent we:
@@ -409,6 +534,23 @@ export async function addParticipantsToRoom(
 
   if (uniqueAgentIds.length === 0) {
     return { added: [], failed: [], promotedToRoomId: null };
+  }
+
+  // Authorize the CALLER against canonical room authority BEFORE provisioning
+  // any identities or driving the admin force-join. Authority derives from the
+  // ledger (group admin) or canonical Synapse membership (direct rooms) — never
+  // the client-writable dm_rooms mirror (EVT-SEC-002). Without this gate any
+  // authenticated client could add arbitrary users to any room.
+  const roomAuthorization = await canActorMutateRoomMembership(session.user.id, roomId);
+  if (!roomAuthorization.authorized) {
+    return {
+      added: [],
+      failed: uniqueAgentIds.map((agentId) => ({
+        agentId,
+        reason: roomAuthorization.reason,
+      })),
+      promotedToRoomId: null,
+    };
   }
 
   // Ensure all target agents have Matrix identities first. Provisioning is
