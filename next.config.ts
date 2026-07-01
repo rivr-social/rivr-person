@@ -43,11 +43,6 @@ const staticRemotePatterns = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   output: "standalone",
-  // Raise the request-body cap for /api/upload (.glb avatars up to 50MB).
-  // Default is 10MB and middleware truncates the body before the route sees
-  // it, surfacing as misleading 400 Bad Request from a half-parsed multipart
-  // body. See https://nextjs.org/docs/app/api-reference/config/next-config-js/middlewareClientMaxBodySize
-  middlewareClientMaxBodySize: 100 * 1024 * 1024,
   experimental: {
     staleTimes: { dynamic: 0, static: 0 },
     // Barrel-import optimization: rewrite named imports from these large
