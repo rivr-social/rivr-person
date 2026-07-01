@@ -45,11 +45,14 @@ export function GroupSubgroups({ parentGroupId, isCreator, isAdmin }: GroupSubgr
   const [childGroups, setChildGroups] = useState<Group[]>([])
 
   useEffect(() => {
+    let cancelled = false
+
     async function loadData() {
       const [parentAgent, childAgents] = await Promise.all([
         fetchAgent(parentGroupId),
         fetchAgentChildren(parentGroupId),
       ])
+      if (cancelled) return
       if (parentAgent) {
         setParentGroup(agentToGroup(parentAgent))
       }
@@ -59,6 +62,9 @@ export function GroupSubgroups({ parentGroupId, isCreator, isAdmin }: GroupSubgr
       setChildGroups(orgChildren)
     }
     loadData()
+    return () => {
+      cancelled = true
+    }
   }, [parentGroupId])
 
   const handleAddGroup = () => {
@@ -66,6 +72,9 @@ export function GroupSubgroups({ parentGroupId, isCreator, isAdmin }: GroupSubgr
       tab: "group",
       parent: parentGroupId,
     })
+    if (parentGroup?.type === "organization") {
+      params.set("groupType", "org")
+    }
     if (newGroupName.trim()) params.set("name", newGroupName.trim())
     if (newGroupDescription.trim()) params.set("description", newGroupDescription.trim())
     setIsAddingGroup(false)
@@ -94,6 +103,11 @@ export function GroupSubgroups({ parentGroupId, isCreator, isAdmin }: GroupSubgr
                 <DialogTitle>Create a New Subgroup</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 py-4">
+                {parentGroup?.type === "organization" && (
+                  <p className="text-sm text-muted-foreground">
+                    This parent is an organization, so the subgroup will keep the organization feature set.
+                  </p>
+                )}
                 <div>
                   <label htmlFor="groupName" className="block text-sm font-medium text-foreground mb-1">
                     Subgroup Name
