@@ -103,8 +103,8 @@ const {
   getGroupMatrixRoom,
   reconcileGroupMatrixRooms,
   reconcileDmRooms,
-  triggerStartupReconcileGroupMatrixRooms,
 } = await import("@/lib/matrix-groups");
+const { triggerStartupReconcileGroupMatrixRooms } = await import("@/lib/matrix-startup");
 
 describe("matrix-groups", () => {
   beforeEach(() => {

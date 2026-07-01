@@ -4,6 +4,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import {
   uploadFile,
   uploadFiles,
+  MAX_FILE_SIZE,
   resetS3Client,
   StorageError,
   FileSizeError,
@@ -104,7 +105,7 @@ describe('storage.ts', () => {
 
     it('should throw FileSizeError for files exceeding maximum size', async () => {
       // Arrange
-      const largeBuffer = Buffer.alloc(11 * 1024 * 1024); // 11MB
+      const largeBuffer = Buffer.alloc(MAX_FILE_SIZE + 1);
       const filename = 'large-file.jpg';
       const mimeType = 'image/jpeg';
 

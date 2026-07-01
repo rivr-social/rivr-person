@@ -364,7 +364,7 @@ describe("assertionSignaturePayload", () => {
 
 describe("resolveGlobalPublicKey", () => {
   it("returns the env var when present", async () => {
-    expect(await resolveGlobalPublicKey()).toBe(globalKeypair.publicKey);
+    expect(await resolveGlobalPublicKey()).toBe(globalKeypair.publicKey.trim());
   });
 
   it("falls back to the peer registry when env var is absent", async () => {

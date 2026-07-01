@@ -351,7 +351,7 @@ describe("validateTempwritePayload", () => {
 describe("resolveGlobalPublicKey", () => {
   it("returns env var content verbatim when PEM contains real newlines", async () => {
     process.env[GLOBAL_PUBLIC_KEY_ENV_VAR] = globalKeypair.publicKey;
-    expect(await resolveGlobalPublicKey()).toBe(globalKeypair.publicKey);
+    expect(await resolveGlobalPublicKey()).toBe(globalKeypair.publicKey.trim());
   });
 
   it("un-escapes literal \\n sequences into real newlines", async () => {

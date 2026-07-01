@@ -317,18 +317,18 @@ export function verifyTiming(
       { iat: assertion.iat, nowMs }
     );
   }
-  if (assertion.exp - assertion.iat > MAX_ASSERTION_LIFETIME_MS) {
-    throw new RecoveryAssertionVerificationError(
-      "lifetime_too_long",
-      "Recovery assertion lifetime exceeds the 10-minute ceiling.",
-      { iat: assertion.iat, exp: assertion.exp }
-    );
-  }
   if (assertion.exp <= nowMs) {
     throw new RecoveryAssertionVerificationError(
       "expired",
       "Recovery assertion has expired.",
       { exp: assertion.exp, nowMs }
+    );
+  }
+  if (assertion.exp - assertion.iat > MAX_ASSERTION_LIFETIME_MS) {
+    throw new RecoveryAssertionVerificationError(
+      "lifetime_too_long",
+      "Recovery assertion lifetime exceeds the 10-minute ceiling.",
+      { iat: assertion.iat, exp: assertion.exp }
     );
   }
 }
