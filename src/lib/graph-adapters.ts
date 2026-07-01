@@ -151,6 +151,38 @@ function resolveBasinId(
   return "";
 }
 
+function normalizeGroupType(rawGroupType: unknown, fallbackAgentType: string): GroupType {
+  const normalized = typeof rawGroupType === "string" ? rawGroupType.trim().toLowerCase() : "";
+
+  switch (normalized) {
+    case "ring":
+      return GroupType.Ring;
+    case "family":
+      return GroupType.Family;
+    case "organization":
+    case "org":
+      return GroupType.Organization;
+    case "community":
+      return GroupType.Basic;
+    case "group":
+      return GroupType.Group;
+    default:
+      break;
+  }
+
+  switch (fallbackAgentType) {
+    case "organization":
+    case "org":
+      return GroupType.Organization;
+    case "ring":
+      return GroupType.Ring;
+    case "family":
+      return GroupType.Family;
+    default:
+      return GroupType.Basic;
+  }
+}
+
 /**
  * Converts a graph person agent into the frontend `User` model.
  *
@@ -216,13 +248,7 @@ export function agentToGroup(agent: SerializedAgent): Group {
   );
   const membershipPlans = readGroupMembershipPlans(meta);
 
-  // Explicit allowlist mapping prevents unknown metadata values from leaking through.
-  let groupType: GroupType = GroupType.Basic;
-  const rawGroupType = meta.groupType as string;
-  if (rawGroupType === "ring") groupType = GroupType.Ring;
-  else if (rawGroupType === "family") groupType = GroupType.Family;
-  else if (rawGroupType === "organization" || rawGroupType === "org") groupType = GroupType.Organization;
-  else if (rawGroupType === "group") groupType = GroupType.Group;
+  const groupType = normalizeGroupType(meta.groupType, String(agent.type ?? "").toLowerCase());
 
   return {
     id: agent.id,
