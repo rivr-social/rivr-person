@@ -603,6 +603,7 @@ export function resourceToMarketplaceListing(
   ownerAgent?: SerializedAgent
 ): MarketplaceListing {
   const meta = resource.metadata ?? {};
+  const ownerIsGroup = Boolean(ownerAgent && ownerAgent.type !== "person");
   const ownerPath = ownerAgent
     ? agentProfilePath(ownerAgent)
     : `/profile/${resource.ownerId}`;
