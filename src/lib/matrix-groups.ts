@@ -20,12 +20,12 @@
  * - `@/db` for group_matrix_rooms table operations.
  * - `@/db/schema` for table definitions.
  */
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, or } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { getEnv } from "@/lib/env";
 import { db } from "@/db";
-import { createRoomAsUser } from "@/lib/matrix-admin";
-import { agents, groupMatrixRooms, dmRooms, type ChatMode } from "@/db/schema";
+import { createRoomAsUser, inviteToRoomAsUser, joinRoomAsUser, kickFromRoomAsUser } from "@/lib/matrix-admin";
+import { agents, groupMatrixRooms, dmRooms, ledger, type ChatMode } from "@/db/schema";
 
 /**
  * Makes an authenticated request to the Synapse Admin API.
@@ -157,16 +157,24 @@ export async function inviteToGroupRoom(params: {
     );
   }
 
-  // Invite via Synapse Admin API
-  await synapseAdminRequest(
-    `/_synapse/admin/v1/join/${encodeURIComponent(groupRoom.matrixRoomId)}`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        user_id: targetAgent.matrixUserId,
-      }),
-    }
-  );
+  // Private rooms cannot be admin-force-joined (the admin user is not a room
+  // member, so Synapse 403s). Instead: a room member with invite power (the
+  // room creator) invites the target, then the target joins as themselves.
+  const inviterMatrixUserId = await resolveGroupRoomActorMatrixId(params.groupAgentId);
+  if (!inviterMatrixUserId) {
+    throw new Error(
+      `No room actor (creator/admin) resolvable for group ${params.groupAgentId}`,
+    );
+  }
+  await inviteToRoomAsUser({
+    inviterUserId: inviterMatrixUserId,
+    roomId: groupRoom.matrixRoomId,
+    userId: targetAgent.matrixUserId,
+  });
+  await joinRoomAsUser({
+    userId: targetAgent.matrixUserId,
+    roomId: groupRoom.matrixRoomId,
+  });
 }
 
 /**
@@ -195,24 +203,58 @@ export async function removeFromGroupRoom(params: {
 
   if (!targetAgent?.matrixUserId) return; // No Matrix account to remove
 
-  const homeserverUrl = getEnv("MATRIX_HOMESERVER_URL");
-  const adminToken = getEnv("MATRIX_ADMIN_TOKEN");
+  // Kick as the room creator (PL 100) — the server-admin token has no power in
+  // private rooms the admin never joined (same gap as admin force-join).
+  const actorMatrixUserId = await resolveGroupRoomActorMatrixId(params.groupAgentId);
+  if (!actorMatrixUserId) return; // No actor to kick with
 
-  // Use the standard Matrix API with admin token to kick the user
-  await fetch(
-    `${homeserverUrl}/_matrix/client/v3/rooms/${encodeURIComponent(groupRoom.matrixRoomId)}/kick`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`,
-      },
-      body: JSON.stringify({
-        user_id: targetAgent.matrixUserId,
-        reason: "Removed from group",
-      }),
-    }
-  );
+  await kickFromRoomAsUser({
+    actorUserId: actorMatrixUserId,
+    roomId: groupRoom.matrixRoomId,
+    userId: targetAgent.matrixUserId,
+    reason: "Removed from group",
+  });
+}
+
+/**
+ * Resolves the Matrix user id that acts FOR a group's room in server-side
+ * membership operations (inviting new members, kicking departed ones): the
+ * group's creator/owner (room power level 100), falling back to an
+ * admin/moderator member. Returns null when no responsible agent with a
+ * provisioned Matrix account exists.
+ */
+async function resolveGroupRoomActorMatrixId(
+  groupAgentId: string,
+): Promise<string | null> {
+  const ownerEdge = await db.query.ledger.findFirst({
+    where: and(
+      eq(ledger.objectId, groupAgentId),
+      eq(ledger.verb, "own"),
+      eq(ledger.isActive, true),
+    ),
+    columns: { subjectId: true },
+  });
+  let actorAgentId = ownerEdge?.subjectId ?? null;
+
+  if (!actorAgentId) {
+    const adminEdge = await db.query.ledger.findFirst({
+      where: and(
+        eq(ledger.objectId, groupAgentId),
+        eq(ledger.isActive, true),
+        or(eq(ledger.verb, "join"), eq(ledger.verb, "belong")),
+        or(eq(ledger.role, "admin"), eq(ledger.role, "moderator")),
+      ),
+      columns: { subjectId: true },
+    });
+    actorAgentId = adminEdge?.subjectId ?? null;
+  }
+  if (!actorAgentId) return null;
+
+  const actorAgent = await db.query.agents.findFirst({
+    where: eq(agents.id, actorAgentId),
+    columns: { matrixUserId: true },
+  });
+  return actorAgent?.matrixUserId ?? null;
 }
 
 /**
