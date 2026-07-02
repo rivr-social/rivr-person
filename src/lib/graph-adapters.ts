@@ -183,6 +183,23 @@ function normalizeGroupType(rawGroupType: unknown, fallbackAgentType: string): G
   }
 }
 
+function agentProfilePath(agent: SerializedAgent): string {
+  if (agent.type === "person") {
+    const username = typeof agent.metadata?.username === "string"
+      ? agent.metadata.username.trim()
+      : "";
+    return `/profile/${username || agent.id}`;
+  }
+
+  const groupType = normalizeGroupType(
+    agent.metadata?.groupType,
+    String(agent.type ?? "").toLowerCase()
+  );
+  if (groupType === GroupType.Ring) return `/rings/${agent.id}`;
+  if (groupType === GroupType.Family) return `/families/${agent.id}`;
+  return `/groups/${agent.id}`;
+}
+
 /**
  * Converts a graph person agent into the frontend `User` model.
  *
@@ -202,7 +219,7 @@ export function agentToUser(agent: SerializedAgent): User {
     id: agent.id,
     name: agent.name,
     username: username || slugify(agent.name),
-    profileHref: `/profile/${username || agent.id}`,
+    profileHref: agentProfilePath(agent),
     email: agent.email ?? undefined,
     bio: agent.description ?? (meta.bio as string) ?? undefined,
     avatar: agent.image ?? "/placeholder-user.jpg",
@@ -586,18 +603,8 @@ export function resourceToMarketplaceListing(
   ownerAgent?: SerializedAgent
 ): MarketplaceListing {
   const meta = resource.metadata ?? {};
-  const rawGroupType = String(ownerAgent?.metadata?.groupType ?? "").toLowerCase();
-  const ownerIsGroup = Boolean(
-    ownerAgent && ownerAgent.type !== "person"
-  );
   const ownerPath = ownerAgent
-    ? rawGroupType === "ring"
-      ? `/rings/${ownerAgent.id}`
-      : rawGroupType === "family"
-        ? `/families/${ownerAgent.id}`
-        : ownerIsGroup
-          ? `/groups/${ownerAgent.id}`
-          : `/profile/${(ownerAgent.metadata?.username as string) || ownerAgent.id}`
+    ? agentProfilePath(ownerAgent)
     : `/profile/${resource.ownerId}`;
 
   const seller: User = ownerAgent
