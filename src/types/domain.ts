@@ -75,6 +75,12 @@ export type Document = {
   /** Owner user ID for personal documents (when not group-scoped). */
   ownerId?: string
   tags?: string[]
+  /**
+   * Nested slash-path faceted tags (`[["work","projects","rivr"]]`), the
+   * canonical Parachute-vault tag shape. Mirrors `metadata.facetedTags`; the
+   * flat `tags` column is kept in sync from these via `flattenFacetedTags`.
+   */
+  facetedTags?: string[][]
   category?: string
   showOnAbout?: boolean
 }

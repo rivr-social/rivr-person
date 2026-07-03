@@ -26,6 +26,8 @@ import { useToast } from "@/components/ui/use-toast"
 import { ChevronLeft, FileText, Clock, User, Tag, BrainCircuit } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { FacetedTagEditor } from "@/components/faceted-tag-editor"
+import { flattenFacetedTags, normalizeFacetedTags, FACET_PATH_SEPARATOR } from "@/lib/parachute-doc"
 
 interface DocumentViewerProps {
   document: Document
@@ -35,6 +37,8 @@ interface DocumentViewerProps {
   kgScopeType?: "person" | "group" | "ring" | "family" | "persona"
   kgScopeId?: string
   canPushToKg?: boolean
+  /** Materialized tag-paths already present in the vault, offered as add autocomplete. */
+  tagSuggestions?: string[]
 }
 
 /**
@@ -136,6 +140,7 @@ export function DocumentViewer({
   kgScopeType,
   kgScopeId,
   canPushToKg = false,
+  tagSuggestions = [],
 }: DocumentViewerProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -145,7 +150,7 @@ export function DocumentViewer({
   const [description, setDescription] = useState(document.description)
   const [content, setContent] = useState(document.content)
   const [category, setCategory] = useState(document.category ?? "")
-  const [tags, setTags] = useState((document.tags ?? []).join(", "))
+  const [facetedTags, setFacetedTags] = useState<string[][]>(document.facetedTags ?? [])
   const [showOnAbout, setShowOnAbout] = useState(document.showOnAbout === true)
   const [kgDocId, setKgDocId] = useState<number | null>(null)
   const [kgLoading, setKgLoading] = useState(false)
@@ -187,17 +192,18 @@ export function DocumentViewer({
     setDescription(document.description)
     setContent(document.content)
     setCategory(document.category ?? "")
-    setTags((document.tags ?? []).join(", "))
+    setFacetedTags(document.facetedTags ?? [])
     setShowOnAbout(document.showOnAbout === true)
     setIsEditing(false)
   }, [document])
 
   const handleSave = () => {
     startTransition(async () => {
-      const nextTags = tags
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean)
+      // Faceted tag-paths are the source of truth; the flat `tags` column is
+      // kept in sync (materialized paths + bare segments) so existing tag
+      // search/index keeps matching. Both are persisted in one update.
+      const normalizedFacets = normalizeFacetedTags(facetedTags)
+      const nextTags = flattenFacetedTags(normalizedFacets)
 
       const result = await updateResource({
         resourceId: document.id,
@@ -208,6 +214,7 @@ export function DocumentViewer({
         metadataPatch: {
           category: category.trim() || null,
           showOnAbout,
+          facetedTags: normalizedFacets,
         },
       })
 
@@ -227,6 +234,7 @@ export function DocumentViewer({
         content,
         category: category.trim() || undefined,
         tags: nextTags,
+        facetedTags: normalizedFacets,
         showOnAbout,
         updatedAt: new Date().toISOString(),
       }
@@ -379,10 +387,19 @@ export function DocumentViewer({
                   <Label htmlFor="document-category">Category</Label>
                   <Input id="document-category" value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Governance" />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="document-tags">Tags</Label>
-                  <Input id="document-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="policy, founding, public" />
-                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Tags</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Nested slash-path tags, e.g. <code>work/projects/rivr</code>. A doc
+                  can carry several; they file it across facets in the vault.
+                </p>
+                <FacetedTagEditor
+                  value={facetedTags}
+                  suggestions={tagSuggestions}
+                  onChange={setFacetedTags}
+                  datalistId={`doc-tags-${document.id}`}
+                />
               </div>
               <label className="flex items-center gap-3 text-sm font-medium">
                 <Checkbox checked={showOnAbout} onCheckedChange={(checked) => setShowOnAbout(checked === true)} />
@@ -393,14 +410,17 @@ export function DocumentViewer({
             <>
               <CardTitle className="text-2xl mt-4">{document.title}</CardTitle>
               <p className="text-muted-foreground">{document.description}</p>
-              {document.tags && document.tags.length > 0 && (
+              {document.facetedTags && document.facetedTags.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 mt-2">
                   <Tag className="h-4 w-4 text-muted-foreground" />
-                  {document.tags.map(tag => (
-                    <Badge key={tag} variant="secondary" className="text-xs">
-                      {tag}
-                    </Badge>
-                  ))}
+                  {document.facetedTags.map((path) => {
+                    const label = path.join(FACET_PATH_SEPARATOR)
+                    return (
+                      <Badge key={label} variant="secondary" className="text-xs">
+                        {label}
+                      </Badge>
+                    )
+                  })}
                 </div>
               )}
             </>

@@ -19,17 +19,22 @@ import { useRouter, useSearchParams } from "next/navigation"
 import type { Document } from "@/types/domain"
 import { DocumentList } from "./document-list"
 import { DocumentViewer } from "./document-viewer"
-import { EmptyState } from "./empty-state"
 import { ChevronDown, ChevronRight, FileText, FolderInput, FolderOpen, Loader2, Upload } from "lucide-react"
 import { createDocumentResourceAction, createPersonalDocumentAction } from "@/app/actions/create-resources"
 import { useToast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ResourceAclPanel } from "@/components/resource-acl-panel"
-import { FacetedVaultPanel } from "@/components/faceted-vault-panel"
+import { FacetedVaultPanel, UNTAGGED_FACET_VALUE } from "@/components/faceted-vault-panel"
 import { ParachuteImportDialog } from "@/components/parachute-import-dialog"
+import { FACET_PATH_SEPARATOR } from "@/lib/parachute-doc"
 
-type DocViewMode = "documents" | "filesystem" | "vault"
+/**
+ * The docs module (`"vault"`) is the primary surface — a parachute vault: a
+ * faceted tag-tree rail on the left filtering the document list/viewer on the
+ * right. `"filesystem"` is the separate secondary agent-HQ db/fs admin explorer.
+ */
+type DocViewMode = "vault" | "filesystem"
 
 /**
  * Recognizes a virtual DB-tree path that points at a Resource record and
@@ -117,7 +122,8 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
   const router = useRouter()
   const searchParams = useSearchParams()
   const isPersonal = !groupId && !!ownerId
-  const [viewMode, setViewMode] = useState<DocViewMode>("filesystem")
+  const [viewMode, setViewMode] = useState<DocViewMode>("vault")
+  const [selectedFacet, setSelectedFacet] = useState<string | null>(null)
   const [documentItems, setDocumentItems] = useState<Document[]>(documents)
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null)
   const [fsWorkspaces, setFsWorkspaces] = useState<FsWorkspace[]>([])
@@ -476,6 +482,38 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
     ? documentItems.filter(doc => doc.ownerId === ownerId)
     : documentItems.filter(doc => doc.groupId === groupId)
 
+  // Facet filtering: null = all docs; the "__untagged__" sentinel = docs with no
+  // faceted tags; any other value = docs carrying a tag-path that equals the
+  // facet OR lives in its subtree (`facet/…`).
+  const facetFilteredDocuments = useMemo(() => {
+    if (selectedFacet === null) return scopedDocuments
+    if (selectedFacet === UNTAGGED_FACET_VALUE) {
+      return scopedDocuments.filter((doc) => (doc.facetedTags ?? []).length === 0)
+    }
+    const prefix = `${selectedFacet}${FACET_PATH_SEPARATOR}`
+    return scopedDocuments.filter((doc) =>
+      (doc.facetedTags ?? []).some((path) => {
+        const joined = path.join(FACET_PATH_SEPARATOR)
+        return joined === selectedFacet || joined.startsWith(prefix)
+      }),
+    )
+  }, [scopedDocuments, selectedFacet])
+
+  // Autocomplete for the inline tag editor: every materialized tag-path AND each
+  // of its prefixes across the scoped docs (so `work` is offered alongside
+  // `work/projects` and `work/projects/rivr`).
+  const tagSuggestions = useMemo(() => {
+    const paths = new Set<string>()
+    for (const doc of scopedDocuments) {
+      for (const path of doc.facetedTags ?? []) {
+        for (let depth = 1; depth <= path.length; depth += 1) {
+          paths.add(path.slice(0, depth).join(FACET_PATH_SEPARATOR))
+        }
+      }
+    }
+    return [...paths].sort((a, b) => a.localeCompare(b))
+  }, [scopedDocuments])
+
   const selectedFileDisplay = useMemo(() => {
     if (!fsSelectedFile) return ""
     if (fsSelectedFile.startsWith("db:")) {
@@ -523,25 +561,6 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
     setSelectedDocument(nextDocument)
   }, [scopedDocuments, searchParams])
 
-  const emptyDescription = isPersonal
-    ? "You don't have any personal documents yet. Create the first one to get started."
-    : "This group doesn't have any documents yet. Create the first one to get started."
-
-  // Conditional rendering: show empty state when no documents exist for the scope.
-  if (viewMode === "documents" && scopedDocuments.length === 0) {
-    return (
-      <EmptyState
-        title="No Documents Yet"
-        description={emptyDescription}
-        action={{
-          label: isPending ? "Creating..." : "Create Document",
-          onClick: handleCreateDocument,
-        }}
-        icon={<FileText className="h-12 w-12" />}
-      />
-    )
-  }
-
   return (
     <div className="space-y-4">
       {isPersonal ? (
@@ -551,33 +570,37 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
           onImported={() => void loadDbRoot()}
         />
       ) : null}
-      <div className="flex items-center gap-2">
-        <Button
-          variant={viewMode === "documents" ? "default" : "outline"}
-          size="sm"
-          onClick={() => setViewMode("documents")}
-        >
-          Documents
-        </Button>
-        <Button
-          variant={viewMode === "filesystem" ? "default" : "outline"}
-          size="sm"
-          onClick={() => setViewMode("filesystem")}
-        >
-          Filesystem
-        </Button>
-        <Button
-          variant={viewMode === "vault" ? "default" : "outline"}
-          size="sm"
-          onClick={() => setViewMode("vault")}
-        >
-          Tags
-        </Button>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            variant={viewMode === "vault" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setViewMode("vault")}
+          >
+            Documents
+          </Button>
+          <Button
+            variant={viewMode === "filesystem" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setViewMode("filesystem")}
+          >
+            Filesystem
+          </Button>
+        </div>
+        {isPersonal && viewMode === "vault" ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => setImportVaultOpen(true)}
+          >
+            <FolderInput className="mr-1 h-3.5 w-3.5" />
+            Import vault
+          </Button>
+        ) : null}
       </div>
 
-      {viewMode === "vault" ? (
-        <FacetedVaultPanel />
-      ) : viewMode === "filesystem" ? (
+      {viewMode === "filesystem" ? (
         <div className="grid gap-4 md:grid-cols-[300px_1fr]">
           <div className="space-y-3 rounded-lg border p-3">
             <div className="space-y-2">
@@ -643,17 +666,6 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
                 }}
               />
               <div className="flex items-center gap-1.5">
-                {isPersonal ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setImportVaultOpen(true)}
-                  >
-                    <FolderInput className="mr-1 h-3.5 w-3.5" />
-                    Import vault
-                  </Button>
-                ) : null}
                 <Button
                   variant="outline"
                   size="sm"
@@ -759,14 +771,23 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
           </div>
         </div>
       ) : (
-        <div className="grid gap-6 md:grid-cols-[320px_1fr]">
-          <DocumentList
-            documents={scopedDocuments}
-            groupId={groupId}
-            ownerId={ownerId}
-            onCreateDocument={handleCreateDocument}
-            documentHrefBuilder={(doc) => `${docsPath}?doc=${doc.id}`}
-          />
+        // The docs module IS a parachute vault: a faceted tag-tree rail (personal
+        // scope) on the left filtering the document list/viewer on the right.
+        <div
+          className={
+            isPersonal
+              ? "grid gap-6 md:grid-cols-[280px_1fr]"
+              : "grid gap-6 md:grid-cols-[320px_1fr]"
+          }
+        >
+          {isPersonal ? (
+            <FacetedVaultPanel
+              ownerId={ownerId}
+              selectedFacet={selectedFacet}
+              onSelectFacet={setSelectedFacet}
+              onOpenDoc={(docId) => router.push(`${docsPath}?doc=${docId}`)}
+            />
+          ) : null}
 
           {selectedDocument ? (
             <DocumentViewer
@@ -779,11 +800,16 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
               kgScopeType={isPersonal ? "person" : "group"}
               kgScopeId={isPersonal ? ownerId : groupId}
               canPushToKg={isPersonal}
+              tagSuggestions={tagSuggestions}
             />
           ) : (
-            <div className="flex items-center justify-center rounded-lg border text-muted-foreground">
-              Select a document to preview
-            </div>
+            <DocumentList
+              documents={facetFilteredDocuments}
+              groupId={groupId}
+              ownerId={ownerId}
+              onCreateDocument={handleCreateDocument}
+              documentHrefBuilder={(doc) => `${docsPath}?doc=${doc.id}`}
+            />
           )}
         </div>
       )}
