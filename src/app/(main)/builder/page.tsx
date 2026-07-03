@@ -234,6 +234,21 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * An odd number of ``` fences means a code block was opened but never closed —
+ * the response was almost certainly truncated mid-file. parseLLMResponse silently
+ * drops such a block (its regex requires a closing fence), so we detect it here
+ * and surface it to the user instead of presenting a dropped file as success.
+ */
+function hasUnterminatedCodeFence(text: string): boolean {
+  const fenceCount = (text.match(/```/g) ?? []).length;
+  return fenceCount % 2 !== 0;
+}
+
+const TRUNCATED_FILE_NOTICE =
+  "\n\n⚠️ A code block looks cut off (likely truncated at the length limit), so " +
+  "it was not applied. Ask me to \"continue\" or to regenerate that file.";
+
 function injectIntoHtml(html: string, tagName: "head" | "body", snippet: string): string {
   const closingTag = `</${tagName}>`;
   if (html.includes(closingTag)) {
@@ -896,9 +911,12 @@ export default function BuilderPage() {
           if (data === "[DONE]") continue;
 
           try {
-            const parsed = JSON.parse(data) as { text?: string; error?: string };
+            const parsed = JSON.parse(data) as { text?: string; error?: string; warning?: string };
             if (parsed.error) {
               fullText += `\n\n**Error**: ${parsed.error}`;
+              setStreamingText(fullText);
+            } else if (parsed.warning) {
+              fullText += `\n\n⚠️ ${parsed.warning}`;
               setStreamingText(fullText);
             } else if (parsed.text) {
               fullText += parsed.text;
@@ -921,6 +939,13 @@ export default function BuilderPage() {
 
     // Parse the complete response for code blocks
     const parsed = parseLLMResponse(fullText);
+
+    // Surface a truncated/unclosed code block so a silently-dropped file doesn't
+    // look like success (only when the notice isn't already present from an SSE
+    // warning frame).
+    if (hasUnterminatedCodeFence(fullText) && !fullText.includes(TRUNCATED_FILE_NOTICE.trim())) {
+      fullText += TRUNCATED_FILE_NOTICE;
+    }
 
     const assistantMsg: ChatMessage = {
       id: `assistant-${Date.now()}`,

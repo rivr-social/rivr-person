@@ -25,7 +25,16 @@ const ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
 const OPENAI_MODEL = "gpt-4o";
 const GEMINI_MODEL = "gemini-2.0-flash";
 
-const MAX_TOKENS = 8192;
+// Raised from 8192: whole multi-page sites (index + styles + several pages)
+// routinely exceed 8k output tokens, and the whole-file contract means a cut-off
+// stream silently drops the truncated file. 16000 stays well inside maxDuration.
+const MAX_TOKENS = 16_000;
+
+// Warning surfaced to the client when the model stops because it hit the output
+// cap (stop_reason: "max_tokens") — the last file is likely truncated/dropped.
+const TRUNCATION_WARNING =
+  "The response was cut off at the length limit, so the last file may be " +
+  "incomplete or missing. Ask me to \"continue\" or to regenerate just that file.";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2";
 const OLLAMA_TIMEOUT_MS = 90_000;
@@ -131,6 +140,16 @@ async function streamAnthropic(
                 // Send as SSE
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify({ text: delta.text })}\n\n`),
+                );
+              }
+            } else if (eventType === "message_delta") {
+              // The message_delta event carries the final stop_reason. A value of
+              // "max_tokens" means output was truncated mid-file — surface it so
+              // the client doesn't present a silently-dropped file as success.
+              const delta = event.delta as Record<string, unknown> | undefined;
+              if (delta?.stop_reason === "max_tokens") {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ warning: TRUNCATION_WARNING })}\n\n`),
                 );
               }
             } else if (eventType === "message_stop") {
