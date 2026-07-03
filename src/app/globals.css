@@ -201,3 +201,52 @@
 .dark #rivr-water-bg {
   background: #1a2a2a url("/bg-dark.jpg") center / cover no-repeat;
 }
+
+/* Crystalline volumetric background — the FINAL background on global lanes
+   (a/app/beta/dev.rivr.social), both themes. Rendered as a static CSS layer
+   so it paints on the very first frame: a tiny pre-hydration script in the
+   root layout sets `body.crystalline-bg` from the hostname BEFORE first
+   paint. (Previously a client component mounted this after hydration, so
+   users watched solid-color → water jpg → crystalline swap in sequence, and
+   dark mode downloaded an 80 KB jpg only to throw it away.)
+
+   Same six-layer composition per theme (4 soft asymmetric radials, a corner
+   vignette, a linear base) so light + dark feel like the same artwork with
+   swapped pigment. Light: warm gold/sienna palette (Cameron 2026-05-05 —
+   #f9d294 cream, #f0cc8b gold, #c69a62 tan, #794e1b deep brown). Dark:
+   deep-teal volumetric fog. */
+#rivr-crystalline-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  display: none;
+  filter: blur(2px);
+  background:
+    radial-gradient(ellipse 60% 50% at 75% 18%, rgba(249, 210, 148, 0.65) 0%, rgba(249, 210, 148, 0) 65%),
+    radial-gradient(ellipse 50% 40% at 30% 35%, rgba(240, 204, 139, 0.55) 0%, rgba(240, 204, 139, 0) 70%),
+    radial-gradient(ellipse 45% 35% at 70% 75%, rgba(249, 210, 148, 0.45) 0%, rgba(249, 210, 148, 0) 70%),
+    radial-gradient(ellipse 40% 35% at 18% 78%, rgba(121, 78, 27, 0.45) 0%, rgba(121, 78, 27, 0) 70%),
+    radial-gradient(ellipse 100% 100% at 50% 50%, rgba(121, 78, 27, 0) 55%, rgba(121, 78, 27, 0.40) 100%),
+    linear-gradient(180deg, #c69a62 0%, #f0cc8b 45%, #c69a62 100%);
+}
+
+.dark #rivr-crystalline-bg {
+  background:
+    radial-gradient(ellipse 60% 50% at 75% 18%, rgba(108, 187, 178, 0.55) 0%, rgba(108, 187, 178, 0) 65%),
+    radial-gradient(ellipse 50% 40% at 30% 35%, rgba(58, 134, 128, 0.45) 0%, rgba(58, 134, 128, 0) 70%),
+    radial-gradient(ellipse 45% 35% at 70% 75%, rgba(120, 200, 192, 0.30) 0%, rgba(120, 200, 192, 0) 70%),
+    radial-gradient(ellipse 40% 35% at 18% 78%, rgba(36, 90, 88, 0.55) 0%, rgba(36, 90, 88, 0) 70%),
+    radial-gradient(ellipse 100% 100% at 50% 50%, rgba(0, 0, 0, 0) 60%, rgba(0, 22, 24, 0.55) 100%),
+    linear-gradient(180deg, #0c2a2c 0%, #14474a 45%, #0e3032 100%);
+}
+
+body.crystalline-bg #rivr-crystalline-bg {
+  display: block;
+}
+
+/* Exactly one background layer is ever visible: crystalline on global lanes,
+   the water photo everywhere else. */
+body.crystalline-bg #rivr-water-bg {
+  display: none;
+}

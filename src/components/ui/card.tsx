@@ -2,20 +2,28 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  ({ className, children, ...props }, ref) => (
+interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  glass?: boolean
+}
+
+const Card = React.forwardRef<HTMLDivElement, CardProps>(
+  ({ className, children, glass = true, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        "liquid-glass rounded-xl text-card-foreground border border-transparent",
-        "dark:bg-white/5 dark:border-white/10",
+        glass && "liquid-glass rounded-xl border border-transparent",
+        "text-card-foreground dark:bg-white/5 dark:border-white/10",
         className,
       )}
       {...props}
     >
-      <div className="liquid-glass-distortion rounded-xl" />
-      <div className="liquid-glass-tint rounded-xl" />
-      <div className="liquid-glass-shine rounded-xl" />
+      {glass ? (
+        <>
+          <div className="liquid-glass-distortion rounded-xl" />
+          <div className="liquid-glass-tint rounded-xl" />
+          <div className="liquid-glass-shine rounded-xl" />
+        </>
+      ) : null}
       {children}
     </div>
   ),

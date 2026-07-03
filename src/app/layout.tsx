@@ -24,6 +24,27 @@ export const metadata: Metadata = {
   }
 };
 
+/**
+ * Decides the page background BEFORE first paint, so the final background is
+ * the only one the user ever sees (no solid-color → water-jpg → crystalline
+ * swap chain, no wasted jpg download on crystalline lanes).
+ *
+ * - On crystalline-enabled lanes (the global runtimes; plus the
+ *   NEXT_PUBLIC_TESTA_BG=crystalline local-dev override, inlined at build
+ *   time) it sets `body.crystalline-bg`, which shows the static CSS gradient
+ *   layer and hides the water photo. On this sovereign instance the hostname
+ *   never matches, so the water photo is the final background.
+ * - It preloads the theme-correct water jpg so the photo lands with first
+ *   paint instead of popping in later. The `theme` localStorage key + system
+ *   fallback mirrors next-themes.
+ *
+ * Runs as the first child of <body> — synchronously during parse, before the
+ * browser paints anything.
+ */
+const CRYSTALLINE_BOOT_SCRIPT = `(function(){try{var on=${
+  process.env.NEXT_PUBLIC_TESTA_BG === "crystalline"
+}||{"a.rivr.social":1,"app.rivr.social":1,"beta.rivr.social":1,"dev.rivr.social":1}[location.hostname]===1;if(on){document.body.classList.add("crystalline-bg");}else{var t=null;try{t=localStorage.getItem("theme")}catch(e){}var d=t==="dark"||((!t||t==="system")&&matchMedia("(prefers-color-scheme: dark)").matches);var l=document.createElement("link");l.rel="preload";l.as="image";l.href=d?"/bg-dark.jpg":"/bg-light.jpg";document.head.appendChild(l);}}catch(e){}})();`;
+
 export default async function RootLayout({
   children,
 }: Readonly<{
@@ -33,9 +54,15 @@ export default async function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen">
-        {/* Fixed water background for light mode — glass distortion refracts against this */}
+      {/* suppressHydrationWarning: the boot script below adds `crystalline-bg`
+          to <body> before React hydrates, exactly like next-themes does on
+          <html>. */}
+      <body className="min-h-screen" suppressHydrationWarning>
+        <script dangerouslySetInnerHTML={{ __html: CRYSTALLINE_BOOT_SCRIPT }} />
+        {/* Fixed water background (sovereign lanes) — glass distortion refracts against this */}
         <div id="rivr-water-bg" />
+        {/* Crystalline gradient background (global lanes) — shown via body.crystalline-bg */}
+        <div id="rivr-crystalline-bg" aria-hidden="true" />
         {/* SVG filters for liquid glass effect — hidden, referenced by CSS url() */}
         <svg style={{ display: "none" }} aria-hidden="true">
           <filter id="glass-distortion-shell" x="0%" y="0%" width="100%" height="100%" filterUnits="objectBoundingBox">
