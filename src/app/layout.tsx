@@ -8,6 +8,7 @@ import { AuthGuard } from "@/components/auth-guard";
 import { Toaster } from "@/components/ui/toaster";
 import { GlobalHeader } from "@/components/global-header";
 import { PersonaBanner } from "@/components/persona-banner";
+import { CrystallineBgSync } from "@/components/crystalline-bg-sync";
 import { AppProvider } from "@/contexts/app-context";
 import { UserProvider } from "@/contexts/user-context";
 import { auth } from "@/auth";
@@ -61,6 +62,7 @@ export default async function RootLayout({
           <html>. */}
       <body className="min-h-screen" suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: CRYSTALLINE_BOOT_SCRIPT }} />
+        <CrystallineBgSync />
         {/* Fixed water background (sovereign lanes) — glass distortion refracts against this */}
         <div id="rivr-water-bg" />
         {/* Crystalline gradient background (global lanes) — shown via body.crystalline-bg */}
