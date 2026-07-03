@@ -79,16 +79,23 @@ function buildCspHeader(nonce: string): string {
   const publicDomain = process.env.NEXT_PUBLIC_DOMAIN?.trim();
   const minioPublicUrl = process.env.ASSET_PUBLIC_BASE_URL?.trim() || process.env.NEXT_PUBLIC_MINIO_URL?.trim();
   // Federated content (avatars, group images) references the global hub's
-  // asset store. Derive the hub's S3 origin from REGISTRY_URL
-  // (https://app.<domain> -> https://s3.<domain>) so those images render.
-  const registryUrl = process.env.REGISTRY_URL?.trim();
-  let federatedAssetSource: string | undefined;
-  if (registryUrl) {
+  // asset store. Derive the hub's S3 origin from REGISTRY_URL (or the
+  // GLOBAL_BASE_URL / NEXT_PUBLIC_GLOBAL_URL fallbacks credential-sync also
+  // honors): https://app.<domain> -> https://s3.<domain>. Instances configured
+  // purely through the DB (no hub env vars at all — live case: camalot) fall
+  // back to the RIVR hub's store, else every federated avatar/photo is
+  // CSP-blocked and profiles render broken.
+  const hubUrl =
+    process.env.REGISTRY_URL?.trim() ||
+    process.env.GLOBAL_BASE_URL?.trim() ||
+    process.env.NEXT_PUBLIC_GLOBAL_URL?.trim();
+  let federatedAssetSource = "https://s3.rivr.social";
+  if (hubUrl) {
     try {
-      const registryHost = new URL(registryUrl).hostname;
-      federatedAssetSource = `https://s3.${registryHost.replace(/^app\./, "")}`;
+      const hubHost = new URL(hubUrl).hostname;
+      federatedAssetSource = `https://s3.${hubHost.replace(/^app\./, "")}`;
     } catch {
-      federatedAssetSource = undefined;
+      // keep the default hub store
     }
   }
 
@@ -99,7 +106,7 @@ function buildCspHeader(nonce: string): string {
     "http://localhost:9000",
     ...(minioPublicUrl ? [minioPublicUrl] : []),
     ...(publicDomain ? [`https://s3.${publicDomain}`] : []),
-    ...(federatedAssetSource ? [federatedAssetSource] : []),
+    federatedAssetSource,
     "http://*.virtualearth.net",
     "http://dev.virtualearth.net",
     "https://*.virtualearth.net",
