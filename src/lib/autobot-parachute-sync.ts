@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { resources } from "@/db/schema";
@@ -6,17 +7,74 @@ import type { ConnectorSyncResult } from "@/lib/autobot-google-sync";
 import {
   facetedTagsFromVaultPath,
   flattenFacetedTags,
+  normalizeFacetedTags,
   serializeFacetedTagsToMetadata,
 } from "@/lib/parachute-doc";
 
 const PROVIDER_KEY = "parachute";
 
-async function findSyncedResourceId(
+/** A directed link preserved from a note's `[[wikilinks]]` for provenance only. */
+export interface ParachuteLink {
+  target: string;
+  relationship?: string;
+}
+
+/** One note to import — the portable shape all ingress paths (upload, daemon) reduce to. */
+export interface ParachuteImportFile {
+  path: string;
+  content: string;
+  mimeType?: string;
+  /** Explicit note tags (frontmatter + inline `#nested/tag`), merged with path facets. */
+  tags?: string[];
+  /** YAML frontmatter minus `tags`, preserved under `metadata.parachute.frontmatter`. */
+  frontmatter?: Record<string, unknown>;
+  /** `[[wikilinks]]` edges, preserved for provenance (NOT materialized as ledger edges). */
+  links?: ParachuteLink[];
+}
+
+/** Where a batch of notes came from — a live connector, or an ad-hoc upload/daemon pull. */
+type ParachuteImportSource =
+  | AutobotConnection
+  | { vaultPath?: string | null }
+  | undefined;
+
+/** Existing synced resource with the fields needed for idempotency checks. */
+interface SyncedResourceRow {
+  id: string;
+  /** `metadata.parachute.sourceHash` of the last import, when present. */
+  sourceHash: string | null;
+}
+
+/**
+ * Computes a stable content hash for a note so re-importing an unchanged note is a
+ * no-op. Combines the body with the sorted tag set: a change to either the text or
+ * the note's tags produces a new hash and triggers an update.
+ */
+function computeSourceHash(content: string, tags: string[]): string {
+  const sortedTags = [...tags].sort((a, b) => a.localeCompare(b)).join(",");
+  return createHash("sha256").update(`${content}\n${sortedTags}`).digest("hex");
+}
+
+/** Resolve the vault path from either a live connection or an ad-hoc import source. */
+function resolveVaultPath(source: ParachuteImportSource): string | undefined {
+  if (!source) return undefined;
+  if ("config" in source) {
+    return source.config.vaultPath?.trim() || undefined;
+  }
+  return source.vaultPath?.trim() || undefined;
+}
+
+async function findSyncedResourceRow(
   ownerId: string,
   externalId: string,
-): Promise<string | null> {
+): Promise<SyncedResourceRow | null> {
   const [row] = await db
-    .select({ id: resources.id })
+    .select({
+      id: resources.id,
+      sourceHash: sql<
+        string | null
+      >`${resources.metadata}->'parachute'->>'sourceHash'`,
+    })
     .from(resources)
     .where(
       and(
@@ -28,7 +86,8 @@ async function findSyncedResourceId(
     )
     .limit(1);
 
-  return row?.id ?? null;
+  if (!row) return null;
+  return { id: row.id, sourceHash: row.sourceHash ?? null };
 }
 
 async function countSyncedResources(ownerId: string): Promise<number> {
@@ -84,22 +143,41 @@ function extractTitle(path: string): string {
 /**
  * Import a single Parachute file as a resource.
  *
- * Uses the file path as the external ID for upsert deduplication.
+ * Uses the file path as the external ID for upsert deduplication. The faceted
+ * location merges BOTH hierarchy signals Parachute expresses (T2.5):
+ *   1. the folder path (`work/projects/rivr/spec.md` → `work/projects/rivr`), and
+ *   2. the note's explicit slash-nested tags (`work/projects/rivr`, `status/draft`).
+ * The merged tag-paths persist under `metadata.facetedTags` and project — with the
+ * provider markers — into the flat `tags` column for existing search.
+ *
+ * Re-import is idempotent: a `metadata.parachute.sourceHash` over the body+tags lets
+ * an unchanged note short-circuit to `"skipped"` (no rewrite, no re-embed); a changed
+ * note updates in place by path; a new path is created.
  */
 export async function importParachuteFile(
   userId: string,
-  file: { path: string; content: string; mimeType?: string },
+  file: ParachuteImportFile,
   vaultPath?: string,
-): Promise<"created" | "updated"> {
-  const existingId = await findSyncedResourceId(userId, file.path);
+): Promise<"created" | "updated" | "skipped"> {
+  const existing = await findSyncedResourceRow(userId, file.path);
   const now = new Date();
   const title = extractTitle(file.path);
   const contentType = inferContentType(file.mimeType, file.path);
 
-  // The vault folder structure IS the faceted hierarchy (T2.5): persist the
-  // path-derived tag-paths under metadata.facetedTags and project them — plus
-  // the provider markers — into the flat `tags` column for existing search.
-  const facetedTags = facetedTagsFromVaultPath(file.path);
+  // Merge folder-derived facets with the note's explicit (possibly slash-nested)
+  // tags. normalizeFacetedTags accepts the mixed TagPath[] / string[] input and
+  // dedups, so path facets and tag facets collapse cleanly into one set.
+  const facetedTags = normalizeFacetedTags([
+    ...facetedTagsFromVaultPath(file.path),
+    ...(file.tags ?? []),
+  ]);
+  const sourceHash = computeSourceHash(file.content, file.tags ?? []);
+
+  // Skip-unchanged: an existing note whose stored hash matches is a no-op.
+  if (existing && existing.sourceHash === sourceHash) {
+    return "skipped";
+  }
+
   const baseMetadata: Record<string, unknown> = {
     entityType: "document",
     resourceKind: "document",
@@ -112,6 +190,17 @@ export async function importParachuteFile(
       ...(vaultPath ? { vaultPath } : {}),
       importedAt: now.toISOString(),
     },
+    // Richer provenance + idempotency key. Links are captured for provenance
+    // only — they are NOT materialized as RIVR ledger edges (v1 non-goal).
+    parachute: {
+      ...(vaultPath ? { vaultPath } : {}),
+      importedAt: now.toISOString(),
+      sourceHash,
+      ...(file.frontmatter && Object.keys(file.frontmatter).length > 0
+        ? { frontmatter: file.frontmatter }
+        : {}),
+      ...(file.links && file.links.length > 0 ? { links: file.links } : {}),
+    },
   };
   const metadata = serializeFacetedTagsToMetadata(baseMetadata, facetedTags);
   const tags = [
@@ -121,7 +210,7 @@ export async function importParachuteFile(
     ...flattenFacetedTags(facetedTags),
   ];
 
-  if (existingId) {
+  if (existing) {
     await db
       .update(resources)
       .set({
@@ -133,7 +222,7 @@ export async function importParachuteFile(
         metadata,
         updatedAt: now,
       })
-      .where(eq(resources.id, existingId));
+      .where(eq(resources.id, existing.id));
     return "updated";
   }
 
@@ -153,28 +242,34 @@ export async function importParachuteFile(
 
 /**
  * Batch import multiple Parachute files.
+ *
+ * The `source` may be a live {@link AutobotConnection} (connector sync) or a plain
+ * `{ vaultPath }` object (the ad-hoc upload / daemon-pull import endpoint), so the
+ * import route can call this without fabricating a full connection object.
  */
 export async function importParachuteBatch(
   userId: string,
-  files: Array<{ path: string; content: string; mimeType?: string }>,
-  connection: AutobotConnection,
+  files: ParachuteImportFile[],
+  source?: ParachuteImportSource,
 ): Promise<ConnectorSyncResult> {
-  const vaultPath = connection.config.vaultPath?.trim() || undefined;
+  const vaultPath = resolveVaultPath(source);
   let imported = 0;
   let updated = 0;
+  let skipped = 0;
 
   for (const file of files) {
     const status = await importParachuteFile(userId, file, vaultPath);
     if (status === "created") imported += 1;
-    else updated += 1;
+    else if (status === "updated") updated += 1;
+    else skipped += 1;
   }
 
   return {
     provider: "parachute_vault",
     imported,
     updated,
-    skipped: 0,
-    message: `Batch imported ${files.length} Parachute file${files.length === 1 ? "" : "s"}: ${imported} created, ${updated} updated.`,
+    skipped,
+    message: `Batch imported ${files.length} Parachute file${files.length === 1 ? "" : "s"}: ${imported} created, ${updated} updated, ${skipped} skipped.`,
     accountLabel: "Parachute Vault",
     externalAccountId: vaultPath ?? "vault",
   };

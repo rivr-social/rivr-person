@@ -209,6 +209,29 @@ public/locale-visible subset. The viewer-aware filtering lives in
   anonymous viewer sees only public posts, the owner still sees their own
   private posts, and visibility filtering precedes the limit.
 
+### Parachute vault import (Docs → Filesystem → "Import vault")
+
+Owner-only ingress that turns a Parachute/Obsidian markdown vault into private,
+faceted-tag doc Resources (the same rows the Tags view / `faceted-fs` render).
+
+- **Route:** `POST /api/agent-hq/parachute-import` — gated by
+  `assertAgentHqAccess()` (sovereign-only) **plus** a `PRIMARY_AGENT_ID` owner
+  check. Discriminated body: `{ mode: "files", files: [{ path, content }] }`
+  (browser `webkitdirectory` upload) or `{ mode: "daemon", url, token, vaultName? }`
+  (server-side pull of a running daemon's `GET /notes`, `Bearer pvt_…`). SSRF
+  guard + size/count caps mirror `builder/import-solid`. Returns
+  `{ imported, updated, skipped }`.
+- **Parser:** `src/lib/parachute-vault-md.ts` — dependency-free frontmatter +
+  `#nested/tag` extractor (port of `repos/parachute/core/src/obsidian.ts`).
+- **Mapping:** `src/lib/autobot-parachute-sync.ts` `importParachuteFile` merges
+  folder-path facets WITH explicit note tags, stamps `metadata.parachute`
+  (`sourceHash`, `frontmatter`, `links`) for provenance + idempotent re-import
+  (unchanged notes return `"skipped"`).
+- **UI:** `src/components/parachute-import-dialog.tsx`, opened from the "Import
+  vault" button in `documents-tab.tsx` (personal docs only).
+- **Tests:** `src/lib/__tests__/parachute-vault-md.test.ts`,
+  `src/lib/__tests__/autobot-parachute-sync.test.ts` (run under Node ≥22).
+
 ## Development
 
 ```bash

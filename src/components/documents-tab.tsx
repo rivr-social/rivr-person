@@ -20,13 +20,14 @@ import type { Document } from "@/types/domain"
 import { DocumentList } from "./document-list"
 import { DocumentViewer } from "./document-viewer"
 import { EmptyState } from "./empty-state"
-import { ChevronDown, ChevronRight, FileText, FolderOpen, Loader2, Upload } from "lucide-react"
+import { ChevronDown, ChevronRight, FileText, FolderInput, FolderOpen, Loader2, Upload } from "lucide-react"
 import { createDocumentResourceAction, createPersonalDocumentAction } from "@/app/actions/create-resources"
 import { useToast } from "@/components/ui/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ResourceAclPanel } from "@/components/resource-acl-panel"
 import { FacetedVaultPanel } from "@/components/faceted-vault-panel"
+import { ParachuteImportDialog } from "@/components/parachute-import-dialog"
 
 type DocViewMode = "documents" | "filesystem" | "vault"
 
@@ -133,6 +134,7 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
   const [fsMessage, setFsMessage] = useState<string | null>(null)
   const [aclResource, setAclResource] = useState<{ id: string; name: string } | null>(null)
   const [fsUploading, setFsUploading] = useState(false)
+  const [importVaultOpen, setImportVaultOpen] = useState(false)
   const uploadInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -542,6 +544,13 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
 
   return (
     <div className="space-y-4">
+      {isPersonal ? (
+        <ParachuteImportDialog
+          open={importVaultOpen}
+          onOpenChange={setImportVaultOpen}
+          onImported={() => void loadDbRoot()}
+        />
+      ) : null}
       <div className="flex items-center gap-2">
         <Button
           variant={viewMode === "documents" ? "default" : "outline"}
@@ -633,20 +642,33 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
                   event.target.value = ""
                 }}
               />
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => uploadInputRef.current?.click()}
-                disabled={fsUploading}
-              >
-                {fsUploading ? (
-                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Upload className="mr-1 h-3.5 w-3.5" />
-                )}
-                Upload file
-              </Button>
+              <div className="flex items-center gap-1.5">
+                {isPersonal ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setImportVaultOpen(true)}
+                  >
+                    <FolderInput className="mr-1 h-3.5 w-3.5" />
+                    Import vault
+                  </Button>
+                ) : null}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => uploadInputRef.current?.click()}
+                  disabled={fsUploading}
+                >
+                  {fsUploading ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  Upload file
+                </Button>
+              </div>
             </div>
             <div className="max-h-[520px] space-y-1 overflow-y-auto rounded-md border bg-muted/20 p-2">
               <FilesystemTree
