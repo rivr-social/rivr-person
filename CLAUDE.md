@@ -232,6 +232,36 @@ faceted-tag doc Resources (the same rows the Tags view / `faceted-fs` render).
 - **Tests:** `src/lib/__tests__/parachute-vault-md.test.ts`,
   `src/lib/__tests__/autobot-parachute-sync.test.ts` (run under Node ≥22).
 
+### Builder: publish → serve on custom domains
+
+The site builder can publish a workspace and serve it on the user's own domain
+(e.g. `camalot.me`) straight from this instance — no GitHub/external host.
+
+- **Storage-backed publish:** `POST /api/builder/publish` snapshots the current
+  workspace files into a `site_versions` row **and** writes them to MinIO under
+  `site-publications/<id>/…` (see `src/lib/builder/site-publish-storage.ts`),
+  then upserts a `site_publications` row (migration `0057_site_publications.sql`;
+  home-authority, never federated).
+- **Host-dispatch serving:** `src/middleware.ts` rewrites any request whose
+  `Host` is not one of this instance's own app hosts to
+  `src/app/site-host/[[...path]]/route.ts`, which resolves the bound
+  `custom_domain` (`resolveBoundPublicationByHost`) and streams the file from
+  MinIO with a minimal per-site CSP + 404 fallback. Disabled fail-safe when no
+  `NEXT_PUBLIC_BASE_URL`/`BASE_URL`/`NEXTAUTH_URL` is set.
+- **Custom-domain panel:** `src/components/custom-domain-panel.tsx` in the
+  builder Deploy tab — publish, show required A/CNAME records, Verify (node:dns
+  vs the app host), Bind, and one-click **Set DNS for me** via a connected
+  Cloudflare/Namecheap connector (`src/lib/builder/dns-write.ts`; creds decrypted
+  server-side from the autobot connector lane, never client-supplied).
+- **Service/pure split:** DB + storage in `src/lib/builder/site-publications.ts`;
+  pure host-match + DNS-verify (unit-tested, no DB) in
+  `src/lib/builder/site-host-resolve.ts`. Routes owner-gated via
+  `src/lib/builder/site-owner.ts` (session + `PRIMARY_AGENT_ID`).
+- **Distinct from `domain_configs`** (`/api/settings/domain`), which points a
+  domain at the whole instance via Traefik. See `docs/CUSTOM_DOMAINS.md` for the
+  required Traefik catch-all router + HTTP-01 cert snippet.
+- **Tests:** `src/lib/builder/__tests__/{dns-write,site-host-resolve}.test.ts`.
+
 ## Development
 
 ```bash

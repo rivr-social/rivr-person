@@ -68,6 +68,7 @@ import type {
   BuilderDataSource,
 } from "@/lib/bespoke/types";
 import { GitHubDeploySettings } from "@/components/github-deploy-settings";
+import { CustomDomainPanel } from "@/components/custom-domain-panel";
 import { BuilderTablesPanel } from "@/components/builder-tables-panel";
 import { BuilderReaScopePicker } from "@/components/builder-rea-scope-picker";
 
@@ -2969,8 +2970,11 @@ export default function BuilderPage() {
 
               {/* ----- DEPLOY PANEL ----- */}
               {rightPanelView === "deploy" && (
-                <div className="flex-1 overflow-y-auto p-4">
+                <div className="flex-1 overflow-y-auto p-4 space-y-6">
                   <GitHubDeploySettings />
+                  <div className="border-t pt-6">
+                    <CustomDomainPanel siteFiles={siteFiles} />
+                  </div>
                 </div>
               )}
 

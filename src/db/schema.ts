@@ -1825,6 +1825,62 @@ export type SiteVersionRecord = typeof siteVersions.$inferSelect;
 export type NewSiteVersionRecord = typeof siteVersions.$inferInsert;
 
 /**
+ * Site publications — the current *published* builder site per owner agent,
+ * plus its optional custom-domain binding (host-dispatch serving).
+ *
+ * Publishing snapshots the workspace files into a {@link siteVersions} row AND
+ * writes those files into MinIO under `storagePrefix` (in `storageBucket`).
+ * Host-dispatch (`/site-host`) resolves an incoming foreign Host header to the
+ * matching bound `customDomain` and streams the requested file from storage.
+ *
+ * No secrets are stored here: the DNS-write credential lives only on the agent's
+ * autobot connector lane (encrypted at rest via autobot-connector-secrets).
+ * Home-authority (per-instance); never federated. Distinct from
+ * {@link domainConfigs}, which points a domain at the whole sovereign instance
+ * (Traefik router) rather than at a builder-published static site.
+ * Created by migration 0057_site_publications.
+ */
+export const sitePublications = pgTable(
+  'site_publications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /** The published version snapshot (nulled if that version is pruned). */
+    publishedVersionId: uuid('published_version_id').references(() => siteVersions.id, {
+      onDelete: 'set null',
+    }),
+    publishedVersionNumber: integer('published_version_number'),
+    /** MinIO bucket the published files live in. */
+    storageBucket: text('storage_bucket'),
+    /** Object-key prefix (e.g. `site-publications/<id>/`) for the published files. */
+    storagePrefix: text('storage_prefix'),
+    /** List of published file paths (relative), for manifest/404 awareness. */
+    fileManifest: jsonb('file_manifest').$type<string[]>().default([]).notNull(),
+    theme: text('theme'),
+    /** Bound custom domain (lowercased fqdn), or null when unbound. */
+    customDomain: text('custom_domain'),
+    /** DNS-write provider used to bind (cloudflare/namecheap/squarespace). */
+    domainProvider: text('domain_provider'),
+    /** unbound | pending | bound | error | manual. */
+    domainStatus: text('domain_status').notNull().default('unbound'),
+    domainError: text('domain_error'),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('site_publications_agent_id_idx').on(table.agentId),
+    uniqueIndex('site_publications_custom_domain_idx').on(table.customDomain),
+  ]
+);
+
+export type SitePublicationRecord = typeof sitePublications.$inferSelect;
+export type NewSitePublicationRecord = typeof sitePublications.$inferInsert;
+
+/**
  * Domain verification status enum for custom domain configuration.
  * Tracks the lifecycle of a custom domain from initial setup to active use.
  */
