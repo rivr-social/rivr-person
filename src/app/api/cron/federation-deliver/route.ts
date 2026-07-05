@@ -40,7 +40,7 @@ import {
   listExportableEvents,
   markEventsExported,
 } from "@/lib/federation";
-import { signPayload } from "@/lib/federation-crypto";
+import { buildEnvelopeToSign, signPayload } from "@/lib/federation-crypto";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import {
   STATUS_INTERNAL_ERROR,
@@ -127,22 +127,48 @@ function resolvePeerAuth(peerSlug: string): { mode: "peer" | "admin"; secret: st
 function buildImportBody(
   fromPeerSlug: string,
   events: Awaited<ReturnType<typeof listExportableEvents>>,
+  nodePrivateKey?: string | null,
 ) {
   return {
     fromPeerSlug,
-    events: events.map((e) => ({
-      id: e.id,
-      entityId: e.entityId,
-      actorId: e.actorId,
-      entityType: e.entityType,
-      eventType: e.eventType,
-      visibility: e.visibility,
-      payload: e.payload ?? {},
-      signature: e.signature ?? undefined,
-      nonce: e.nonce ?? undefined,
-      eventVersion: e.eventVersion ?? undefined,
-      createdAt: e.createdAt?.toISOString(),
-    })),
+    events: events.map((e) => {
+      const createdAt = e.createdAt?.toISOString();
+      // Envelope signature (F6/#138) over the full envelope, computed at the
+      // wire boundary (not persisted). `originNodeId` (sender's own node id) is
+      // included on the wire so the receiver can reconstruct + verify it.
+      const envelopeSignature = nodePrivateKey
+        ? signPayload(
+            buildEnvelopeToSign({
+              id: e.id,
+              originNodeId: e.originNodeId,
+              entityType: e.entityType,
+              entityId: e.entityId,
+              eventType: e.eventType,
+              visibility: e.visibility,
+              nonce: e.nonce,
+              eventVersion: e.eventVersion,
+              createdAt,
+              payload: e.payload as Record<string, unknown> | null,
+            }),
+            nodePrivateKey,
+          )
+        : undefined;
+      return {
+        id: e.id,
+        originNodeId: e.originNodeId,
+        entityId: e.entityId,
+        actorId: e.actorId,
+        entityType: e.entityType,
+        eventType: e.eventType,
+        visibility: e.visibility,
+        payload: e.payload ?? {},
+        signature: e.signature ?? undefined,
+        envelopeSignature,
+        nonce: e.nonce ?? undefined,
+        eventVersion: e.eventVersion ?? undefined,
+        createdAt,
+      };
+    }),
   };
 }
 
@@ -322,7 +348,7 @@ export async function POST(request: NextRequest) {
           }
         }),
       );
-      const body = buildImportBody(config.instanceSlug, eventsForDelivery);
+      const body = buildImportBody(config.instanceSlug, eventsForDelivery, localNode.privateKey);
       const outcome = await postBatchToPeer({
         peerBaseUrl: peer.peerBaseUrl,
         body,

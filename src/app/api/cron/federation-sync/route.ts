@@ -104,6 +104,7 @@ interface PeerSyncResult {
 interface PeerEventDto {
   id?: string;
   sequence?: number | null;
+  originNodeId?: string | null;
   entityType: string;
   entityId?: string | null;
   eventType: string;
@@ -111,6 +112,7 @@ interface PeerEventDto {
   visibility: VisibilityLevel;
   payload: Record<string, unknown>;
   signature?: string | null;
+  envelopeSignature?: string | null;
   nonce?: string | null;
   eventVersion?: number | null;
   createdAt?: string;
@@ -251,6 +253,7 @@ export async function GET(request: NextRequest) {
           fromPeerSlug: peer.peerSlug,
           events: fetched.map((e) => ({
             id: e.id,
+            originNodeId: e.originNodeId ?? undefined,
             entityId: e.entityId ?? null,
             actorId: e.actorId ?? null,
             entityType: e.entityType,
@@ -258,6 +261,7 @@ export async function GET(request: NextRequest) {
             visibility: e.visibility,
             payload: e.payload ?? {},
             signature: e.signature ?? undefined,
+            envelopeSignature: e.envelopeSignature ?? undefined,
             nonce: e.nonce ?? undefined,
             eventVersion: e.eventVersion ?? undefined,
             createdAt: e.createdAt,
