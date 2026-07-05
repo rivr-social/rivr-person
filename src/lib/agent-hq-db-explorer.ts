@@ -27,10 +27,31 @@ export interface AgentHqDbEntry {
   size: number;
 }
 
+import { GROUP_LIKE_OWNER_AGENT_TYPES } from "@/app/actions/resource-creation/types";
+import {
+  MEMBERSHIP_VERBS,
+  MEMBER_VISIBLE_LEVELS,
+  membershipVerbLabel,
+  strongerMembershipVerb,
+  type AgentHqRelationship,
+  type MembershipVerb,
+} from "@/lib/agent-hq-scope";
+
+export type { AgentHqRelationship } from "@/lib/agent-hq-scope";
+
 interface AgentHqDbViewerContext {
   userId: string;
   personaIds: string[];
+  /** Group-like agents the viewer administers (own/manage) — full manage scope. */
+  adminGroupIds: string[];
+  /** Group-like agents the viewer belongs to (join/belong) — read-only scope. */
+  memberGroupIds: string[];
+  /** userId + personas + admin groups — the WRITE/manage scope. */
   allOwnerIds: string[];
+  /** allOwnerIds + memberGroupIds — everything the viewer may browse. */
+  browsableIds: string[];
+  /** Relationship label per browsable agent id. */
+  relationships: Record<string, AgentHqRelationship>;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,15 +59,20 @@ interface AgentHqDbViewerContext {
 // ---------------------------------------------------------------------------
 
 const AGENTS_MD_DESCRIPTIONS: Record<string, string> = {
-  root: "Each folder represents an agent or persona. The primary agent is marked (self).",
+  root: "Each folder is one of your identities (yourself + personas). Open one to browse its resources, ledger, related agents, and sessions.",
   resources: "Resources are owned content items: documents, listings, posts, events.",
   ledger: "Ledger entries track actions (create, join, update, etc.) performed by this agent.",
-  agents: "Sub-agents and personas owned by this agent.",
+  agents:
+    "Agents related to this identity. Groups are agents: (admin) = you manage it (full scope), (member) = you belong to it (read-only), personas are yours.",
   sessions: "LLM session context folders. Each session folder contains files appended via the Agent HQ explorer.",
 };
 
 function agentsMdForAgentRoot(agentName: string): string {
-  return `This is ${agentName}'s scope. soul.md defines identity. heartbeat.md shows live status and notes. resources/ contains owned content. ledger/ tracks actions. agents/ lists sub-agents. sessions/ shows active LLM session contexts.`;
+  return `This is ${agentName}'s scope. soul.md defines identity. heartbeat.md shows live status and notes. resources/ contains owned content. ledger/ tracks actions. agents/ lists related agents — personas plus the groups this identity belongs to or manages (groups are agents). sessions/ shows active LLM session contexts.`;
+}
+
+function agentsMdForMemberScope(agentName: string): string {
+  return `This is ${agentName}'s scope. You are a member (not a manager), so this is read-only: resources/ lists what your membership lets you see. Permission management is available to the group's admins.`;
 }
 
 function agentsMdForResourceType(typeName: string): string {
@@ -159,7 +185,76 @@ async function getViewerContext(): Promise<AgentHqDbViewerContext> {
       ),
     );
   const personaIds = personaRows.map((row) => row.id);
-  return { userId, personaIds, allOwnerIds: [userId, ...personaIds] };
+
+  // Group-like agents the viewer ADMINISTERS (active own/manage edges) — full
+  // manage scope. Groups are agents; this surfaces them under agents/.
+  const manageRows = await db
+    .selectDistinct({ groupId: ledger.objectId })
+    .from(ledger)
+    .innerJoin(agents, eq(agents.id, ledger.objectId))
+    .where(
+      and(
+        eq(ledger.subjectId, userId),
+        inArray(ledger.verb, ["own", "manage"]),
+        eq(ledger.isActive, true),
+        inArray(agents.type, [...GROUP_LIKE_OWNER_AGENT_TYPES]),
+        isNull(agents.deletedAt),
+      ),
+    );
+  const adminGroupIds = [
+    ...new Set(manageRows.map((row) => row.groupId).filter((id): id is string => Boolean(id))),
+  ];
+
+  // Group-like agents the viewer BELONGS to (join/belong) without managing —
+  // read-only scopes.
+  const memberRows = await db
+    .selectDistinct({ groupId: ledger.objectId })
+    .from(ledger)
+    .innerJoin(agents, eq(agents.id, ledger.objectId))
+    .where(
+      and(
+        eq(ledger.subjectId, userId),
+        inArray(ledger.verb, ["join", "belong"]),
+        eq(ledger.isActive, true),
+        inArray(agents.type, [...GROUP_LIKE_OWNER_AGENT_TYPES]),
+        isNull(agents.deletedAt),
+      ),
+    );
+  const adminSet = new Set(adminGroupIds);
+  const memberGroupIds = [
+    ...new Set(
+      memberRows
+        .map((row) => row.groupId)
+        .filter((id): id is string => Boolean(id) && !adminSet.has(id as string)),
+    ),
+  ];
+
+  const allOwnerIds = [...new Set([userId, ...personaIds, ...adminGroupIds])];
+  const browsableIds = [...new Set([...allOwnerIds, ...memberGroupIds])];
+  const relationships: Record<string, AgentHqRelationship> = {};
+  relationships[userId] = "self";
+  for (const id of personaIds) relationships[id] = relationships[id] ?? "persona";
+  for (const id of adminGroupIds) relationships[id] = relationships[id] ?? "admin";
+  for (const id of memberGroupIds) relationships[id] = relationships[id] ?? "member";
+
+  return { userId, personaIds, adminGroupIds, memberGroupIds, allOwnerIds, browsableIds, relationships };
+}
+
+/**
+ * Visibility levels a plain group MEMBER may see when browsing a group scope
+ * read-only. Private stays owner/grant-gated.
+ */
+function memberScopeResourceFilter(groupId: string, viewerGrantIds: string[]) {
+  const visible = and(
+    eq(resources.ownerId, groupId),
+    inArray(resources.visibility, [...MEMBER_VISIBLE_LEVELS]),
+  );
+  return and(
+    viewerGrantIds.length > 0
+      ? or(visible, and(eq(resources.ownerId, groupId), inArray(resources.id, viewerGrantIds)))
+      : visible,
+    isNull(resources.deletedAt),
+  );
 }
 
 /**
@@ -198,12 +293,14 @@ export async function listDbEntries(relativePath = ""): Promise<{
   const ctx = await getViewerContext();
   const { safeRelative, segments } = splitPath(relativePath);
 
-  // ---- Root: list agents/personas as top-level folders ----
+  // ---- Root: the viewer's identities (self + personas). Groups are agents —
+  // they live under an identity's agents/ folder, not at the root. ----
   if (segments.length === 0) {
+    const identityIds = [ctx.userId, ...ctx.personaIds];
     const dbRows = await db
       .select({ id: agents.id, name: agents.name, type: agents.type, parentAgentId: agents.parentAgentId })
       .from(agents)
-      .where(and(inArray(agents.id, ctx.allOwnerIds), isNull(agents.deletedAt)));
+      .where(and(inArray(agents.id, identityIds), isNull(agents.deletedAt)));
 
     // Primary agent first, then personas sorted by name
     const primary = dbRows.find((r) => r.id === ctx.userId);
@@ -211,7 +308,7 @@ export async function listDbEntries(relativePath = ""): Promise<{
     const ordered = primary ? [primary, ...personas] : personas;
 
     const agentEntries = ordered.map((row) => ({
-      name: row.id === ctx.userId ? `${row.name || "Primary"} (self)` : row.name || row.id,
+      name: row.id === ctx.userId ? `${row.name || "Primary"} (self)` : `${row.name || row.id} (persona)`,
       path: `@${row.id}`,
       type: "directory" as const,
       size: 0,
@@ -227,17 +324,31 @@ export async function listDbEntries(relativePath = ""): Promise<{
   // ---- Per-agent scoped view: @{agentId}/... ----
   if (root.startsWith("@")) {
     const agentId = root.slice(1);
-    if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+    if (!ctx.browsableIds.includes(agentId)) throw new Error("Agent not found.");
+    // Member-only scopes (groups the viewer belongs to but does not manage)
+    // browse read-only: group resources only, no soul/heartbeat/ledger/sessions.
+    const isMemberScope = ctx.relationships[agentId] === "member";
 
     if (rest.length === 0) {
-      // List scoped sub-folders for this agent
-      await ensureAgentDocsFolder(agentId);
-      const hasSoul = agentSoulExists(agentId);
       const agentRow = await db.query.agents.findFirst({
         where: eq(agents.id, agentId),
         columns: { name: true },
       });
       const agentName = agentRow?.name || agentId;
+      if (isMemberScope) {
+        return {
+          relativePath: safeRelative,
+          entries: prependAgentsMd(
+            [{ name: "resources", path: `${root}/resources`, type: "directory", size: 0 }],
+            root,
+            "agent-root",
+            agentsMdForMemberScope(agentName),
+          ),
+        };
+      }
+      // List scoped sub-folders for this agent
+      await ensureAgentDocsFolder(agentId);
+      const hasSoul = agentSoulExists(agentId);
       const entries: AgentHqDbEntry[] = [];
       if (hasSoul) {
         entries.push({ name: "soul.md", path: `${root}/soul.md`, type: "file", size: 0 });
@@ -253,6 +364,9 @@ export async function listDbEntries(relativePath = ""): Promise<{
     }
 
     const [subRoot, ...subRest] = rest;
+    if (isMemberScope && subRoot !== "resources" && subRoot !== "agents.md") {
+      throw new Error("Members can browse this group's resources only.");
+    }
 
     // soul.md read is handled by readDbFile
 
@@ -273,19 +387,23 @@ export async function listDbEntries(relativePath = ""): Promise<{
     }
 
     if (subRoot === "resources") {
-      // Scoped resources for this agent: items it OWNS plus items explicitly
-      // shared WITH it via an active grant (T2.2 — any agent, incl personas).
+      // Owner/admin scope: items the agent OWNS plus items explicitly shared
+      // WITH it via an active grant (T2.2 — any agent, incl personas). Member
+      // scope: items the viewer's membership lets them see (member-visible
+      // levels + the viewer's own grants).
       const type = subRest[0];
       const id = subRest[1];
-      const sharedIds = await sharedResourceIdsForAgent(agentId);
+      const sharedIds = await sharedResourceIdsForAgent(isMemberScope ? ctx.userId : agentId);
       const ownedOrShared = (extra?: ReturnType<typeof eq>) =>
-        and(
-          sharedIds.length > 0
-            ? or(eq(resources.ownerId, agentId), inArray(resources.id, sharedIds))
-            : eq(resources.ownerId, agentId),
-          isNull(resources.deletedAt),
-          extra,
-        );
+        isMemberScope
+          ? and(memberScopeResourceFilter(agentId, sharedIds), extra)
+          : and(
+              sharedIds.length > 0
+                ? or(eq(resources.ownerId, agentId), inArray(resources.id, sharedIds))
+                : eq(resources.ownerId, agentId),
+              isNull(resources.deletedAt),
+              extra,
+            );
       if (!type) {
         const rows = await db
           .select({ type: resources.type })
@@ -408,39 +526,100 @@ export async function listDbEntries(relativePath = ""): Promise<{
     }
 
     if (subRoot === "agents") {
-      // Sub-agents: other agents owned by this agent (personas for primary, nothing for personas typically)
+      // Agents related to this identity: its children (personas/sub-agents) PLUS
+      // — for the viewer's own identities — every agent it holds an active
+      // membership edge to (own/manage/join/belong). Groups are agents: they
+      // appear here, labeled by relationship, and open as their own @scope.
       const type = subRest[0];
       const id = subRest[1];
+      const isIdentityScope =
+        ctx.relationships[agentId] === "self" || ctx.relationships[agentId] === "persona";
+
+      const relatedByIdVerb = new Map<string, MembershipVerb>();
+      if (isIdentityScope) {
+        const relatedRows = await db
+          .selectDistinct({ objectId: ledger.objectId, verb: ledger.verb })
+          .from(ledger)
+          .innerJoin(agents, eq(agents.id, ledger.objectId))
+          .where(
+            and(
+              eq(ledger.subjectId, agentId),
+              inArray(ledger.verb, [...MEMBERSHIP_VERBS]),
+              eq(ledger.isActive, true),
+              isNull(agents.deletedAt),
+            ),
+          );
+        for (const row of relatedRows) {
+          if (!row.objectId || row.objectId === agentId) continue;
+          relatedByIdVerb.set(
+            row.objectId,
+            strongerMembershipVerb(relatedByIdVerb.get(row.objectId), row.verb as MembershipVerb),
+          );
+        }
+      }
+      const relatedIds = [...relatedByIdVerb.keys()];
+
       if (!type) {
-        const rows = await db
+        const childRows = await db
           .select({ type: agents.type })
           .from(agents)
           .where(and(eq(agents.parentAgentId, agentId), isNull(agents.deletedAt)));
-        const presentTypes = new Set(rows.map((row) => row.type));
+        const relatedTypeRows = relatedIds.length
+          ? await db
+              .select({ type: agents.type })
+              .from(agents)
+              .where(and(inArray(agents.id, relatedIds), isNull(agents.deletedAt)))
+          : [];
+        const presentTypes = new Set([...childRows, ...relatedTypeRows].map((row) => row.type));
         if (presentTypes.size === 0) {
           return { relativePath: safeRelative, entries: [] };
         }
         return {
           relativePath: safeRelative,
-          entries: agentTypeEnum.enumValues
-            .filter((at) => presentTypes.has(at))
-            .sort((a, b) => a.localeCompare(b))
-            .map((at) => ({ name: at, path: `${root}/agents/${at}`, type: "directory" as const, size: 0 })),
+          entries: prependAgentsMd(
+            agentTypeEnum.enumValues
+              .filter((at) => presentTypes.has(at))
+              .sort((a, b) => a.localeCompare(b))
+              .map((at) => ({ name: at, path: `${root}/agents/${at}`, type: "directory" as const, size: 0 })),
+            `${root}/agents`,
+            "agents",
+          ),
         };
       }
       if (!id) {
-        const rows = await db
+        const typeValue = type as typeof agentTypeEnum.enumValues[number];
+        const childRows = await db
           .select({ id: agents.id, name: agents.name })
           .from(agents)
-          .where(and(eq(agents.parentAgentId, agentId), eq(agents.type, type as typeof agentTypeEnum.enumValues[number]), isNull(agents.deletedAt)));
-        return {
-          relativePath: safeRelative,
-          entries: rows.sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((row) => ({
+          .where(and(eq(agents.parentAgentId, agentId), eq(agents.type, typeValue), isNull(agents.deletedAt)));
+        const relatedRows = relatedIds.length
+          ? await db
+              .select({ id: agents.id, name: agents.name })
+              .from(agents)
+              .where(and(inArray(agents.id, relatedIds), eq(agents.type, typeValue), isNull(agents.deletedAt)))
+          : [];
+        const childIdSet = new Set(childRows.map((row) => row.id));
+        const entries: AgentHqDbEntry[] = [
+          ...childRows.map((row) => ({
             name: row.name || row.id,
             path: `${root}/agents/${type}/${row.id}`,
             type: "directory" as const,
             size: 0,
           })),
+          // Related agents open as their own scope (the entry path jumps to
+          // @{id}, where the viewer's relationship gates depth).
+          ...relatedRows
+            .filter((row) => !childIdSet.has(row.id))
+            .map((row) => ({
+              name: `${row.name || row.id} (${membershipVerbLabel(relatedByIdVerb.get(row.id))})`,
+              path: `@${row.id}`,
+              type: "directory" as const,
+              size: 0,
+            })),
+        ];
+        return {
+          relativePath: safeRelative,
+          entries: entries.sort((a, b) => a.name.localeCompare(b.name)),
         };
       }
       return {
@@ -705,9 +884,13 @@ export async function readDbFile(relativePath: string): Promise<{
   // ---- Per-agent scoped reads: @{agentId}/... ----
   if (root.startsWith("@")) {
     const agentId = root.slice(1);
-    if (!ctx.allOwnerIds.includes(agentId)) throw new Error("Agent not found.");
+    if (!ctx.browsableIds.includes(agentId)) throw new Error("Agent not found.");
+    const isMemberScope = ctx.relationships[agentId] === "member";
     const subParts = segments.slice(1);
     if (subParts.length === 0) throw new Error("File path is required.");
+    if (isMemberScope && subParts[0] !== "resources" && subParts[subParts.length - 1] !== "agents.md") {
+      throw new Error("Members can browse this group's resources only.");
+    }
 
     // agents.md virtual file — generate content dynamically based on path
     if (subParts[subParts.length - 1] === "agents.md") {
@@ -719,7 +902,9 @@ export async function readDbFile(relativePath: string): Promise<{
           where: eq(agents.id, agentId),
           columns: { name: true },
         });
-        mdContent = agentsMdForAgentRoot(agentRow?.name || agentId);
+        mdContent = isMemberScope
+          ? agentsMdForMemberScope(agentRow?.name || agentId)
+          : agentsMdForAgentRoot(agentRow?.name || agentId);
       } else if (dirParts[0] === "resources" && dirParts.length === 1) {
         mdContent = getAgentsMdContent("resources");
       } else if (dirParts[0] === "resources" && dirParts.length === 2) {
@@ -769,11 +954,15 @@ export async function readDbFile(relativePath: string): Promise<{
         rFile = subParts[4];
       }
       if (!rType || !rId || !rFile) throw new Error("Resource file path is required.");
-      // Owned by the scope agent OR explicitly shared with it (read-only).
-      const sharedIds = await sharedResourceIdsForAgent(agentId);
-      const resourceScope = sharedIds.includes(rId)
-        ? and(eq(resources.id, rId), isNull(resources.deletedAt))
-        : and(eq(resources.id, rId), eq(resources.ownerId, agentId), isNull(resources.deletedAt));
+      // Owner/admin scope: owned by the scope agent OR explicitly shared with
+      // it (read-only). Member scope: member-visible levels or the viewer's
+      // own grants only.
+      const sharedIds = await sharedResourceIdsForAgent(isMemberScope ? ctx.userId : agentId);
+      const resourceScope = isMemberScope
+        ? and(eq(resources.id, rId), memberScopeResourceFilter(agentId, sharedIds))
+        : sharedIds.includes(rId)
+          ? and(eq(resources.id, rId), isNull(resources.deletedAt))
+          : and(eq(resources.id, rId), eq(resources.ownerId, agentId), isNull(resources.deletedAt));
       const row = await db.query.resources.findFirst({
         where: resourceScope,
         columns: { id: true, name: true, type: true, description: true, content: true, contentType: true, ownerId: true, visibility: true, tags: true, metadata: true, updatedAt: true },
