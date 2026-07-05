@@ -367,9 +367,9 @@ export function ShareMenu({ post, className, onTriggerClick }: ShareMenuProps) {
           onPointerCancel={handlePointerCancel}
           onClick={handleTriggerClick}
           aria-label="Share post"
+          title="Share"
         >
-          <Share2 className="h-4 w-4 mr-2" />
-          Share
+          <Share2 className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56" sideOffset={4}>
