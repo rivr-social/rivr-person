@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch the Rivr builder app lifecycle queue
+
+[Path]
+DirectoryNotEmpty=/opt/rivr-person-workspace/.rivr-apps/queue
+MakeDirectory=yes
+Unit=rivr-app-broker.service
+
+[Install]
+WantedBy=multi-user.target

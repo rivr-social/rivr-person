@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertCircle,
+  Boxes,
   CheckCircle,
   ChevronDown,
   ChevronRight,
@@ -69,6 +70,7 @@ import type {
 } from "@/lib/bespoke/types";
 import { GitHubDeploySettings } from "@/components/github-deploy-settings";
 import { CustomDomainPanel } from "@/components/custom-domain-panel";
+import { BuilderAppsPanel } from "@/components/builder-apps-panel";
 import { BuilderTablesPanel } from "@/components/builder-tables-panel";
 import { BuilderReaScopePicker } from "@/components/builder-rea-scope-picker";
 
@@ -140,7 +142,7 @@ interface PendingImage {
 // Panels
 // ---------------------------------------------------------------------------
 
-type RightPanelView = "preview" | "files" | "data" | "history" | "deploy";
+type RightPanelView = "preview" | "files" | "data" | "history" | "deploy" | "apps";
 
 interface FileTreeNode {
   name: string;
@@ -2441,6 +2443,17 @@ export default function BuilderPage() {
               <GitBranch className="h-3.5 w-3.5" />
               Deploy
             </button>
+            <button
+              onClick={() => handleSelectRightPanelView("apps")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                rightPanelView === "apps"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              <Boxes className="h-3.5 w-3.5" />
+              Apps
+            </button>
 
             <div className="flex-1" />
 
@@ -3049,6 +3062,8 @@ export default function BuilderPage() {
                   </div>
                 </div>
               )}
+
+              {rightPanelView === "apps" && <BuilderAppsPanel />}
 
             </div>
           </div>
