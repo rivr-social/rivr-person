@@ -494,6 +494,9 @@ def deploy_static(app_id: str, manifest: dict, request: dict) -> None:
         run_result = docker([
             "run", "-d", "--name", name,
             *hardening_flags(manifest["resourceClass"]),
+            # nginx master must chown its temp dirs and setuid to the worker
+            # user — the same three caps the proven camalot-site lane grants.
+            "--cap-add", "CHOWN", "--cap-add", "SETGID", "--cap-add", "SETUID",
             "--read-only",
             "--tmpfs", "/var/cache/nginx:size=16m,mode=0755",
             "--tmpfs", "/var/run:size=1m,mode=0755",
@@ -844,15 +847,8 @@ def action_archive(app_id: str, request: dict) -> None:
     write_status(app_id, "archived", request)
 
 
-def action_delete(app_id: str, request: dict) -> None:
-    status_path = STATUS_DIR / f"{app_id}.json"
-    phase = None
-    if status_path.is_file():
-        try:
-            phase = json.loads(status_path.read_text(encoding="utf-8")).get("phase")
-        except (OSError, json.JSONDecodeError):
-            phase = None
-    if phase != "archived":
+def action_delete(app_id: str, request: dict, prior_phase: str | None) -> None:
+    if prior_phase != "archived":
         raise BrokerError("Delete requires the app to be archived first")
     if request.get("confirmToken") != app_id:
         raise BrokerError("Delete requires confirmToken equal to the appId")
@@ -961,6 +957,16 @@ def process_request(path: Path) -> None:
         if request.get("appId") != app_id:
             raise BrokerError("Request appId does not match queue entry")
         action = request["action"]
+        # Capture the phase from BEFORE this request: two-phase guards
+        # (archive → delete) must see the app's prior state, not the
+        # "validating" stamp written below.
+        prior_phase: str | None = None
+        status_path = STATUS_DIR / f"{app_id}.json"
+        if status_path.is_file():
+            try:
+                prior_phase = json.loads(status_path.read_text(encoding="utf-8")).get("phase")
+            except (OSError, json.JSONDecodeError):
+                prior_phase = None
         write_status(app_id, "validating", request)
 
         if action == "deploy":
@@ -978,7 +984,7 @@ def process_request(path: Path) -> None:
         elif action == "archive":
             action_archive(app_id, request)
         elif action == "delete":
-            action_delete(app_id, request)
+            action_delete(app_id, request, prior_phase)
     except BrokerError as error:
         write_status(app_id, "failed", request, error=str(error)[:STATUS_DETAIL_MAX_CHARS])
     except Exception as error:  # noqa: BLE001 — one bad request must not stop the queue
