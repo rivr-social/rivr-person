@@ -30,6 +30,7 @@ import type {
 import type { RoutingProvenance } from "@/lib/federation/write-router";
 import { toggleFollowAgent } from "@/app/actions/interactions/social";
 import { createEventResource } from "@/app/actions/resource-creation/events";
+import { deleteResource } from "@/app/actions/resource-creation/lifecycle";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import * as kg from "@/lib/kg/autobot-kg-client";
 
@@ -50,6 +51,7 @@ const KNOWN_MUTATION_TYPES = [
   "createComment",
   "toggleReaction",
   "applyMembershipProjection",
+  "deleteResource",
 ] as const;
 
 /** Federated interaction actions dispatched via the new interaction protocol */
@@ -681,6 +683,46 @@ async function handleLegacyMutation(
       instanceId: config.instanceId,
       ...(routedFrom ? { routedFrom: { originInstanceSlug: routedFrom.originInstanceSlug, originInstanceId: routedFrom.originInstanceId } } : {}),
     });
+  }
+
+  // Cross-instance resource DELETE (owner-routed: a peer forwards the acting
+  // user's delete of a resource homed HERE — e.g. deleting their own post from
+  // a projecting instance). The actor is already entity-map-normalized to a
+  // LOCAL agent by bindAuthorizedFederationActor; deleteResource re-derives
+  // authority via canModifyResource against THIS instance's graph, soft-deletes,
+  // and emits RESOURCE_DELETED so the deletion federates back out and clears
+  // peer projections. Mirrors the group/global receiver implementations.
+  if (type === "deleteResource") {
+    const resourceId =
+      payload && typeof payload === "object"
+        ? ((payload as Record<string, unknown>).resourceId as string | undefined)
+        : undefined;
+    if (!resourceId) {
+      return NextResponse.json(
+        { success: false, accepted: false, knownType: true, instanceId: config.instanceId, error: "resourceId is required" },
+        { status: 400 },
+      );
+    }
+    const result = await runWithFederationExecutionContext(authorizedActorId, () => deleteResource(resourceId));
+    return NextResponse.json(
+      {
+        success: result.success,
+        data: result,
+        accepted: result.success,
+        knownType: true,
+        instanceId: config.instanceId,
+        ...(result.success ? {} : { error: result.message, errorCode: result.error?.code }),
+        ...(routedFrom
+          ? {
+              routedFrom: {
+                originInstanceSlug: routedFrom.originInstanceSlug,
+                originInstanceId: routedFrom.originInstanceId,
+              },
+            }
+          : {}),
+      },
+      { status: result.success ? 200 : 403 },
+    );
   }
 
   // Honesty contract (rivr-person#31): mutation types without a real dispatch
