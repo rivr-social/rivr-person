@@ -1,0 +1,46 @@
+{
+  "$schema": "../../foundation/schemas/module.schema.json",
+  "id": "rivr-person",
+  "version": "1.0.0",
+  "name": "RIVR Person App",
+  "description": "RIVR sovereign personal instance (autobot/MCP control plane). One module serves every person-codebase instance (e.g. bob, Camalot) — instances differ ONLY by .env. Image is digest-pinned in image.lock; no per-host build.",
+  "author": { "name": "RIVR" },
+  "license": "MIT",
+  "repository": "https://github.com/rivr-social/rivr-person",
+  "tags": ["rivr", "person", "sovereign", "autobot", "mcp"],
+  "foundation": { "minVersion": "1.0.0" },
+  "requires": {
+    "connections": [
+      { "type": "database", "providers": ["postgres"], "required": true, "alias": "rivr-db" },
+      { "type": "storage", "providers": ["minio", "s3"], "required": true, "alias": "rivr-objstore" }
+    ],
+    "modules": []
+  },
+  "provides": {
+    "events": [
+      "rivr-person.instance.started",
+      "rivr-person.instance.stopped",
+      "rivr-person.federation-sync.completed",
+      "rivr-person.federation-sync.failed"
+    ]
+  },
+  "lifecycle": {
+    "install": { "script": "./hooks/install.sh", "timeout": 120 },
+    "start": { "script": "./hooks/start.sh", "timeout": 120 },
+    "stop": { "script": "./hooks/stop.sh", "timeout": 60 },
+    "uninstall": "./hooks/uninstall.sh",
+    "health": { "script": "./hooks/health.sh", "timeout": 30 }
+  },
+  "config": {
+    "version": "1.0",
+    "required": ["domain", "instanceSlug", "dbName"],
+    "properties": {
+      "domain": { "type": "string", "env": "DOMAIN", "description": "Public host (e.g. bob.rivr.social)" },
+      "instanceSlug": { "type": "string", "env": "INSTANCE_SLUG", "pattern": "^[a-z0-9][a-z0-9_-]*$", "description": "Per-instance slug (e.g. person-bob, person-camalot)" },
+      "instanceType": { "type": "string", "default": "person", "enum": ["person"], "env": "INSTANCE_TYPE", "description": "RIVR instance type" },
+      "dbName": { "type": "string", "env": "RIVR_DB_NAME", "description": "Postgres database name (e.g. rivr_person_bob)" },
+      "nextauthUrl": { "type": "string", "env": "NEXTAUTH_URL", "description": "Absolute base URL for NextAuth" },
+      "imageRef": { "type": "string", "env": "RIVR_IMAGE", "description": "Digest-pinned image; supplied from image.lock by the deploy script. Do not hand-edit." }
+    }
+  }
+}
