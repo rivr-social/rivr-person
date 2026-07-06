@@ -128,6 +128,14 @@ interface ChatMessage {
   applied?: boolean;
 }
 
+interface PendingImage {
+  id: string;
+  name: string;
+  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  data: string;
+  previewUrl: string;
+}
+
 // ---------------------------------------------------------------------------
 // Panels
 // ---------------------------------------------------------------------------
@@ -342,6 +350,7 @@ export default function BuilderPage() {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
 
   // Deploy state
   const [deployStatus, setDeployStatus] = useState<DeployStatus>(DEPLOY_STATUS_IDLE);
@@ -825,17 +834,20 @@ export default function BuilderPage() {
 
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
+    if ((!trimmed && pendingImages.length === 0) || isStreaming) return;
+    const prompt = trimmed || "Use the attached image as visual context for this site change.";
 
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: trimmed,
+      content: prompt,
       timestamp: new Date(),
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    const requestImages = pendingImages;
+    setPendingImages([]);
     setIsStreaming(true);
     setStreamingText("");
 
@@ -850,7 +862,7 @@ export default function BuilderPage() {
       if (msg.id === "welcome") continue;
       conversationHistory.push({ role: msg.role, content: msg.content });
     }
-    conversationHistory.push({ role: "user", content: trimmed });
+    conversationHistory.push({ role: "user", content: prompt });
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -887,6 +899,7 @@ export default function BuilderPage() {
               .filter(([, v]) => v.data && !v.error)
               .map(([kind, v]) => [kind, v.data]),
           ),
+          attachments: requestImages.map(({ mediaType, data }) => ({ mediaType, data })),
         }),
         signal: controller.signal,
       });
@@ -973,7 +986,31 @@ export default function BuilderPage() {
         setActivePreviewFile("index.html");
       }
     }
-  }, [input, isStreaming, messages, bundle, siteFiles, targetWorkspaceId, workspaces, workspaceBasePath, dataSourcePreviews, dataSources]);
+  }, [input, pendingImages, isStreaming, messages, bundle, siteFiles, targetWorkspaceId, workspaces, workspaceBasePath, dataSourcePreviews, dataSources]);
+
+  const handleChatPaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    event.preventDefault();
+    for (const file of imageFiles.slice(0, Math.max(0, 4 - pendingImages.length))) {
+      if (file.size > 5 * 1024 * 1024) continue;
+      if (!["image/jpeg", "image/png", "image/gif", "image/webp"].includes(file.type)) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const previewUrl = typeof reader.result === "string" ? reader.result : "";
+        const data = previewUrl.split(",", 2)[1] ?? "";
+        if (!data) return;
+        setPendingImages((current) => current.length >= 4 ? current : [...current, {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          name: file.name || "pasted-image",
+          mediaType: file.type as PendingImage["mediaType"],
+          data,
+          previewUrl,
+        }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, [pendingImages.length]);
 
   // Cancel streaming
   const handleCancelStream = useCallback(() => {
@@ -2274,6 +2311,24 @@ export default function BuilderPage() {
 
           {/* Input area */}
           <div className="border-t px-3 py-2.5 bg-background">
+            {pendingImages.length > 0 && (
+              <div className="flex gap-2 pb-2 overflow-x-auto">
+                {pendingImages.map((image) => (
+                  <div key={image.id} className="relative shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={image.previewUrl} alt={image.name} className="h-16 w-16 rounded-md object-cover border" />
+                    <button
+                      type="button"
+                      aria-label={`Remove ${image.name}`}
+                      onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))}
+                      className="absolute -right-1 -top-1 rounded-full bg-background border p-0.5"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}
@@ -2283,6 +2338,7 @@ export default function BuilderPage() {
                   handleTextareaInput();
                 }}
                 onKeyDown={handleKeyDown}
+                onPaste={handleChatPaste}
                 placeholder={
                   targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT
                     ? `Describe changes for ${workspaces.find((w) => w.id === targetWorkspaceId)?.label ?? "workspace"}...`
@@ -2307,7 +2363,7 @@ export default function BuilderPage() {
                   variant="default"
                   size="sm"
                   onClick={handleSend}
-                  disabled={!input.trim()}
+                  disabled={!input.trim() && pendingImages.length === 0}
                   className="shrink-0 h-9"
                 >
                   <Send className="h-4 w-4" />

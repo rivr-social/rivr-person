@@ -56,6 +56,33 @@ interface ChatRequestBody {
   currentFiles: SiteFiles;
   workspaceContext?: WorkspaceContext;
   extraDataSources?: Record<string, unknown>;
+  attachments?: BuilderImageAttachment[];
+}
+
+interface BuilderImageAttachment {
+  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  data: string;
+}
+
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_BASE64_CHARS = 7_000_000;
+
+function validateAttachments(input: unknown): BuilderImageAttachment[] {
+  if (!Array.isArray(input)) return [];
+  const allowed = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+  const attachments: BuilderImageAttachment[] = [];
+  let totalChars = 0;
+  for (const item of input.slice(0, MAX_IMAGE_ATTACHMENTS)) {
+    if (!item || typeof item !== "object") continue;
+    const mediaType = (item as { mediaType?: unknown }).mediaType;
+    const data = (item as { data?: unknown }).data;
+    if (typeof mediaType !== "string" || !allowed.has(mediaType) || typeof data !== "string") continue;
+    if (!/^[A-Za-z0-9+/=]+$/.test(data)) continue;
+    totalChars += data.length;
+    if (totalChars > MAX_IMAGE_BASE64_CHARS) throw new Error("Attached images exceed the 5 MB request limit");
+    attachments.push({ mediaType: mediaType as BuilderImageAttachment["mediaType"], data });
+  }
+  return attachments;
 }
 
 type AIProvider = "anthropic" | "openai" | "gemini" | "ollama" | "none";
@@ -68,6 +95,7 @@ async function streamAnthropic(
   systemPrompt: string,
   messages: ChatMessage[],
   connectorToken?: string,
+  attachments: BuilderImageAttachment[] = [],
 ): Promise<ReadableStream<Uint8Array>> {
   // A4: the builder shares the assistant's Claude credential path. Resolve via
   // the OAuth chain (agent's claude_code connector token → claude-auth file →
@@ -75,9 +103,18 @@ async function streamAnthropic(
   // single pasted Claude Code token powers BOTH builder and chat.
   const token = await resolveClaudeOAuthToken(connectorToken);
 
-  const anthropicMessages = messages.map((m) => ({
+  const anthropicMessages = messages.map((m, index) => ({
     role: m.role,
-    content: m.content,
+    content:
+      index === messages.length - 1 && m.role === "user" && attachments.length > 0
+        ? [
+            ...attachments.map((attachment) => ({
+              type: "image" as const,
+              source: { type: "base64" as const, media_type: attachment.mediaType, data: attachment.data },
+            })),
+            { type: "text" as const, text: m.content },
+          ]
+        : m.content,
   }));
 
   // OAuth (Claude Max / Claude Code) credentials require the first system block
@@ -181,14 +218,24 @@ async function streamAnthropic(
 async function streamOpenAI(
   systemPrompt: string,
   messages: ChatMessage[],
+  attachments: BuilderImageAttachment[] = [],
 ): Promise<ReadableStream<Uint8Array>> {
   const apiKey = process.env.OPENAI_API_KEY!;
 
   const openaiMessages = [
     { role: "system" as const, content: systemPrompt },
-    ...messages.map((m) => ({
+    ...messages.map((m, index) => ({
       role: m.role as "user" | "assistant",
-      content: m.content,
+      content:
+        index === messages.length - 1 && m.role === "user" && attachments.length > 0
+          ? [
+              { type: "text" as const, text: m.content },
+              ...attachments.map((attachment) => ({
+                type: "image_url" as const,
+                image_url: { url: `data:${attachment.mediaType};base64,${attachment.data}` },
+              })),
+            ]
+          : m.content,
     })),
   ];
 
@@ -266,12 +313,21 @@ async function streamOpenAI(
 async function streamGemini(
   systemPrompt: string,
   messages: ChatMessage[],
+  attachments: BuilderImageAttachment[] = [],
 ): Promise<ReadableStream<Uint8Array>> {
   const apiKey = process.env.GOOGLE_AI_API_KEY!;
 
-  const contents = messages.map((m) => ({
+  const contents = messages.map((m, index) => ({
     role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
+    parts:
+      index === messages.length - 1 && m.role === "user" && attachments.length > 0
+        ? [
+            ...attachments.map((attachment) => ({
+              inline_data: { mime_type: attachment.mediaType, data: attachment.data },
+            })),
+            { text: m.content },
+          ]
+        : [{ text: m.content }],
   }));
 
   const response = await fetch(
@@ -345,10 +401,17 @@ async function streamGemini(
 async function streamOllamaBuilder(
   systemPrompt: string,
   messages: ChatMessage[],
+  attachments: BuilderImageAttachment[] = [],
 ): Promise<ReadableStream<Uint8Array>> {
   const ollamaMessages = [
     { role: "system", content: systemPrompt },
-    ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ...messages.map((m, index) => ({
+      role: m.role,
+      content: m.content,
+      ...(index === messages.length - 1 && m.role === "user" && attachments.length > 0
+        ? { images: attachments.map((attachment) => attachment.data) }
+        : {}),
+    })),
   ];
 
   const controller = new AbortController();
@@ -494,16 +557,17 @@ async function streamForProvider(
   systemPrompt: string,
   messages: ChatMessage[],
   connectorToken?: string,
+  attachments: BuilderImageAttachment[] = [],
 ): Promise<ReadableStream<Uint8Array>> {
   switch (provider) {
     case "anthropic":
-      return streamAnthropic(systemPrompt, messages, connectorToken);
+      return streamAnthropic(systemPrompt, messages, connectorToken, attachments);
     case "openai":
-      return streamOpenAI(systemPrompt, messages);
+      return streamOpenAI(systemPrompt, messages, attachments);
     case "gemini":
-      return streamGemini(systemPrompt, messages);
+      return streamGemini(systemPrompt, messages, attachments);
     case "ollama":
-      return streamOllamaBuilder(systemPrompt, messages);
+      return streamOllamaBuilder(systemPrompt, messages, attachments);
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }
@@ -566,6 +630,7 @@ export async function POST(request: Request): Promise<Response> {
       body.workspaceContext,
       body.extraDataSources,
     );
+    const attachments = validateAttachments(body.attachments);
 
     // Walk the fallback chain — try each provider, fall through on rate-limit
     let stream: ReadableStream<Uint8Array> | null = null;
@@ -578,6 +643,7 @@ export async function POST(request: Request): Promise<Response> {
           systemPrompt,
           body.messages,
           claudeConnectorToken,
+          attachments,
         );
         break;
       } catch (error) {
