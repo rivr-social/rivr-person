@@ -7,6 +7,7 @@ import { resolveHomeInstance } from "@/lib/federation/resolution";
 import {
   authorizeFederationRequest,
   bindAuthorizedFederationActor,
+  resolveLocalActorId,
 } from "@/lib/federation-auth";
 import { runWithFederationExecutionContext } from "@/lib/federation/execution-context";
 import { emitDomainEvent, EVENT_TYPES } from "@/lib/federation/domain-events";
@@ -30,7 +31,7 @@ import type {
 import type { RoutingProvenance } from "@/lib/federation/write-router";
 import { toggleFollowAgent } from "@/app/actions/interactions/social";
 import { createEventResource } from "@/app/actions/resource-creation/events";
-import { deleteResource } from "@/app/actions/resource-creation/lifecycle";
+import { deleteResource, updateResource } from "@/app/actions/resource-creation/lifecycle";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import * as kg from "@/lib/kg/autobot-kg-client";
 
@@ -52,6 +53,7 @@ const KNOWN_MUTATION_TYPES = [
   "toggleReaction",
   "applyMembershipProjection",
   "deleteResource",
+  "updateResource",
 ] as const;
 
 /** Federated interaction actions dispatched via the new interaction protocol */
@@ -273,6 +275,7 @@ export async function POST(request: Request) {
       remoteInstanceSlug,
       remoteInstanceId,
       routedFrom,
+      authorization.peerNodeId,
     );
   } catch (error) {
     console.error("[federation/mutations] Error processing mutation:", error);
@@ -589,8 +592,10 @@ async function handleLegacyMutation(
   remoteSlug: string,
   remoteId: string,
   routedFrom?: RoutingProvenance | null,
+  peerNodeId?: string,
 ): Promise<NextResponse> {
-  const { type, actorId, targetAgentId, payload } = body;
+  const { type, actorId, payload } = body;
+  let { targetAgentId } = body;
 
   if (!type || !actorId || !targetAgentId) {
     return NextResponse.json(
@@ -598,6 +603,13 @@ async function handleLegacyMutation(
       { status: 400 },
     );
   }
+
+  // Normalize the TARGET through the peer's entity map before the locality
+  // gate — identity-normalized agents carry DIFFERENT ids per instance (e.g.
+  // the sender's id for this instance's owner), so the raw forwarded id can be
+  // unknown here and would 421 as "not local" even though the target IS this
+  // instance's own agent. Read-only; unmapped ids pass through unchanged.
+  targetAgentId = await resolveLocalActorId(peerNodeId, targetAgentId);
 
   // Verify the target agent is local
   const homeInstance = await resolveHomeInstance(targetAgentId);
@@ -683,6 +695,49 @@ async function handleLegacyMutation(
       instanceId: config.instanceId,
       ...(routedFrom ? { routedFrom: { originInstanceSlug: routedFrom.originInstanceSlug, originInstanceId: routedFrom.originInstanceId } } : {}),
     });
+  }
+
+  // Cross-instance resource UPDATE (owner-routed: a peer forwards the acting
+  // user's edit of a resource homed HERE). Same trust shape as deleteResource
+  // below: the actor arrives entity-map-normalized; updateResource re-derives
+  // authority via canModifyResource against THIS instance's graph, applies the
+  // edit, and emits RESOURCE_UPDATED so peers refresh their projections.
+  // Cross-instance ownership transfer is NOT supported: a forwarded `ownerId`
+  // is stripped (it would reference the sender's agent namespace).
+  if (type === "updateResource") {
+    const input =
+      payload && typeof payload === "object" ? { ...(payload as Record<string, unknown>) } : null;
+    const resourceId = typeof input?.resourceId === "string" ? input.resourceId : null;
+    if (!input || !resourceId) {
+      return NextResponse.json(
+        { success: false, accepted: false, knownType: true, instanceId: config.instanceId, error: "resourceId is required" },
+        { status: 400 },
+      );
+    }
+    delete input.ownerId;
+    delete input.targetAgentId;
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
+      updateResource(input as unknown as Parameters<typeof updateResource>[0]),
+    );
+    return NextResponse.json(
+      {
+        success: result.success,
+        data: result,
+        accepted: result.success,
+        knownType: true,
+        instanceId: config.instanceId,
+        ...(result.success ? {} : { error: result.message, errorCode: result.error?.code }),
+        ...(routedFrom
+          ? {
+              routedFrom: {
+                originInstanceSlug: routedFrom.originInstanceSlug,
+                originInstanceId: routedFrom.originInstanceId,
+              },
+            }
+          : {}),
+      },
+      { status: result.success ? 200 : 403 },
+    );
   }
 
   // Cross-instance resource DELETE (owner-routed: a peer forwards the acting
