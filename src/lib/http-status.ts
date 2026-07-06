@@ -19,6 +19,8 @@
 export const STATUS_OK = 200;
 /** Resource created successfully (typically used for POST create endpoints). */
 export const STATUS_CREATED = 201;
+/** Request accepted for asynchronous processing (e.g. queued for a worker). */
+export const STATUS_ACCEPTED = 202;
 /** Request succeeded and intentionally returns no response body. */
 export const STATUS_NO_CONTENT = 204;
 

@@ -31,6 +31,29 @@ connectors. Available to both first-class users and groups (global homes both).
   group-admin); an owner id is never taken from the client.
 - Site publications are home-authority and are never federated.
 
+## Apps — build and run full applications (sovereign only)
+
+The builder's **Apps** tab manages full applications on this instance's own
+server, each served on its own subdomain (and optionally a verified custom
+domain). Every app is described by a typed `rivr-app.json` manifest — appId,
+runtime (`static` or `node-22`), resource class, optional Postgres database,
+secret *names*, health path — and driven through a queued lifecycle the host
+broker executes: **deploy / stop / start / rollback / archive / delete**
+(delete is two-phase: archive first, then confirm).
+
+- UI · the **Apps** panel in `/builder` (`src/components/builder-apps-panel.tsx`)
+- API · `GET/POST /api/builder/apps`, `GET /api/builder/apps/[appId]`,
+  `POST /api/builder/apps/[appId]/lifecycle`,
+  `GET/POST /api/builder/apps/[appId]/domains`
+- Contract · `src/lib/builder/{app-manifest,app-lifecycle,app-domains,app-templates}.ts`
+- Host broker · `tools/camalot/rivr-app-broker.py` (systemd path unit; builds
+  run in a resource-capped BuildKit container, apps run hardened with hard
+  CPU/RAM/PID/log limits, releases are retained with rollback)
+- Gating · owner-only + sovereign-only; the builder session never supplies
+  Docker/Compose/host material — only the typed manifest and lifecycle actions.
+- Custom domains · `bind` verifies DNS points at this instance first; the
+  broker re-verifies before routing, so a stale entry cannot capture traffic.
+
 ## Cross-links
 
 - API/MCP: [`/api/builder` REST](/docs/api) · [`/api/connections` REST](/docs/api) · [`/api/connectors` REST](/docs/api)

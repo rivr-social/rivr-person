@@ -9,3 +9,4 @@ tmp
 # build artifact — local typecheck output
 tsconfig.tsbuildinfo
 .understand-anything/
+__pycache__/
