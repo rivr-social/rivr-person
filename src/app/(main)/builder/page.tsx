@@ -1287,6 +1287,22 @@ export default function BuilderPage() {
 
         fileCount = data.filesWritten ?? fileCount;
         targetLabel = `${ws?.label ?? data.workspace?.label ?? targetWorkspaceId}${workspaceBasePath ? ` (${workspaceBasePath})` : ""}`;
+
+        const deployResponse = await fetch("/api/builder/workspace-deploy", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId: targetWorkspaceId }),
+        });
+        const deployData = (await deployResponse.json()) as {
+          success?: boolean;
+          error?: string;
+          queued?: boolean;
+        };
+        if (!deployResponse.ok || !deployData.success) {
+          throw new Error(deployData.error || "Workspace files were saved, but deployment could not be queued");
+        }
+        targetLabel = `${targetLabel} (deployment queued)`;
       } else {
         // Default sovereign deploy
         const response = await fetch("/api/builder/deploy", {
