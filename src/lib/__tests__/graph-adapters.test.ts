@@ -86,18 +86,26 @@ describe("agentToEvent — issue #6 date composition", () => {
     expect(event.timeframe.start).toBe(BASE_AGENT.createdAt);
   });
 
-  it("prefers an explicit endDate over endTime composition", () => {
+  it("composes the end datetime from endDate + endTime (bug fixed 2026-07-06)", () => {
     const event = agentToEvent({
       ...BASE_AGENT,
       type: "event",
       metadata: { date: "2026-08-01", time: "18:30", endDate: "2026-08-01", endTime: "21:00" },
     });
-    // PERSON contract (pinned as-is): an explicit endDate short-circuits and
-    // the stored endTime is IGNORED — divergence from group/locale/region,
-    // which compose `${endDate}T${endTime}`. Filed as a candidate bug in
-    // docs/active/open-issues.md; do not "fix" without checking the person
-    // event forms + calendar consumers.
-    expect(event.timeframe.end).toBe("2026-08-01");
+    // The create flow persists endDate (YYYY-MM-DD) + endTime (HH:MM) as a
+    // pair; resolveEventEnd previously returned bare endDate, collapsing the
+    // end to midnight. Now composed, matching resourceToEvent and the other
+    // four repos.
+    expect(event.timeframe.end).toBe("2026-08-01T21:00");
+  });
+
+  it("passes a legacy explicit-ISO endDate through unchanged", () => {
+    const event = agentToEvent({
+      ...BASE_AGENT,
+      type: "event",
+      metadata: { date: "2026-08-01", time: "18:30", endDate: "2026-08-01T20:00:00.000Z", endTime: "21:00" },
+    });
+    expect(event.timeframe.end).toBe("2026-08-01T20:00:00.000Z");
   });
 
   it("normalizes a string location into { name, address }", () => {
