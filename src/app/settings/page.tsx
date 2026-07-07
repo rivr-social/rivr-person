@@ -24,7 +24,8 @@ import { redirect } from "next/navigation";
 import { eq, and, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { SettingsForm, type SettingsInitialData } from "./settings-form";
+import type { SettingsInitialData } from "./settings-form";
+import { SettingsFormLazy } from "./settings-form-lazy";
 import { buildFederationIdentityStatus, type FederationIdentityStatus } from "@/lib/federation-identities";
 import { buildPersonInstanceSetupState, type PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { buildAppReleaseStatus, type AppReleaseStatus } from "@/lib/app-release";
@@ -182,23 +183,19 @@ export default async function SettingsPage() {
     profileTabVisibility: readProfileTabVisibility(metadata),
   };
 
-  let initialFederationStatus: FederationIdentityStatus | null = null;
-  try {
-    initialFederationStatus = await buildFederationIdentityStatus(currentUser.id);
-  } catch {
-    initialFederationStatus = null;
-  }
-
-  let initialAppReleaseStatus: AppReleaseStatus | null = null;
-  try {
-    initialAppReleaseStatus = await buildAppReleaseStatus({
+  // Independent status lookups — resolve in parallel instead of two serial
+  // hops; each degrades to null on failure exactly as before.
+  const [initialFederationStatus, initialAppReleaseStatus]: [
+    FederationIdentityStatus | null,
+    AppReleaseStatus | null,
+  ] = await Promise.all([
+    buildFederationIdentityStatus(currentUser.id).catch(() => null),
+    buildAppReleaseStatus({
       appName: "rivr-person",
       defaultVersion: "0.1.0",
       defaultUpstreamRepo: "rivr-social/rivr-monorepo",
-    });
-  } catch {
-    initialAppReleaseStatus = null;
-  }
+    }).catch(() => null),
+  ]);
 
   const initialPersonInstanceSetup: PersonInstanceSetupState = buildPersonInstanceSetupState({
     metadata,
@@ -208,7 +205,7 @@ export default async function SettingsPage() {
   });
 
   return (
-    <SettingsForm
+    <SettingsFormLazy
       initialData={initialData}
       initialFederationStatus={initialFederationStatus}
       initialPersonInstanceSetup={initialPersonInstanceSetup}
