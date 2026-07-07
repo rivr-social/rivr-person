@@ -1818,7 +1818,12 @@ export default function BuilderPage() {
                 <option value={WORKSPACE_TARGET_DEFAULT}>Default (sovereign site)</option>
                 {workspaces.map((ws) => (
                   <option key={ws.id} value={ws.id}>
-                    {ws.label} ({ws.scope})
+                    {/* App-scope workspaces are the user's own sites/apps — the
+                        "(app)" suffix read as "a generated app" and confused the
+                        sovereign-site workspace. Only tag the genuinely-distinct
+                        foundation/shared scopes. */}
+                    {ws.label}
+                    {ws.scope !== "app" ? ` (${ws.scope})` : ""}
                   </option>
                 ))}
               </select>
