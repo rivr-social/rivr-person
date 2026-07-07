@@ -1,4 +1,6 @@
 import { and, desc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
+import { revalidateTag } from "next/cache";
+import { PUBLIC_POST_FEED_CACHE_TAG } from "@/lib/cache-tags";
 import { db } from "@/db";
 import crypto from "crypto";
 import {
@@ -1769,6 +1771,19 @@ export async function importFederationEvents(params: {
         visibility: event.visibility,
       },
     });
+  }
+
+  if (imports.length > 0) {
+    // Federated posts land in the cached public feed
+    // (fetchPublicPostResources); one tag revalidation per import batch keeps
+    // it fresh. Best-effort: imports run inside route handlers where
+    // revalidateTag is valid; standalone scripts have no request store and
+    // fall back to the cache TTL.
+    try {
+      revalidateTag(PUBLIC_POST_FEED_CACHE_TAG);
+    } catch {
+      /* no request store (script context) — TTL backstop applies */
+    }
   }
 
   return { imported: imports.length, rejected: rejected.length, rejections: rejected };

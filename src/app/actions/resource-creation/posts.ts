@@ -1,6 +1,7 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
+import { PUBLIC_POST_FEED_CACHE_TAG } from "@/lib/cache-tags";
 import { db } from "@/db";
 import {
   agents,
@@ -982,6 +983,7 @@ export async function createPostCommerceResource(input: {
     });
 
     revalidatePath("/");
+    revalidateTag(PUBLIC_POST_FEED_CACHE_TAG);
     revalidatePath("/create");
     revalidatePath("/marketplace");
     revalidatePath("/profile");

@@ -38,6 +38,7 @@ export type { ReactionCountsMap } from "./profiles";
 export {
   fetchResourcesByOwner,
   fetchPublicResources,
+  fetchPublicPostResources,
   fetchAllResources,
   fetchMarketplaceListings,
   fetchMarketplaceListingById,
