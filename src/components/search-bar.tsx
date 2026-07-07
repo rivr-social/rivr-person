@@ -14,6 +14,7 @@ import { Search, MapPin, Users, Calendar } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useRouter } from "next/navigation"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { useHomeFeed, useLocalesAndBasins } from "@/lib/hooks/use-graph-data"
 
 interface SearchBarProps {
@@ -161,7 +162,7 @@ export function SearchBar({
     } else if (result.type === "user") {
       router.push(`/profile/${result.item.username || result.item.id}`)
     } else if (result.type === "group") {
-      router.push(`/groups/${result.item.id}`)
+      router.push(getGlobalUrl(`/groups/${result.item.id}`))
     } else if (result.type === "event") {
       router.push(`/events/${result.item.id}`)
     }

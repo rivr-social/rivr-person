@@ -20,7 +20,7 @@
 
 import { db } from "@/db";
 import { resources, ledger } from "@/db/schema";
-import { eq, and, isNull, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, or, isNull, desc, sql, inArray } from "drizzle-orm";
 import type { Resource, ResourceType } from "@/db/schema";
 import { parseFacetedTagsFromMetadata } from "@/lib/parachute-doc";
 import type {
@@ -230,6 +230,34 @@ export async function getResourcesByTag(tag: string, limit = 50) {
  * const publicFeed = await getPublicResources(20);
  * ```
  */
+/**
+ * Public POST resources with the post-type discrimination pushed into SQL.
+ * Mirrors this instance's {@link getPublicResources} predicates exactly
+ * (isPublic + not-deleted + no eventId/groupId metadata gates) and keeps only
+ * rows the former JS filter kept: meta.entityType === "post" ||
+ * type === "post" || type === "note". Lets the home feed fetch 60 posts
+ * instead of over-fetching 300 mixed resources and filtering in JS.
+ */
+export async function getPublicPostResources(limit = 60) {
+  return await db.query.resources.findMany({
+    where: and(
+      eq(resources.isPublic, true),
+      isNull(resources.deletedAt),
+      sql`(${resources.metadata}->>'eventId') IS NULL`,
+      sql`(${resources.metadata}->>'groupId') IS NULL`,
+      or(
+        inArray(resources.type, ["post", "note"]),
+        sql`${resources.metadata}->>'entityType' = 'post'`,
+      ),
+    ),
+    limit,
+    orderBy: [desc(resources.createdAt)],
+    with: {
+      owner: true,
+    },
+  });
+}
+
 export async function getPublicResources(limit = 50) {
   return await db.query.resources.findMany({
     where: and(

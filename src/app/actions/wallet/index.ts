@@ -26,6 +26,10 @@ export {
   setupConnectAccountAction,
   getConnectStatusAction,
   getConnectBalanceAction,
+  getPaymentBalancesAction,
+  provisionTreasuryFinancialAccountAction,
+  createBankLinkSessionAction,
+  saveLinkedBankAccountAction,
   requestPayoutAction,
   releaseTestConnectBalanceToWalletAction,
   releaseTestConnectBalanceToWalletInternal,
@@ -40,3 +44,13 @@ export {
   requestFamilyWithdrawalAction,
   getFamilyContributionsAction,
 } from './family-treasury';
+
+export {
+  provisionSubgroupFinancialAccountAction,
+  issueSubgroupCardAction,
+  getGroupTreasuryBankingOverviewAction,
+} from './treasury-banking';
+export type {
+  GroupTreasuryBankingOverview,
+  SubgroupBankingRow,
+} from './treasury-banking';

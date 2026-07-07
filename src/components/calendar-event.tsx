@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { getEntityBadgeClass } from "@/lib/entity-style"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { format } from "date-fns"
 import { useRouter } from "next/navigation"
 import { cancelEventAction } from "@/app/actions/interactions"
@@ -223,7 +224,7 @@ export function CalendarEvent({
                 </h3>
                 {event.projectName && (
                   event.projectId ? (
-                    <Link href={`/groups/${event.projectId}`} className="text-sm text-muted-foreground hover:underline">
+                    <Link href={getGlobalUrl(`/groups/${event.projectId}`)} className="text-sm text-muted-foreground hover:underline">
                       {event.projectName}
                     </Link>
                   ) : (
@@ -232,7 +233,7 @@ export function CalendarEvent({
                 )}
                 {event.groupName && !event.projectName && (
                   event.groupId ? (
-                    <Link href={`/groups/${event.groupId}`} className="text-sm text-muted-foreground hover:underline">
+                    <Link href={getGlobalUrl(`/groups/${event.groupId}`)} className="text-sm text-muted-foreground hover:underline">
                       {event.groupName}
                     </Link>
                   ) : (

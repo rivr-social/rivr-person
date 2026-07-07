@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { TypeBadge } from "@/components/type-badge"
 import { TypeIcon } from "@/components/type-icon"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { GroupType, JoinType, type Ring, type Family, type User, type FlowPass, type GroupJoinSettings } from "@/lib/types"
 
 interface Group {
@@ -302,7 +303,7 @@ export function GroupFeed({
                 <Button asChild variant="secondary">
                   {/* aria-label disambiguates this from the card title link,
                       which points to the same group with the bare group name. */}
-                  <Link href={`/groups/${group.id}`} aria-label={`View ${group.name}`}>View Group</Link>
+                  <Link href={getGlobalUrl(`/groups/${group.id}`)} aria-label={`View ${group.name}`}>View Group</Link>
                 </Button>
               ) : (
                 <Button

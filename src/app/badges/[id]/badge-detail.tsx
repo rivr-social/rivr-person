@@ -28,6 +28,7 @@ import {
 } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import type { UserBadge, TrainingModule, JobShift } from "@/types/domain"
 
 interface BadgeDetailClientProps {
@@ -413,7 +414,7 @@ export function BadgeDetailClient({ badgeId, allBadges, isEarned, jobShifts }: B
                   <div className="space-y-3">
                     {relevantJobs.map((job) => {
                       return (
-                        <Link key={job.id} href={`/groups/${job.groupId}?tab=jobs&job=${job.id}`}>
+                        <Link key={job.id} href={getGlobalUrl(`/groups/${job.groupId}?tab=jobs&job=${job.id}`)}>
                           <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer border border-gray-200">
                             <div className="flex items-start justify-between">
                               <div className="flex-1">

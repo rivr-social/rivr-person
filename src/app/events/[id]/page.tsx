@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import Image from "next/image"
 import { notFound } from "next/navigation"
 import type { Metadata } from "next"
@@ -378,7 +379,7 @@ export default async function EventDetailPage({ params }: { params: Promise<{ id
             <div>
               <p className="text-sm text-muted-foreground">Project</p>
               {event.projectId ? (
-                <Link href={`/projects/${event.projectId}`} className="text-sm font-medium hover:underline">
+                <Link href={getGlobalUrl(`/projects/${event.projectId}`)} className="text-sm font-medium hover:underline">
                   Open linked project
                 </Link>
               ) : (

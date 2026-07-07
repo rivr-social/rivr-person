@@ -12,6 +12,7 @@
 import { useState } from "react"
 import { useSession } from "next-auth/react"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -132,7 +133,7 @@ export function EventDetailTabs({
               <div className="rounded-md border p-3">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Project</p>
                 {projectId ? (
-                  <Link href={`/projects/${projectId}`} className="text-sm font-medium hover:underline">
+                  <Link href={getGlobalUrl(`/projects/${projectId}`)} className="text-sm font-medium hover:underline">
                     Open linked project
                   </Link>
                 ) : (

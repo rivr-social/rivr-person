@@ -14,6 +14,7 @@ import { Search, X } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { ChapterSelector } from "@/components/chapter-selector"
 import { useRouter } from "next/navigation"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { useHomeFeed, usePosts, useLocalesAndBasins } from "@/lib/hooks/use-graph-data"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -174,7 +175,7 @@ export function SearchHeader({ selectedChapter, onChapterChange }: SearchHeaderP
         router.push(`/posts/${result.id}`)
         break
       case "group":
-        router.push(`/groups/${result.id}`)
+        router.push(getGlobalUrl(`/groups/${result.id}`))
         break
       case "user": {
         const user = people.find((u) => u.id === result.id)

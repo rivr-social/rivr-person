@@ -13,6 +13,7 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -311,7 +312,7 @@ export function GroupRelationshipManager({ groupId, isCreator, isAdmin }: GroupR
                   </div>
                   <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" asChild>
-                      <a href={`/groups/${group.id}`} target="_blank" rel="noopener noreferrer">
+                      <a href={getGlobalUrl(`/groups/${group.id}`)} target="_blank" rel="noopener noreferrer">
                         <ExternalLink className="h-4 w-4 mr-1" />
                         View
                       </a>

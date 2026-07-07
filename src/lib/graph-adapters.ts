@@ -359,6 +359,17 @@ function resolveEventEnd(
   startIso: string,
 ): string {
   if (typeof meta.endDate === "string" && meta.endDate.length > 0) {
+    // The create flow stores endDate as YYYY-MM-DD PAIRED with endTime (HH:MM)
+    // — compose them, matching resourceToEvent below. A bare return here
+    // collapsed such events' end to midnight. Legacy explicit-ISO endDate
+    // values (already carrying a time part) pass through unchanged.
+    if (
+      typeof meta.endTime === "string" &&
+      meta.endTime.length > 0 &&
+      !meta.endDate.includes("T")
+    ) {
+      return `${meta.endDate}T${meta.endTime}`;
+    }
     return meta.endDate;
   }
   if (

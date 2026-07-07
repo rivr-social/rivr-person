@@ -19,6 +19,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import * as d3 from "d3"
 import {
   fetchGroupDetail,
@@ -127,7 +128,7 @@ export function AgentGraph({ agentId, agentName, agentType }: AgentGraphProps) {
       type: centerType,
       href: centerType === NODE_TYPE.PERSON
         ? `/profile/${agentId}`
-        : `/groups/${agentId}`,
+        : getGlobalUrl(`/groups/${agentId}`),
       isCenter: true,
     }
 
@@ -167,7 +168,7 @@ export function AgentGraph({ agentId, agentName, agentType }: AgentGraphProps) {
               id: group.id,
               label: group.name || "Subgroup",
               type: NODE_TYPE.GROUP,
-              href: `/groups/${group.id}`,
+              href: getGlobalUrl(`/groups/${group.id}`),
             })
             newLinks.push({
               id: makeLinkId(agentId, group.id),

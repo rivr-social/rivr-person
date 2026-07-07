@@ -21,6 +21,7 @@ import { fetchAgent, fetchAgentChildren } from "@/app/actions/graph"
 import { agentToGroup } from "@/lib/graph-adapters"
 import type { Group } from "@/lib/types"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 
 interface GroupSubgroupsProps {
   parentGroupId: string
@@ -142,7 +143,7 @@ export function GroupSubgroups({ parentGroupId, isCreator, isAdmin }: GroupSubgr
         {childGroups.length > 0 ? (
           <div className="space-y-3">
             {childGroups.map((group) => (
-              <Link href={`/groups/${group.id}`} key={group.id} className="block">
+              <Link href={getGlobalUrl(`/groups/${group.id}`)} key={group.id} className="block">
                 <div className="flex items-center justify-between p-3 rounded-md border hover:bg-muted cursor-pointer">
                   <div className="flex items-center">
                     <Avatar className="h-10 w-10 mr-3">

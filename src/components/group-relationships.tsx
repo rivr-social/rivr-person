@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import type { Group } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -306,7 +307,7 @@ function GroupCard({
             </Avatar>
             <div>
               <CardTitle className="text-base">
-                <a href={`/groups/${group.id}`} className="hover:underline">
+                <a href={getGlobalUrl(`/groups/${group.id}`)} className="hover:underline">
                   {group.name}
                 </a>
               </CardTitle>
@@ -327,7 +328,7 @@ function GroupCard({
       </CardContent>
       <CardFooter className="pt-2 flex justify-between">
         <Button variant="outline" size="sm" asChild>
-          <a href={`/groups/${group.id}`}>View Group</a>
+          <a href={getGlobalUrl(`/groups/${group.id}`)}>View Group</a>
         </Button>
 
         {isAdminOrCreator && (

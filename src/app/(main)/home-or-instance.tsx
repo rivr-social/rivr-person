@@ -8,9 +8,10 @@
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { MessageSquare, Settings } from "lucide-react"
 import { auth } from "@/auth"
-import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicResources, fetchGroupDetail, fetchAgentFeed, fetchPublicAgentById, fetchAgentsByIds } from "@/app/actions/graph"
+import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicPostResources, fetchGroupDetail, fetchAgentFeed, fetchPublicAgentById, fetchAgentsByIds } from "@/app/actions/graph"
 import {
   agentToUser,
   agentToGroup,
@@ -26,6 +27,7 @@ import type { SerializedResource } from "@/lib/graph-serializers"
 import { readGroupMembershipPlans } from "@/lib/group-memberships"
 import { buildProfileStructuredData, buildGroupStructuredData, serializeJsonLd } from "@/lib/structured-data"
 import HomeClient from "./home-client"
+import MainLoading from "./loading"
 import { AgentPageShell } from "@/components/agent-page-shell"
 import { Button } from "@/components/ui/button"
 import { GroupJoinControl } from "@/components/group-join-control"
@@ -85,7 +87,20 @@ async function renderPersonPage(agentId: string) {
 }
 
 // ── Global home feed ──────────────────────────────────────────
-async function renderHomeFeed() {
+function renderHomeFeed() {
+  // Suspense boundary inside the page: the shell (header/nav) streams on the
+  // initial document request while the feed queries resolve, instead of
+  // blocking first paint on all of them. The route-level loading.tsx only
+  // covers client-side navigations; this covers the cold hit. Fallback reuses
+  // the same skeleton so both paths look identical.
+  return (
+    <Suspense fallback={<MainLoading />}>
+      <HomeFeedLoader />
+    </Suspense>
+  );
+}
+
+async function HomeFeedLoader() {
   const result = await loadHomeFeed();
   return (
     <HomeClient
@@ -103,16 +118,14 @@ async function renderHomeFeed() {
 
 async function loadHomeFeed() {
   try {
-    const [feed, basinAgents, localeAgents, publicResources] = await Promise.all([
+    const [feed, basinAgents, localeAgents, postResources] = await Promise.all([
       fetchHomeFeed(50),
       fetchBasins(),
       fetchLocales(),
-      fetchPublicResources(300),
+      // Post-type filter is pushed into SQL (getPublicPostResources) — no JS
+      // post-discrimination needed, and the over-fetch drops 300 → 60.
+      fetchPublicPostResources(60),
     ])
-    const postResources = publicResources.filter((r) => {
-      const meta = (r.metadata ?? {}) as Record<string, unknown>
-      return meta.entityType === "post" || r.type === "post" || r.type === "note"
-    })
     return {
       people: feed.people.map(agentToUser),
       groups: feed.groups.map(agentToGroup),
@@ -316,7 +329,7 @@ async function renderGroupPage(id: string) {
     >
       <div className="flex items-center gap-2">
         {isGroupAdmin && (
-          <Link href={`/groups/${group.id}/settings`}>
+          <Link href={getGlobalUrl(`/groups/${group.id}/settings`)}>
             <Button variant="outline" size="sm">
               <Settings className="h-4 w-4 mr-2" />
               Edit Group

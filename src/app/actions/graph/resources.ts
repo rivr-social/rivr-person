@@ -1,5 +1,7 @@
 "use server";
 
+import { unstable_cache } from "next/cache";
+import { PUBLIC_POST_FEED_CACHE_TAG, PUBLIC_POST_FEED_TTL_SECONDS } from "@/lib/cache-tags";
 import { db } from "@/db";
 import type { Agent, Resource, ResourceType } from "@/db/schema";
 import { wallets } from "@/db/schema";
@@ -16,6 +18,7 @@ import { getAgent } from "@/lib/queries/agents";
 import {
   getAllResources,
   getMarketplaceListings as queryMarketplaceListings,
+  getPublicPostResources,
   getResource,
   getDocumentsForUser,
 } from "@/lib/queries/resources";
@@ -56,6 +59,28 @@ export async function fetchResourcesByOwner(ownerId: string): Promise<Serialized
 export async function fetchPublicResources(limit = 50): Promise<SerializedResource[]> {
   return q("optional", { table: "resources", fn: "getPublicResources", limit });
 }
+
+/**
+ * Public POST feed for the home page — SQL-pushed post filter (no 300-row
+ * over-fetch) served from the data cache. Viewer-independent: every row is
+ * isPublic and therefore already anonymously visible, so bypassing q()'s
+ * session resolution is safe (and required — cookies() may not be read
+ * inside the cache scope). Freshness comes from revalidateTag(
+ * PUBLIC_POST_FEED_CACHE_TAG) on the post mutation + federation import
+ * paths; the short TTL is the backstop.
+ */
+export async function fetchPublicPostResources(limit = 60): Promise<SerializedResource[]> {
+  return getCachedPublicPostFeed(limit);
+}
+
+const getCachedPublicPostFeed = unstable_cache(
+  async (limit: number): Promise<SerializedResource[]> => {
+    const rows = await getPublicPostResources(limit);
+    return rows.map((row) => serializeResource(row));
+  },
+  ["public-post-feed"],
+  { revalidate: PUBLIC_POST_FEED_TTL_SECONDS, tags: [PUBLIC_POST_FEED_CACHE_TAG] },
+);
 
 /**
  * Retrieves resources with optional filters and appends serialized owners when present.

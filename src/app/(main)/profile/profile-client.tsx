@@ -37,21 +37,10 @@ import {
 import { PostFeed } from "@/components/post-feed";
 import { PersonaChatWidget } from "@/components/persona-chat-widget";
 import { CommentActivityFeed } from "@/components/comment-activity-feed";
-import { EventFeed } from "@/components/event-feed";
-import { ProfileGroupFeed } from "@/components/profile-group-feed";
-import { ProfileCalendar } from "@/components/profile-calendar";
-import { OfferingsTab } from "@/components/offerings-tab";
-import { PersonaManager } from "@/components/persona-manager";
 import { getActivePersonaInfo } from "@/app/actions/personas";
-import { DocumentsTab } from "@/components/documents-tab";
 import { ProfileMediaTab } from "@/components/profile-media-tab";
 import { AgentGraph } from "@/components/agent-graph";
-import { UserConnections } from "@/components/user-connections";
 import { ReceiptCard } from "@/components/receipt-card";
-import WalletDepositDialog from "@/components/wallet-deposit-dialog";
-import WalletHistory from "@/components/wallet-history";
-import SendMoneyDialog from "@/components/send-money-dialog";
-import EthAddressForm from "@/components/eth-address-form";
 import { BankAccountsCard } from "@/components/bank-accounts-card";
 import { setEventRsvp, toggleJoinGroup, toggleLikeOnTarget, toggleSaveListing } from "@/app/actions/interactions";
 import { updateProfileImageAction } from "@/app/actions/settings";
@@ -64,6 +53,26 @@ import {
 import type { Event, Group, MarketplaceListing, Post, User } from "@/lib/types";
 import type { Document } from "@/types/domain";
 import { OfferingType, PostType } from "@/lib/types";
+import dynamic from "next/dynamic";
+
+// Per-tab code splitting: each non-default tab panel loads as its own chunk
+// on activation instead of shipping in the route's first-load chunk. Radix
+// unmounts inactive tabs, so nothing below renders until selected. SSR stays
+// enabled so deep-linked tabs still server-render.
+const tabLoading = () => (
+  <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+);
+const DocumentsTab = dynamic(() => import("@/components/documents-tab").then((m) => m.DocumentsTab), { loading: tabLoading });
+const EventFeed = dynamic(() => import("@/components/event-feed").then((m) => m.EventFeed), { loading: tabLoading });
+const ProfileGroupFeed = dynamic(() => import("@/components/profile-group-feed").then((m) => m.ProfileGroupFeed), { loading: tabLoading });
+const ProfileCalendar = dynamic(() => import("@/components/profile-calendar").then((m) => m.ProfileCalendar), { loading: tabLoading });
+const OfferingsTab = dynamic(() => import("@/components/offerings-tab").then((m) => m.OfferingsTab), { loading: tabLoading });
+const PersonaManager = dynamic(() => import("@/components/persona-manager").then((m) => m.PersonaManager), { loading: tabLoading });
+const UserConnections = dynamic(() => import("@/components/user-connections").then((m) => m.UserConnections), { loading: tabLoading });
+const WalletDepositDialog = dynamic(() => import("@/components/wallet-deposit-dialog"), { loading: tabLoading });
+const WalletHistory = dynamic(() => import("@/components/wallet-history"), { loading: tabLoading });
+const SendMoneyDialog = dynamic(() => import("@/components/send-money-dialog"), { loading: tabLoading });
+const EthAddressForm = dynamic(() => import("@/components/eth-address-form"), { loading: tabLoading });
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 type GraphEvent = ReturnType<typeof agentToEvent>;
