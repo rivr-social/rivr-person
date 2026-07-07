@@ -41,24 +41,31 @@ export function useMyProfileModule(enabled: boolean) {
           throw new Error(bundleJson.error || "Failed to load myprofile bundle");
         }
 
-        const manifestResponse = await fetch(bundleJson.module.manifestEndpoint, {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-        });
-        const manifestJson = (await manifestResponse.json()) as {
-          success?: boolean;
-          error?: string;
-          manifest?: BespokeModuleManifest;
-        };
+        // The bundle inlines the (static) manifest so the profile renders
+        // after one round-trip; the endpoint fetch remains as the fallback
+        // for older bundle payloads that don't carry it.
+        let resolvedManifest = bundleJson.module.manifest ?? null;
+        if (!resolvedManifest) {
+          const manifestResponse = await fetch(bundleJson.module.manifestEndpoint, {
+            credentials: "same-origin",
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+          });
+          const manifestJson = (await manifestResponse.json()) as {
+            success?: boolean;
+            error?: string;
+            manifest?: BespokeModuleManifest;
+          };
 
-        if (!manifestResponse.ok || !manifestJson.success || !manifestJson.manifest) {
-          throw new Error(manifestJson.error || "Failed to load myprofile manifest");
+          if (!manifestResponse.ok || !manifestJson.success || !manifestJson.manifest) {
+            throw new Error(manifestJson.error || "Failed to load myprofile manifest");
+          }
+          resolvedManifest = manifestJson.manifest;
         }
 
         if (cancelled) return;
         setBundle(bundleJson);
-        setManifest(manifestJson.manifest);
+        setManifest(resolvedManifest);
         setState("loaded");
       } catch (err) {
         if (cancelled) return;

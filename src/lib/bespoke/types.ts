@@ -97,6 +97,10 @@ export interface MyProfileModuleBundle {
   module: {
     moduleId: string;
     manifestEndpoint: string;
+    // Inlined manifest: when present the client skips the second round-trip
+    // to manifestEndpoint (endpoint kept for older payloads and external
+    // consumers).
+    manifest?: BespokeModuleManifest;
   };
   federation: {
     localInstanceId: string;

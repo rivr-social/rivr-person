@@ -18,7 +18,7 @@ import {
   getMyWalletsAction,
   getTransactionHistoryAction,
 } from "@/app/actions/wallet";
-import { MYPROFILE_MODULE_ID } from "@/lib/bespoke/modules/myprofile";
+import { MYPROFILE_MODULE_ID, getMyProfileModuleManifest } from "@/lib/bespoke/modules/myprofile";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import { buildErc8004Registration } from "@/lib/erc8004";
@@ -117,6 +117,9 @@ export async function GET(request: Request) {
         module: {
           moduleId: MYPROFILE_MODULE_ID,
           manifestEndpoint: "/api/myprofile/manifest",
+          // Inlined so the profile client renders after ONE round-trip instead
+          // of bundle → manifest serial fetches (the manifest is static).
+          manifest: getMyProfileModuleManifest(),
         },
         erc8004,
         federation: {
