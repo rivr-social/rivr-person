@@ -26,6 +26,7 @@ import type { SerializedResource } from "@/lib/graph-serializers"
 import { readGroupMembershipPlans } from "@/lib/group-memberships"
 import { buildProfileStructuredData, buildGroupStructuredData, serializeJsonLd } from "@/lib/structured-data"
 import HomeClient from "./home-client"
+import MainLoading from "./loading"
 import { AgentPageShell } from "@/components/agent-page-shell"
 import { Button } from "@/components/ui/button"
 import { GroupJoinControl } from "@/components/group-join-control"
@@ -85,7 +86,20 @@ async function renderPersonPage(agentId: string) {
 }
 
 // ── Global home feed ──────────────────────────────────────────
-async function renderHomeFeed() {
+function renderHomeFeed() {
+  // Suspense boundary inside the page: the shell (header/nav) streams on the
+  // initial document request while the feed queries resolve, instead of
+  // blocking first paint on all of them. The route-level loading.tsx only
+  // covers client-side navigations; this covers the cold hit. Fallback reuses
+  // the same skeleton so both paths look identical.
+  return (
+    <Suspense fallback={<MainLoading />}>
+      <HomeFeedLoader />
+    </Suspense>
+  );
+}
+
+async function HomeFeedLoader() {
   const result = await loadHomeFeed();
   return (
     <HomeClient
