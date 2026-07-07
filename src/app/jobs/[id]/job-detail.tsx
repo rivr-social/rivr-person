@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -39,7 +40,7 @@ export function JobDetailClient({ jobId, initialJob: serverJob, jobShifts, proje
 
   const handleBackNavigation = () => {
     if (parentProject) {
-      router.push(`/projects/${parentProject.id}`)
+      router.push(getGlobalUrl(`/projects/${parentProject.id}`))
     } else {
       router.back()
     }

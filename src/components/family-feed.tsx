@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { TypeBadge } from "@/components/type-badge"
 import { TypeIcon } from "@/components/type-icon"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import type { Family, Ring, User } from "@/lib/types"
 
 /**
@@ -144,12 +145,12 @@ export function FamilyFeed({
                     <AvatarFallback>{family.name.substring(0, 2)}</AvatarFallback>
                   </Avatar>
                   <div>
-                    <Link href={`/families/${family.id}`} className="text-xl font-bold hover:underline">
+                    <Link href={getGlobalUrl(`/families/${family.id}`)} className="text-xl font-bold hover:underline">
                       {family.name}
                     </Link>
                     <p className="text-sm text-muted-foreground">
                       Part of{" "}
-                      <Link href={`/rings/${family.parentRingId}`} className="text-purple-600 hover:underline">
+                      <Link href={getGlobalUrl(`/rings/${family.parentRingId}`)} className="text-purple-600 hover:underline">
                         {ringName}
                       </Link>
                     </p>

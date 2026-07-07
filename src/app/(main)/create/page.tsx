@@ -1663,8 +1663,11 @@ export default function CreatePage() {
         title: "Group created",
         description: "Your group has been created successfully.",
       })
-      // Redirect to the created group detail page.
-      router.push(`/groups/${result.resourceId}`)
+      // This sovereign instance has no local group detail page; the home Groups
+      // tab is the canonical local browse surface (matches the CommandBar /
+      // user-menu drift fixes). Redirecting to the global hub here would race the
+      // federation projection of the just-created group, so stay local.
+      router.push(`/?tab=groups`)
     } catch {
       setIsSubmitting(false)
       toast({
@@ -1716,7 +1719,10 @@ export default function CreatePage() {
           title: "Organization created",
           description: "Your organization has been created successfully.",
         })
-        router.replace(`/groups/${result.resourceId}`)
+        // No local group detail page; land on the home Groups tab (see the
+        // create-group handler above). Avoids racing the federation projection
+        // of the just-created organization by not redirecting to the global hub.
+        router.replace(`/?tab=groups`)
       } catch {
         toast({
           title: "Failed to create organization",

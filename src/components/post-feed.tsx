@@ -9,6 +9,7 @@ import { ShareMenu } from "@/components/share-menu"
 import { Button } from "@/components/ui/button"
 import Image from "next/image"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import type { MarketplaceListing, Post, User, Group, Event } from "@/lib/types"
@@ -947,7 +948,7 @@ function EventPostCard({ event, getGroup, getEventCreator, rsvpStatus, onRsvp, g
               <div>
                 <div className="font-medium">
                   <Link
-                    href={`/groups/${organizer?.id}`}
+                    href={getGlobalUrl(`/groups/${organizer?.id}`)}
                     className="text-sm hover:underline block"
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -1107,7 +1108,7 @@ function GroupPostCard({ group, onJoin, getChapterName }: GroupPostCardProps) {
       <CardFooter className="p-0 border-t">
         {requiresJoinFlowPage(group) ? (
           <Button asChild className="w-full rounded-none h-12 bg-primary hover:bg-primary/90">
-            <Link href={`/groups/${group.id}`}>View Group</Link>
+            <Link href={getGlobalUrl(`/groups/${group.id}`)}>View Group</Link>
           </Button>
         ) : (
           <Button

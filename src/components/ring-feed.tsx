@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button"
 import { TypeBadge } from "@/components/type-badge"
 import { TypeIcon } from "@/components/type-icon"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import type { Ring, Family, User } from "@/lib/types"
 
 interface RingFeedProps {
@@ -112,7 +113,7 @@ export function RingFeed({
                     <AvatarFallback>{ring.name.substring(0, 2)}</AvatarFallback>
                   </Avatar>
                   <div>
-                    <Link href={`/rings/${ring.id}`} className="text-xl font-bold hover:underline">
+                    <Link href={getGlobalUrl(`/rings/${ring.id}`)} className="text-xl font-bold hover:underline">
                       {ring.name}
                     </Link>
                   </div>
@@ -148,7 +149,7 @@ export function RingFeed({
                     {ringFamilies.slice(0, 3).map((family) => (
                       <Link
                         key={family.id}
-                        href={`/families/${family.id}`}
+                        href={getGlobalUrl(`/families/${family.id}`)}
                         className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-800 hover:bg-purple-200"
                       >
                         {family.name} ({family.members?.length || 0})

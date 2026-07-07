@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Briefcase, MapPin, Users, Calendar } from "lucide-react"
 import { EmptyState } from "@/components/empty-state"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 
 interface ProjectFeedProps {
   projects: { id: string; name: string; description?: string; status?: string; location?: string; memberCount?: number; startDate?: string; createdAt?: string; tags?: string[]; chapterTags?: string[] }[]
@@ -45,7 +46,7 @@ export function ProjectFeed({ projects }: ProjectFeedProps) {
                 </div>
                 <div>
                   <Link
-                    href={`/projects/${project.id}`}
+                    href={getGlobalUrl(`/projects/${project.id}`)}
                     className="text-lg font-semibold hover:underline"
                   >
                     {project.name}

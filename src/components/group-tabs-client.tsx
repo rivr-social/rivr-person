@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   Plus,
@@ -564,7 +565,7 @@ export function GroupTabsClient({
                   )}
                 </div>
               ))}
-              <Link href={`/groups/${groupId}/settings`} className="inline-flex text-sm text-primary hover:underline">
+              <Link href={getGlobalUrl(`/groups/${groupId}/settings`)} className="inline-flex text-sm text-primary hover:underline">
                 Manage membership plans
               </Link>
             </CardContent>

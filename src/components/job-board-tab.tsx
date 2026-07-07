@@ -28,6 +28,7 @@ import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializer
 import { applyToJob, fetchMyJobApplicationIds } from "@/app/actions/interactions"
 import { useToast } from "@/components/ui/use-toast"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
@@ -460,7 +461,7 @@ export function JobBoardTab({ groupId, currentUserId }: JobBoardTabProps) {
                         <div className="flex justify-between items-start">
                           <div className="flex-1">
                             <div className="flex items-center gap-2">
-                              <Link href={`/projects/${project.id}`} className="hover:underline">
+                              <Link href={getGlobalUrl(`/projects/${project.id}`)} className="hover:underline">
                                 <CardTitle className="text-lg">{project.title}</CardTitle>
                               </Link>
                               <Badge className={getStatusColor(project.status)}>
@@ -497,7 +498,7 @@ export function JobBoardTab({ groupId, currentUserId }: JobBoardTabProps) {
                           </div>
                         </div>
                         <div className="flex justify-end mt-2">
-                          <Link href={`/projects/${project.id}`}>
+                          <Link href={getGlobalUrl(`/projects/${project.id}`)}>
                             <Button variant="outline" size="sm" className="text-xs">
                               View Project Details
                             </Button>

@@ -8,6 +8,7 @@
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { MessageSquare, Settings } from "lucide-react"
 import { auth } from "@/auth"
 import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicPostResources, fetchGroupDetail, fetchAgentFeed, fetchPublicAgentById, fetchAgentsByIds } from "@/app/actions/graph"
@@ -328,7 +329,7 @@ async function renderGroupPage(id: string) {
     >
       <div className="flex items-center gap-2">
         {isGroupAdmin && (
-          <Link href={`/groups/${group.id}/settings`}>
+          <Link href={getGlobalUrl(`/groups/${group.id}/settings`)}>
             <Button variant="outline" size="sm">
               <Settings className="h-4 w-4 mr-2" />
               Edit Group

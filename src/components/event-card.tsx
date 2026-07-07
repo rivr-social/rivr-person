@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Calendar, Globe, Edit } from "lucide-react"
 import Image from "next/image"
 import Link from "next/link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { useRouter } from "next/navigation"
 
 /**
@@ -171,7 +172,7 @@ export function EventCard({
         <div className="mt-2">
           {groupId ? (
             <Link
-              href={`/groups/${groupId}`}
+              href={getGlobalUrl(`/groups/${groupId}`)}
               className="text-sm font-medium hover:underline"
               onClick={(e) => e.stopPropagation()}
             >
