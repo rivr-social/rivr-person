@@ -116,6 +116,12 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (!result.ok) {
     // A bad/expired/forged assertion must not authenticate, but also must
     // not strand the user. Fall through to the local destination.
+    // Observability: the verify reason was previously swallowed, making the
+    // fleet-wide "Actor assertion verification failed" undiagnosable
+    // (2026-07-07). Reason values are enum strings — no claim contents leak.
+    console.warn(
+      `[sso/land] assertion rejected: reason=${result.reason} issuer-expected=${getGlobalIdentityAuthorityUrl() ?? "unset"} target=${localOrigin}`,
+    );
     return NextResponse.redirect(new URL(next, localOrigin), {
       headers: { "Cache-Control": "no-store" },
     });
