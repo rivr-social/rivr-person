@@ -193,3 +193,19 @@ describe("resourceToMarketplaceListing", () => {
     expect(listing.title ?? listing.name).toBeTruthy();
   });
 });
+
+describe("agentToGroup — groupType normalization", () => {
+  it("keeps a metadata groupType of 'basic' as Basic (no org fallback)", () => {
+    // Regression pin: normalizeGroupType had no "basic" case, so basic groups
+    // (agent type organization) fell through to the org fallback — the create-
+    // subgroup dialog then claimed "this parent is an organization" and locked
+    // the subgroup to Org/LLC (persona finding, 2026-07-07).
+    const group = agentToGroup({
+      ...BASE_AGENT,
+      type: "organization",
+      name: "Basic Collective",
+      metadata: { groupType: "basic" },
+    });
+    expect(String(group.type).toLowerCase()).toBe("basic");
+  });
+});

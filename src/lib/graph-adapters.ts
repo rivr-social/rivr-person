@@ -162,6 +162,7 @@ function normalizeGroupType(rawGroupType: unknown, fallbackAgentType: string): G
     case "organization":
     case "org":
       return GroupType.Organization;
+    case "basic":
     case "community":
       return GroupType.Basic;
     case "group":
