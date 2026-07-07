@@ -128,7 +128,7 @@ export function AgentGraph({ agentId, agentName, agentType }: AgentGraphProps) {
       type: centerType,
       href: centerType === NODE_TYPE.PERSON
         ? `/profile/${agentId}`
-        : `/groups/${agentId}`,
+        : getGlobalUrl(`/groups/${agentId}`),
       isCenter: true,
     }
 
