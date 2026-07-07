@@ -294,7 +294,7 @@ export function BadgesTab({ groupId, currentUserId, isAdmin, members = [] }: Bad
                 Create Badge
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Create New Badge</DialogTitle>
               </DialogHeader>
@@ -393,7 +393,9 @@ export function BadgesTab({ groupId, currentUserId, isAdmin, members = [] }: Bad
               <Star className="h-5 w-5 text-yellow-600" />
               <div>
                 <p className="text-sm font-medium">Progress</p>
-                <p className="text-2xl font-bold">{Math.round((userBadges.length / groupBadges.length) * 100)}%</p>
+                <p className="text-2xl font-bold">
+                  {groupBadges.length > 0 ? Math.round((userBadges.length / groupBadges.length) * 100) : 0}%
+                </p>
               </div>
             </div>
           </CardContent>
