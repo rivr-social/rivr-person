@@ -292,11 +292,11 @@ export default function HomeClient({
   }
 
   const getUser = (userId: string) => {
-    return activePeople.find((user) => user.id === userId) || activePeople[0] || fallbackUser
+    return activePeople.find((user) => user.id === userId) || fallbackUser
   }
 
   const getGroup = (groupId: string) => {
-    return activeGroups.find((group) => group.id === groupId) || activeGroups[0] || ({
+    return activeGroups.find((group) => group.id === groupId) || ({
       id: "",
       name: "Unknown Group",
       description: "",
