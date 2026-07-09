@@ -52,6 +52,7 @@ import {
   isInternalSubspaceUrl,
   normalizeUrl,
   parseInternalSubspaceUrl,
+  safeFetchHtml,
   validateUrlShape,
   type FetchStatus,
   type LinkPreviewPayload,
@@ -108,6 +109,25 @@ async function fetchOpenGraph(urlString: string): Promise<{
   error?: string;
 }> {
   try {
+    // SSRF-safe fetch first: this is the only code path that touches the
+    // network. safeFetchHtml re-validates every redirect hop against the
+    // private/metadata IP ranges and pins the connection to the resolved IP, so
+    // a public URL cannot 30x-bounce (or DNS-rebind) into an internal address.
+    // The scraper then parses the already-fetched HTML and makes no request of
+    // its own.
+    let fetched: Awaited<ReturnType<typeof safeFetchHtml>>;
+    try {
+      fetched = await safeFetchHtml(urlString, {
+        timeoutMs: LINK_PREVIEW_FETCH_TIMEOUT_MS,
+        maxBytes: LINK_PREVIEW_MAX_BODY_BYTES,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      return { status: FETCH_STATUS.ERROR, fields: {}, error: reason.slice(0, 200) };
+    }
+    // Resolve relative favicon/image URLs against the post-redirect final URL.
+    urlString = fetched.finalUrl;
+
     // Optional runtime load: some local workspaces may not have this package
     // installed even though the route can still degrade gracefully.
     const moduleName = 'open-graph-scraper';
@@ -122,24 +142,11 @@ async function fetchOpenGraph(urlString: string): Promise<{
       response?: { statusCode?: number };
     }>);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LINK_PREVIEW_FETCH_TIMEOUT_MS);
-    try {
+    {
       const { error, result } = await run({
-        url: urlString,
-        timeout: LINK_PREVIEW_FETCH_TIMEOUT_MS,
-        fetchOptions: {
-          signal: controller.signal,
-          headers: {
-            // Identify as RIVR so well-behaved sites can include / exclude us
-            // from their own policy.
-            'User-Agent': 'RivrLinkPreviewBot/1.0 (+https://rivr.social/bots)',
-            Accept: 'text/html,application/xhtml+xml',
-          },
-          // Abort after the cap even if the server trickles bytes.
-          size: LINK_PREVIEW_MAX_BODY_BYTES,
-        },
-        maxRedirects: 3,
+        // Parse the already-fetched HTML; no outbound request from the scraper.
+        html: fetched.html,
+        url: fetched.finalUrl,
       });
       if (error) {
         return { status: FETCH_STATUS.ERROR, fields: {}, error: 'og_scraper_error' };
@@ -186,8 +193,6 @@ async function fetchOpenGraph(urlString: string): Promise<{
           favicon: pickFavicon(),
         },
       };
-    } finally {
-      clearTimeout(timer);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
