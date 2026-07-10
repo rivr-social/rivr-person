@@ -111,6 +111,9 @@ export function isEncryptedSecret(value: string | null | undefined): boolean {
  */
 export function encryptSecret(plaintext: string | null | undefined): string | null {
   if (plaintext === null || plaintext === undefined || plaintext === "") return null;
+  // Already encrypted — never double-wrap (defensive: re-encrypting a stored
+  // ciphertext would make it undecryptable). Matches the group repo's guard.
+  if (isEncryptedSecret(plaintext)) return plaintext;
   const key = resolveKey();
   const iv = randomBytes(IV_LENGTH_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH_BYTES });
