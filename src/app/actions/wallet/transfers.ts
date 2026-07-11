@@ -16,7 +16,7 @@ import {
   transferP2P,
 } from '@/lib/wallet';
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from '@/lib/federation';
-import { getCurrentUserId } from './helpers';
+import { getCurrentUserIdForWrite } from './helpers';
 import { isUuid, isPositiveInteger } from './types';
 import { releaseTestConnectBalanceToWalletInternal } from './seller';
 
@@ -37,7 +37,7 @@ export async function createDepositIntentAction(amountCents: number): Promise<{
   clientSecret?: string;
   error?: string;
 }> {
-  const agentId = await getCurrentUserId();
+  const agentId = await getCurrentUserIdForWrite();
   if (!agentId) {
     return { success: false, error: 'You must be logged in to deposit funds.' };
   }
@@ -92,7 +92,7 @@ export async function sendMoneyAction(
   amountCents: number,
   message?: string
 ): Promise<{ success: boolean; error?: string }> {
-  const agentId = await getCurrentUserId();
+  const agentId = await getCurrentUserIdForWrite();
   if (!agentId) {
     return { success: false, error: 'You must be logged in to send money.' };
   }
@@ -180,7 +180,7 @@ export async function depositToGroupWalletAction(
   groupId: string,
   amountCents: number
 ): Promise<{ success: boolean; error?: string }> {
-  const agentId = await getCurrentUserId();
+  const agentId = await getCurrentUserIdForWrite();
   if (!agentId) {
     return { success: false, error: 'You must be logged in to deposit to a group wallet.' };
   }

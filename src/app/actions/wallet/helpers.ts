@@ -1,14 +1,65 @@
 'use server';
 
 import { eq } from 'drizzle-orm';
-import { auth } from '@/auth';
 import { db } from '@/db';
 import { agents } from '@/db/schema';
+import { getSession } from '@/lib/auth/get-session';
+import { getFederationExecutionContext } from '@/lib/federation/execution-context';
+import { ensureLocalActorAgent } from '@/lib/federation/actor-projection';
 import { getSettlementWalletForAgent } from '@/lib/wallet';
 
+/**
+ * Resolve the acting principal for a READ on a money surface.
+ *
+ * Uses the unified session so a verified federated remote-viewer member (the
+ * HMAC-signed `rivr_remote_viewer` cookie) is admitted — plain `auth()` was
+ * blind to them, so every wallet/purchase surface treated a cross-instance
+ * member as anonymous (2026-07-11 sweep). Forwarded/MCP writes carry an
+ * already-resolved actor in the federation execution context; that takes
+ * precedence. Person keys its direct federated writes on the raw verified
+ * actor id (see {@link ensureLocalActorAgent} / `federatedWrite`), so no
+ * external→local remap happens here.
+ */
 export async function getCurrentUserId(): Promise<string | null> {
-  const session = await auth();
+  const federationContext = getFederationExecutionContext();
+  if (federationContext?.actorId) {
+    return federationContext.actorId;
+  }
+
+  const session = await getSession();
   return session?.user?.id ?? null;
+}
+
+/**
+ * {@link getCurrentUserId} plus first-contact projection for actor-keyed
+ * WRITES (wallet FK, Stripe customer creation, ledger `subject_id`). A
+ * federated remote-viewer's first economic action on this sovereign may
+ * precede any local `agents` row, so keyed writes threw "Agent not found" /
+ * FK violations. `ensureLocalActorAgent` materializes the private
+ * verified-principal mirror keyed on the verified actor id — exactly what
+ * `federatedWrite` does on the direct write path, so wallet writes and basic
+ * interactions land on the SAME local row. It is a no-op for local NextAuth
+ * users, forwarded/MCP execution contexts (already projected by the receiver),
+ * and already-projected members. Read paths keep using
+ * {@link getCurrentUserId} — projecting on read would mint agent rows for mere
+ * viewers.
+ */
+export async function getCurrentUserIdForWrite(): Promise<string | null> {
+  const federationContext = getFederationExecutionContext();
+  if (federationContext?.actorId) {
+    return federationContext.actorId;
+  }
+
+  const session = await getSession();
+  if (!session?.user?.id) {
+    return null;
+  }
+
+  if (session.user.authMethod === 'federated') {
+    await ensureLocalActorAgent(session.user.id);
+  }
+
+  return session.user.id;
 }
 
 export async function getAgentRecord(agentId: string): Promise<{

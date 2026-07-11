@@ -21,7 +21,8 @@
  */
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { auth } from '@/auth';
+import { getSession } from '@/lib/auth/get-session';
+import { ensureLocalActorAgent } from '@/lib/federation/actor-projection';
 import { db } from '@/db';
 import { resources, ledger, agents } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -87,8 +88,21 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const session = await auth();
+  // Unified session so a verified federated remote-viewer member is attributed
+  // as the buyer instead of silently degrading to an anonymous guest (plain
+  // `auth()` was blind to them, 2026-07-11 sweep). Guest checkout for a truly
+  // anonymous visitor still works — `sessionUserId` is simply null.
+  const session = await getSession();
   const sessionUserId = session?.user?.id ?? null;
+
+  // First-contact enrollment: the buyer id flows into webhook-settled writes
+  // (receipts, capital entries, ledger subject_id), all FK-keyed on a local
+  // agents row a first-contact federated buyer doesn't have yet. Project the
+  // verified principal (on their raw actor id, matching `federatedWrite`)
+  // before checkout so settlement can't dead-letter on the missing row.
+  if (sessionUserId && session?.user?.authMethod === 'federated') {
+    await ensureLocalActorAgent(sessionUserId);
+  }
 
   let body: {
     listingId?: string;
