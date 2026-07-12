@@ -1,6 +1,6 @@
 "use server";
 
-import { auth } from "@/auth";
+import { getSession } from "@/lib/auth/get-session";
 import { db } from "@/db";
 import type { Resource } from "@/db/schema";
 import { agents as agentsTable, resources as resourcesTable } from "@/db/schema";
@@ -147,7 +147,12 @@ export async function fetchMyReceipts(): Promise<{
     seller: { id: string; name: string; username: string | null; image: string | null } | null;
   }>;
 }> {
-  const session = await auth();
+  // Unified session: a federated remote-viewer's receipt is owned by their
+  // local projected agent id (person keys direct federated writes on the RAW
+  // verified actor id — the receipt's ownerId equals session.user.id here);
+  // plain `auth()` still worked for locals but not remote-viewers, so a real
+  // purchase read "Receipt not found" (toybox crypto campaign, 2026-07-12).
+  const session = await getSession();
   if (!session?.user?.id) return { receipts: [] };
 
   const receiptRows = await db
