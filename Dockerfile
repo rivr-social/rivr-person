@@ -36,6 +36,11 @@ ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
 ARG NEXT_PUBLIC_SEMANTIC_PARSER_V1="1"
 ENV NEXT_PUBLIC_SEMANTIC_PARSER_V1=$NEXT_PUBLIC_SEMANTIC_PARSER_V1
 
+# 3GB main heap: the release builder is a resource-capped BuildKit container
+# and `next build` OOM'd on the default V8 heap after viem was added
+# (2026-07-12). Matches the global Dockerfile cap; the host also has swap.
+ENV NODE_OPTIONS="--max-old-space-size=3072"
+
 # Incremental Next.js build — the persistent cache at /app/.next/cache
 # holds webpack module cache + SWC/Terser output + TS type info. Without
 # this mount every deploy is a ~20-minute full compile; with it, only
