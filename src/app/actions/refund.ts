@@ -1,6 +1,6 @@
 'use server';
 
-import { auth } from '@/auth';
+import { getSession } from '@/lib/auth/get-session';
 import { db } from '@/db';
 import { resources, ledger, type NewLedgerEntry } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -14,7 +14,10 @@ import { rateLimit, RATE_LIMITS } from '@/lib/rate-limit';
  * Creates a Stripe refund and updates the receipt status.
  */
 export async function requestRefundAction(receiptId: string): Promise<{ success: boolean; error?: string }> {
-  const session = await auth();
+  // Unified session so a federated remote-viewer can refund their own purchase
+  // (person keys receipts on the raw verified actor id = session.user.id here);
+  // plain `auth()` still worked for locals but not remote-viewers.
+  const session = await getSession();
   if (!session?.user?.id) return { success: false, error: 'Not authenticated' };
 
   const headersList = await headers();
