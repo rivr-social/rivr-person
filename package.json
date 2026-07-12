@@ -5,7 +5,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.18.2",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev --port 3003",
     "build": "next build",
@@ -38,10 +40,10 @@
     "@aws-sdk/client-s3": "^3.990.0",
     "@aws-sdk/s3-request-presigner": "^3.990.0",
     "@hookform/resolvers": "^5.2.2",
-    "@mdx-js/loader": "^3.1.1",
-    "@mdx-js/react": "^3.1.1",
     "@livekit/components-react": "^2.9.20",
     "@livekit/components-styles": "^1.2.0",
+    "@mdx-js/loader": "^3.1.1",
+    "@mdx-js/react": "^3.1.1",
     "@neondatabase/serverless": "^1.0.2",
     "@next/mdx": "^15.5.20",
     "@noble/ed25519": "^3.1.0",
@@ -125,6 +127,7 @@
     "tailwind-merge": "^3.4.0",
     "three": "^0.183.2",
     "vaul": "^0.9.6",
+    "viem": "2.55.0",
     "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
@@ -158,13 +161,13 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "sharp",
+      "@node-rs/bcrypt",
       "esbuild",
-      "protobufjs",
-      "onnxruntime-node",
       "node-pty",
-      "unrs-resolver",
-      "@node-rs/bcrypt"
+      "onnxruntime-node",
+      "protobufjs",
+      "sharp",
+      "unrs-resolver"
     ],
     "overrides": {
       "react-konva": "^19.2.5"
