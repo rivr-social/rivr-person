@@ -33,6 +33,10 @@ import { toggleFollowAgent } from "@/app/actions/interactions/social";
 import { createEventResource } from "@/app/actions/resource-creation/events";
 import { deleteResource, updateResource } from "@/app/actions/resource-creation/lifecycle";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
+import { createBookingAction } from "@/app/actions/interactions/bookings";
+import { bookAssetAction } from "@/app/actions/interactions/assets";
+import { applyToJob } from "@/app/actions/interactions/events-jobs";
+import { purchaseWithWalletAction } from "@/app/actions/wallet/purchases";
 import * as kg from "@/lib/kg/autobot-kg-client";
 
 // ─── Supported Mutation Types ──────────────────────────────────────────────
@@ -54,6 +58,10 @@ const KNOWN_MUTATION_TYPES = [
   "applyMembershipProjection",
   "deleteResource",
   "updateResource",
+  "createBookingAction",
+  "bookAssetAction",
+  "applyToJob",
+  "purchaseWithWalletAction",
 ] as const;
 
 /** Federated interaction actions dispatched via the new interaction protocol */
@@ -820,6 +828,66 @@ async function handleLegacyMutation(
     );
   }
 
+  // Buyer rail (open-issues P0): owner-routed commerce writes. Each is forwarded
+  // to the resource OWNER's home (e.g. a dev/global buyer booking a bob-homed
+  // offering). The actor is already entity-map-normalized to a LOCAL agent by
+  // bindAuthorizedFederationActor (materialized from the home-signed assertion
+  // when it is a first-time cross-instance actor); each action re-derives its
+  // own authority + business rules against THIS instance's graph, and reads the
+  // acting actor from the federation execution context (getCurrentUserId /
+  // getCurrentUserIdForWrite). The action's internal federatedWrite/updateFacade
+  // short-circuits to local under the same context, so there is no re-forward.
+  if (type === "createBookingAction") {
+    const input = asMutationRecord(payload);
+    if (!input) return buyerActionBadPayload("createBookingAction requires an object payload", config, routedFrom);
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
+      createBookingAction(input as Parameters<typeof createBookingAction>[0]),
+    );
+    return buyerActionResponse(result, config, routedFrom);
+  }
+
+  if (type === "bookAssetAction") {
+    const input = asMutationRecord(payload);
+    if (!input) return buyerActionBadPayload("bookAssetAction requires an object payload", config, routedFrom);
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
+      bookAssetAction(input as Parameters<typeof bookAssetAction>[0]),
+    );
+    return buyerActionResponse(result, config, routedFrom);
+  }
+
+  if (type === "applyToJob") {
+    const input = asMutationRecord(payload);
+    const jobId = typeof input?.jobId === "string" ? input.jobId : null;
+    if (!jobId) return buyerActionBadPayload("applyToJob requires payload.jobId", config, routedFrom);
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
+      applyToJob(jobId),
+    );
+    return buyerActionResponse(result, config, routedFrom);
+  }
+
+  if (type === "purchaseWithWalletAction") {
+    const input = asMutationRecord(payload);
+    const listingId = typeof input?.listingId === "string" ? input.listingId : null;
+    const subtotalCents = typeof input?.subtotalCents === "number" ? input.subtotalCents : null;
+    if (!listingId || subtotalCents === null) {
+      return buyerActionBadPayload(
+        "purchaseWithWalletAction requires payload.listingId and payload.subtotalCents",
+        config,
+        routedFrom,
+      );
+    }
+    const result = await runWithFederationExecutionContext(authorizedActorId, () =>
+      purchaseWithWalletAction(
+        listingId,
+        subtotalCents,
+        typeof input?.dealPostId === "string" ? input.dealPostId : null,
+        typeof input?.bookingDate === "string" ? input.bookingDate : null,
+        typeof input?.bookingSlot === "string" ? input.bookingSlot : null,
+      ),
+    );
+    return buyerActionResponse(result, config, routedFrom);
+  }
+
   // Honesty contract (rivr-person#31): mutation types without a real dispatch
   // path must NOT claim acceptance. Returning a non-2xx with accepted:false
   // lets the forwarding instance surface a real error to the acting user
@@ -838,6 +906,69 @@ async function handleLegacyMutation(
     },
     { status: isKnownType ? 501 : 400 },
   );
+}
+
+/** Narrow a mutation payload to a plain object, or null when it is not one. */
+function asMutationRecord(payload: unknown): Record<string, unknown> | null {
+  return payload && typeof payload === "object" && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : null;
+}
+
+/** Shape shared by the buyer actions' return values (success + a message/error). */
+type BuyerActionResult = {
+  success: boolean;
+  message?: string;
+  error?: unknown;
+};
+
+/**
+ * Standard federation response envelope for a dispatched buyer action. The
+ * action's own `success` flag drives the HTTP status (2xx accepted / 4xx
+ * declined) so the forwarding instance surfaces a real reason to the buyer
+ * rather than a silent drop — the honesty contract, but for actions that DO
+ * dispatch. The full result travels in `data` so the caller can read
+ * `receiptId` etc.
+ */
+function buyerActionResponse(
+  result: BuyerActionResult,
+  config: ReturnType<typeof getInstanceConfig>,
+  routedFrom?: RoutingProvenance | null,
+): NextResponse {
+  const errorText =
+    typeof result.error === "string"
+      ? result.error
+      : typeof result.message === "string"
+        ? result.message
+        : undefined;
+  return NextResponse.json(
+    {
+      success: result.success,
+      data: result,
+      accepted: result.success,
+      knownType: true,
+      instanceId: config.instanceId,
+      ...(result.success ? {} : { error: errorText }),
+      ...(routedFrom
+        ? {
+            routedFrom: {
+              originInstanceSlug: routedFrom.originInstanceSlug,
+              originInstanceId: routedFrom.originInstanceId,
+            },
+          }
+        : {}),
+    },
+    { status: result.success ? 200 : 400 },
+  );
+}
+
+/** 400 envelope for a buyer action whose payload is missing required fields. */
+function buyerActionBadPayload(
+  message: string,
+  config: ReturnType<typeof getInstanceConfig>,
+  routedFrom?: RoutingProvenance | null,
+): NextResponse {
+  return buyerActionResponse({ success: false, error: message }, config, routedFrom);
 }
 
 function withTargetOwner(payload: unknown, targetAgentId: string): Record<string, unknown> {

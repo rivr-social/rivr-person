@@ -3,31 +3,38 @@
 import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { nodes } from "@/db/schema";
-import { materializeFederatedActor } from "@/lib/federation";
+import { agents, nodes } from "@/db/schema";
+import { ensureLocalNode, materializeFederatedActor } from "@/lib/federation";
+import { resolveHomeInstance } from "@/lib/federation/resolution";
 import {
   burnSsoNonce,
   type BurnSsoNonceResult,
 } from "@/lib/federation/sso-nonce-store";
-import { verifyOwnerRoutedActorAssertion } from "@/lib/federation/owner-routed-actor-assertion";
+import {
+  signOwnerRoutedActorAssertion,
+  verifyOwnerRoutedActorAssertion,
+  type SignedOwnerRoutedActorAssertion,
+} from "@/lib/federation/owner-routed-actor-assertion";
 
 /**
- * Receiver-side orchestration for the owner-routed home-signed actor assertion
- * (buyer rail, open-issues P0). PERSON is a receiver in this pass: it verifies a
- * presented assertion against the authenticated peer's REGISTERED Ed25519 key
- * (`nodes.publicKey`), burns its nonce (single-use), then materializes + binds
- * the actor via the existing projection rail (`materializeFederatedActor`),
- * returning the receiver-local agent id.
+ * Orchestration for the owner-routed home-signed actor assertion (buyer rail,
+ * open-issues P0). Two entry points:
  *
- * Nothing here grants AUTHORITY — only identity. The subsequent
+ * - {@link mintOwnerRoutedActorAssertion} (SENDER, the actor's home): resolve
+ *   the actor's identity + the local node key and sign an assertion bound to the
+ *   receiving instance. Only mints when the actor is locally homed here — a
+ *   sovereign must never sign for another home. Wired into `write-router.ts`'s
+ *   `forwardToHomeInstance` so a person instance forwarding a user-initiated
+ *   write to another home vouches for its own users.
+ * - {@link resolveOwnerRoutedActor} (RECEIVER, the resource's home): verify a
+ *   presented assertion against the authenticated peer's REGISTERED Ed25519 key
+ *   (`nodes.publicKey`), burn its nonce (single-use), then materialize + bind
+ *   the actor via the existing projection rail (`materializeFederatedActor`),
+ *   returning the receiver-local agent id.
+ *
+ * Nothing here grants AUTHORITY — only identity. On the receiver the subsequent
  * `bindAuthorizedFederationActor` re-derives the binding and the write runs
  * against this instance's own graph.
- *
- * (The sovereign SENDER minter — `mintOwnerRoutedActorAssertion` — is added when
- * a sovereign wires its own `write-router.ts` forwarder in the parity wave; it
- * is not needed on the receiver path and is omitted here to keep only active
- * code. `signOwnerRoutedActorAssertion` lives in the pure assertion module and
- * is exercised by the round-trip tests.)
  *
  * `resolveOwnerRoutedActor` accepts injected dependencies so the whole flow is
  * unit-testable without a database (mirrors `verifySsoAssertion`'s injected key
@@ -37,6 +44,56 @@ import { verifyOwnerRoutedActorAssertion } from "@/lib/federation/owner-routed-a
 /** Namespaces owner-routed actor-assertion nonces so they never collide with SSO nonces. */
 function nonceIssuer(homeBaseUrl: string): string {
   return `${homeBaseUrl.replace(/\/+$/, "")}#owner-routed-actor`;
+}
+
+// ─── Sender ───────────────────────────────────────────────────────────────────
+
+/**
+ * Mint a home-signed actor assertion for an owner-routed forward, or `null` when
+ * the actor is not locally homed here (we must never sign for another home) or
+ * the local node has no signing key. Returning `null` is a no-regression
+ * fallback: the receiver then rejects an unbound actor exactly as today.
+ *
+ * @param actorId The acting user's LOCAL agent id on this (the home) instance.
+ * @param audienceBaseUrl Base URL of the receiving instance (the resource home).
+ */
+export async function mintOwnerRoutedActorAssertion(
+  actorId: string,
+  audienceBaseUrl: string,
+): Promise<SignedOwnerRoutedActorAssertion | null> {
+  // Only the actor's HOME instance may sign for them. A projected/federated
+  // actor homed elsewhere is skipped — we cannot vouch for another home.
+  const home = await resolveHomeInstance(actorId).catch(() => null);
+  if (!home || !home.isLocal) return null;
+
+  const localNode = await ensureLocalNode().catch(() => null);
+  if (!localNode?.privateKey || !localNode.id || !localNode.slug || !localNode.baseUrl) {
+    return null;
+  }
+
+  const actor = await db.query.agents
+    .findFirst({
+      where: eq(agents.id, actorId),
+      columns: { id: true, name: true, image: true, email: true, parentAgentId: true },
+    })
+    .catch(() => null);
+  if (!actor) return null;
+
+  const kid = `${localNode.baseUrl}#${localNode.slug}`;
+  return signOwnerRoutedActorAssertion(
+    {
+      actorId,
+      homeNodeId: localNode.id,
+      homeBaseUrl: localNode.baseUrl,
+      audienceBaseUrl,
+      name: actor.name ?? undefined,
+      email: actor.email ?? undefined,
+      avatarUrl: actor.image ?? undefined,
+      parentAgentId: actor.parentAgentId ?? null,
+    },
+    localNode.privateKey,
+    kid,
+  );
 }
 
 /** Stable reason strings for a rejected owner-routed actor resolution. */
