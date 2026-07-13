@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Image from "next/image";
@@ -21,7 +22,6 @@ import { PostFeed } from "@/components/post-feed";
 import { EventFeed } from "@/components/event-feed";
 import { ProfileGroupFeed } from "@/components/profile-group-feed";
 import { ThankModule } from "@/components/thank-module";
-import { AgentGraph } from "@/components/agent-graph";
 import { PersonaChatWidget } from "@/components/persona-chat-widget";
 import { toggleFollowAgent } from "@/app/actions/interactions/social";
 import { useToast } from "@/components/ui/use-toast";
@@ -37,6 +37,18 @@ import {
   type ProfileViewerRelation,
 } from "@/lib/profile-tab-visibility";
 import type { ProfileTabKey } from "@/lib/types";
+
+// Lazy-load the agent graph (pulls d3) so it isn't parsed/hydrated on every
+// public-profile load — only when the About tab's Relationships card mounts.
+const AgentGraph = dynamic(
+  () => import("@/components/agent-graph").then((m) => m.AgentGraph),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="py-8 text-center text-sm text-muted-foreground">Loading graph…</div>
+    ),
+  },
+);
 
 const STABLE_FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 const PUBLIC_PROFILE_TABS = ["about", "posts", "docs", "media", "events", "groups", "photos", "offerings", "activity"] as const;
