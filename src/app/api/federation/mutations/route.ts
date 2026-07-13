@@ -88,6 +88,14 @@ type MutationRequestBody = {
    * tracing/dedup metadata.
    */
   routedFrom?: RoutingProvenance;
+  /**
+   * Buyer rail (open-issues P0) — home-signed actor-identity assertion. Present
+   * when the forwarder is the actor's home and vouches for a cross-instance
+   * actor that this receiver has no `federation_entity_map` binding for yet.
+   * Verified against the authenticated peer's registered key, then used to
+   * materialize + bind the actor. Additive; absence keeps the strict rejection.
+   */
+  actorAssertion?: unknown;
 };
 
 /**
@@ -260,7 +268,39 @@ export async function POST(request: Request) {
     // inside the binding via the read-only resolveLocalActorId), so downstream
     // authority checks run against THIS instance's graph. An arbitrary
     // body-provided actorId on a shared secret is rejected (F1).
-    const actorBinding = await bindAuthorizedFederationActor(effectiveAuthorization, body.actorId);
+    let actorBinding = await bindAuthorizedFederationActor(effectiveAuthorization, body.actorId);
+
+    // Buyer rail (open-issues P0): when the peer-authenticated forward names an
+    // actor we have no binding for, but carries a valid home-signed actor
+    // assertion, verify it against the peer's registered key and materialize +
+    // bind the actor via the existing projection rail, THEN re-bind. Absent or
+    // invalid assertion → the strict F1 rejection below is preserved unchanged.
+    // Scoped to peer-secret auth (no persona swap on peer forwards, so the
+    // effective/base actorId is body.actorId).
+    if (
+      (!actorBinding.authorized || !actorBinding.actorId) &&
+      authorization.peerNodeId &&
+      body.actorAssertion &&
+      body.actorId
+    ) {
+      const { resolveOwnerRoutedActor } = await import(
+        "@/lib/federation/owner-routed-actor"
+      );
+      const materialized = await resolveOwnerRoutedActor({
+        peerNodeId: authorization.peerNodeId,
+        audienceBaseUrl: config.baseUrl,
+        requestedActorId: body.actorId,
+        assertion: body.actorAssertion,
+      });
+      if (materialized.ok) {
+        actorBinding = await bindAuthorizedFederationActor(effectiveAuthorization, body.actorId);
+      } else {
+        console.warn(
+          `[federation/mutations] owner-routed actor assertion rejected from ${remoteInstanceSlug}: ${materialized.reason}`,
+        );
+      }
+    }
+
     if (!actorBinding.authorized || !actorBinding.actorId) {
       return NextResponse.json(
         { success: false, error: actorBinding.reason ?? "Actor authorization failed" },
