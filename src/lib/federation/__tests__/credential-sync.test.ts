@@ -39,14 +39,17 @@ interface QueueRow {
 }
 
 // Keep a module-local registry of queue rows so the stubbed db and the
-// test assertions share the same source of truth.
-const queueRows: QueueRow[] = [];
-let nextRowId = 1;
+// test assertions share the same source of truth. Wrapped in vi.hoisted:
+// vitest hoists the `vi.mock("@/db", …)` factory above ordinary top-level
+// consts, so everything that factory captures must be hoisted with it.
+const { queueRows, resetFakeDb, fakeDb, setNextRowId, mintRowId } = vi.hoisted(() => {
+  const queueRows: QueueRow[] = [];
+  let nextRowId = 1;
 
-function resetFakeDb() {
-  queueRows.length = 0;
-  nextRowId = 1;
-}
+  function resetFakeDb() {
+    queueRows.length = 0;
+    nextRowId = 1;
+  }
 
 /**
  * Minimal fluent-builder shim. Implements just the surface the module
@@ -125,7 +128,22 @@ const fakeDb = {
       },
     };
   },
-};
+  };
+
+  return {
+    queueRows,
+    resetFakeDb,
+    fakeDb,
+    // nextRowId lives in this closure; expose the two operations the tests
+    // outside the hoisted block need (a `let` can't be returned by value).
+    setNextRowId(n: number) {
+      nextRowId = n;
+    },
+    mintRowId() {
+      return `row-${nextRowId++}`;
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -377,7 +395,7 @@ describe("credential-sync", () => {
         createdAt: new Date(Date.now() - 60_000),
         updatedAt: new Date(Date.now() - 60_000),
       });
-      nextRowId = 99;
+      setNextRowId(99);
 
       vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 200 }));
 
@@ -540,7 +558,7 @@ function pendingRow(
 ): QueueRow {
   const now = new Date();
   return {
-    id: `row-${nextRowId++}`,
+    id: mintRowId(),
     agentId: TEST_AGENT_ID,
     eventPayload: {
       event: {
