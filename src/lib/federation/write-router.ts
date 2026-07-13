@@ -293,6 +293,29 @@ async function forwardToHomeInstance<T, R>(
       );
     }
 
+    // Home-signed ACTOR assertion (buyer rail, open-issues P0). Vouches for the
+    // acting user's identity so a first-time cross-instance actor (no
+    // federation_entity_map row on the receiver) is materialized + bound there
+    // instead of rejected. Signed with THIS node's key; the receiver verifies it
+    // against our registered peer public key. Additive: receivers without the
+    // code ignore it and keep rejecting unbound actors (no new failure mode).
+    // Only minted when the actor is locally homed here — we must never sign for
+    // another home. Dynamic import avoids a static federation.ts cycle.
+    let actorAssertion: unknown;
+    try {
+      const { mintOwnerRoutedActorAssertion } = await import(
+        "@/lib/federation/owner-routed-actor"
+      );
+      actorAssertion =
+        (await mintOwnerRoutedActorAssertion(write.actorId, homeInstance.baseUrl)) ??
+        undefined;
+    } catch (err) {
+      console.warn(
+        "[write-router] owner-routed actor-assertion minting failed; forwarding without it.",
+        err,
+      );
+    }
+
     const response = await fetch(url, {
       method: "POST",
       headers,
@@ -302,6 +325,7 @@ async function forwardToHomeInstance<T, R>(
         targetAgentId: write.targetAgentId,
         payload: write.payload,
         routedFrom: routingProvenance,
+        ...(actorAssertion ? { actorAssertion } : {}),
       }),
       signal: AbortSignal.timeout(REMOTE_WRITE_TIMEOUT_MS),
     });
