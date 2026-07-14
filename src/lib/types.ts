@@ -582,6 +582,14 @@ export type VoucherClaim = {
 export type Group = {
   id: string
   name: string
+  /**
+   * Canonical link target for this group. Local path (`/groups/<id>`) when the
+   * group is homed on / renderable by this instance; an absolute URL on the
+   * group's sovereign HOME instance when it is a remote federated projection.
+   * Stamped by `agentToGroup`; render with `<CanonicalLink>` so cross-origin
+   * hrefs become plain anchors.
+   */
+  homeHref?: string
   description: string
   image: string
   memberCount: number

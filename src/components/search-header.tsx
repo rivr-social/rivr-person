@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { ChapterSelector } from "@/components/chapter-selector"
 import { useRouter } from "next/navigation"
 import { getGlobalUrl } from "@/lib/federation/global-url"
+import { navigateToHref } from "@/components/canonical-link"
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { useHomeFeed, usePosts, useLocalesAndBasins } from "@/lib/hooks/use-graph-data"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -174,12 +175,14 @@ export function SearchHeader({ selectedChapter, onChapterChange }: SearchHeaderP
       case "post":
         router.push(`/posts/${result.id}`)
         break
-      case "group":
-        router.push(getGlobalUrl(`/groups/${result.id}`))
+      case "group": {
+        const group = groups.find((g) => g.id === result.id)
+        navigateToHref(router, group?.homeHref ?? getGlobalUrl(`/groups/${result.id}`))
         break
+      }
       case "user": {
         const user = people.find((u) => u.id === result.id)
-        if (user) router.push(`/profile/${user.username || user.id}`)
+        if (user) navigateToHref(router, user.profileHref ?? `/profile/${user.username || user.id}`)
         break
       }
       case "event":

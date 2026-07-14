@@ -37,6 +37,8 @@ import type {
 import { GroupType } from "@/lib/types";
 import type { AgentType } from "@/db/schema";
 import { readGroupMembershipPlans } from "@/lib/group-memberships";
+import { resolveEntityHref } from "@/lib/federation/entity-link";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
 
 /**
  * Sanitize a string into a URL-safe slug.
@@ -184,7 +186,20 @@ function normalizeGroupType(rawGroupType: unknown, fallbackAgentType: string): G
   }
 }
 
-function agentProfilePath(agent: SerializedAgent): string {
+/** This instance's own base URL, for the self-host loop guard in link resolution. */
+function selfBaseUrl(): string | null {
+  try {
+    return getInstanceConfig().baseUrl;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Local route for an entity on THIS instance, BEFORE canonical-home resolution.
+ * Person → `/profile/<username|id>`; ring/family/group → their subtype route.
+ */
+function agentLocalPath(agent: SerializedAgent): string {
   if (agent.type === "person") {
     const username = typeof agent.metadata?.username === "string"
       ? agent.metadata.username.trim()
@@ -199,6 +214,32 @@ function agentProfilePath(agent: SerializedAgent): string {
   if (groupType === GroupType.Ring) return `/rings/${agent.id}`;
   if (groupType === GroupType.Family) return `/families/${agent.id}`;
   return `/groups/${agent.id}`;
+}
+
+/**
+ * Canonical href for an entity: the local route when the entity is homed on
+ * (and renderable by) THIS instance, otherwise the absolute URL on the entity's
+ * federated HOME instance. See `resolveEntityHref`.
+ *
+ * @param globalFallback When the entity carries NO federated home stamp, route
+ *   the local path through the global aggregator instead of returning it
+ *   verbatim. Pass `true` for entity classes this app cannot render as a local
+ *   page (groups: the person app has no `/groups/[id]` route); `false` for
+ *   locally-renderable classes (person profiles).
+ */
+function agentCanonicalHref(agent: SerializedAgent, globalFallback: boolean): string {
+  return resolveEntityHref(agent.metadata, agentLocalPath(agent), {
+    selfBaseUrl: selfBaseUrl(),
+    globalFallback,
+  }).href;
+}
+
+/**
+ * Profile href for a person agent — canonical (local path for a locally-homed
+ * person, absolute home URL for a federated/remote person).
+ */
+function agentProfilePath(agent: SerializedAgent): string {
+  return agentCanonicalHref(agent, false);
 }
 
 /**
@@ -271,6 +312,11 @@ export function agentToGroup(agent: SerializedAgent): Group {
   return {
     id: agent.id,
     name: agent.name,
+    // Canonical link target: local `/groups|/rings|/families/<id>` when homed
+    // here (or global, since the person app has no local group route), else the
+    // group's sovereign HOME URL. Fixes federated group memberships (e.g.
+    // Spirit) 404ing on `app.rivr.social`.
+    homeHref: agentCanonicalHref(agent, true),
     description: agent.description ?? "",
     image: agent.image ?? "/placeholder-event.jpg",
     avatar: agent.image ?? "/placeholder-event.jpg",
