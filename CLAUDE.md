@@ -114,6 +114,49 @@ as a record of what was fixed and how.
 The home feed (`/`) reads a `tab` query param (`posts`/`events`/`groups`/
 `people`/`gigs`/`marketplace`) so the above deep links land on the right tab.
 
+### Canonical entity links (federated-projection routing, 2026-07-14)
+
+Fixes the class where a link to a REMOTE-HOMED entity (a federated projection —
+e.g. Cameron's "Spirit of the Front Range" membership) routed to a LOCAL path
+and 404'd, because the person app hosts a single person and has NO
+`/groups/[id]`, `/rings/[id]`, `/families/[id]`, or `/projects/[id]` route.
+
+- **`src/lib/federation/entity-link.ts`** — the pure, client-safe resolver.
+  `resolveRemoteHomeBaseUrl(metadata)` reads the home stamp
+  (`homeBaseUrl` → `federatedHomeBaseUrl` → origin of `canonicalUrl`);
+  `resolveEntityHref(metadata, localPath, {selfBaseUrl, globalFallback})` returns
+  `{href, isRemote}` — a remote projection → absolute URL on its sovereign home;
+  a locally-homed entity → the local path, OR (with `globalFallback: true`) the
+  global aggregator URL for entity classes this app can't render locally
+  (groups/rings/families/projects). A self-host stamp is treated as local (loop
+  guard). Tests: `src/lib/federation/__tests__/entity-link.test.ts` (`pnpm
+  test:unit`).
+- **`src/components/canonical-link.tsx`** — `CanonicalLink` renders an absolute
+  href as a plain `<a target="_blank" rel="noopener noreferrer">` (NEVER a Next
+  `<Link>` — cross-origin RSC prefetch is the CSP-flash class) and a local path
+  as `<Link>`. `navigateToHref(router, href)` is the imperative analog
+  (`window.location.assign` for cross-origin, `router.push` for local).
+- **Stamps (in `graph-adapters.ts`):** `agentToGroup`/`agentToRing`/
+  `agentToFamily`/`agentToProject` stamp `homeHref` (globalFallback);
+  `agentToUser` stamps `profileHref` (no globalFallback — people render locally).
+  `resourceToMarketplaceListing`'s `ownerPath` passes globalFallback ONLY for a
+  group owner. Consumers render `obj.homeHref ?? getGlobalUrl(...)` /
+  `obj.profileHref ?? /profile/...` through `CanonicalLink`.
+- **Swept surfaces:** `group-affiliates`, `group-feed`, `group-relationship(-manager|s)`,
+  `group-subgroups`, `people-feed`, `profile-group-feed`, `user-connections`,
+  `search-bar`, `search-header` (prior WIP) + `ring-feed`, `family-feed`,
+  `project-feed`, `post-feed` (author/creator/organizer/group card + card-click),
+  `agent-graph` (subgroup node + click nav via `navigateToHref`), `marketplace-feed`,
+  `post-detail-client` (author byline), `app/(main)/profile/profile-client.tsx`
+  (`getActivityObjectHref`), `app/(main)/notifications/page.tsx` (join → global).
+- **Not the 404 class (left as-is):** events/posts/jobs render locally (routes
+  exist). **Follow-up gaps (need home metadata plumbed into the data layer, no
+  stamp in scope today):** `comment-feed` (bare `authorId`), `receipt-card`
+  (inline `seller`), `event-detail-tabs` attendee list (`EventAttendee` has no
+  home stamp), `event-card`/`calendar-event` (bare `groupId`/`projectId` props).
+  These already route groups via `getGlobalUrl` (no bare-local 404), but can't
+  reach a sovereign home until their fetchers project the entity's home stamp.
+
 ### Other Known Issues
 
 - [#30](https://github.com/rivr-social/rivr-person/issues/30): RESOLVED

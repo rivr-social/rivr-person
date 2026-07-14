@@ -18,7 +18,7 @@ import { fetchGroups, fetchGroupRelationships } from "@/app/actions/graph"
 import type { SerializedGroupRelationship } from "@/app/actions/graph"
 import { agentToGroup } from "@/lib/graph-adapters"
 import type { Group } from "@/lib/types"
-import Link from "next/link"
+import { CanonicalLink } from "@/components/canonical-link"
 import { getGlobalUrl } from "@/lib/federation/global-url"
 
 interface GroupAffiliatesProps {
@@ -128,7 +128,7 @@ export function GroupAffiliates({ groupId }: GroupAffiliatesProps) {
           {affiliatedGroups.map((group) => {
             const relationshipType = getRelationshipType(group)
             return (
-              <Link href={getGlobalUrl(`/groups/${group.id}`)} key={group.id} className="block">
+              <CanonicalLink href={group.homeHref ?? getGlobalUrl(`/groups/${group.id}`)} key={group.id} className="block">
                 <div className="flex items-center justify-between p-3 rounded-md border hover:bg-muted/50 cursor-pointer">
                   <div className="flex items-center">
                     <Avatar className="h-10 w-10 mr-3">
@@ -148,7 +148,7 @@ export function GroupAffiliates({ groupId }: GroupAffiliatesProps) {
                   </div>
                   <ExternalLink className="h-5 w-5 text-muted-foreground" />
                 </div>
-              </Link>
+              </CanonicalLink>
             )
           })}
         </div>

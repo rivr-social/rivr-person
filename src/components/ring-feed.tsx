@@ -13,7 +13,7 @@ import { MapPin, Users, Network } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { TypeBadge } from "@/components/type-badge"
 import { TypeIcon } from "@/components/type-icon"
-import Link from "next/link"
+import { CanonicalLink } from "@/components/canonical-link"
 import { getGlobalUrl } from "@/lib/federation/global-url"
 import type { Ring, Family, User } from "@/lib/types"
 
@@ -113,9 +113,9 @@ export function RingFeed({
                     <AvatarFallback>{ring.name.substring(0, 2)}</AvatarFallback>
                   </Avatar>
                   <div>
-                    <Link href={getGlobalUrl(`/rings/${ring.id}`)} className="text-xl font-bold hover:underline">
+                    <CanonicalLink href={ring.homeHref ?? getGlobalUrl(`/rings/${ring.id}`)} className="text-xl font-bold hover:underline">
                       {ring.name}
-                    </Link>
+                    </CanonicalLink>
                   </div>
                 </div>
                 <div className="flex items-center">
@@ -147,13 +147,13 @@ export function RingFeed({
                   <h4 className="text-sm font-medium mb-2">Families in this Ring:</h4>
                   <div className="flex flex-wrap gap-2">
                     {ringFamilies.slice(0, 3).map((family) => (
-                      <Link
+                      <CanonicalLink
                         key={family.id}
-                        href={getGlobalUrl(`/families/${family.id}`)}
+                        href={family.homeHref ?? getGlobalUrl(`/families/${family.id}`)}
                         className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-800 hover:bg-purple-200"
                       >
                         {family.name} ({family.members?.length || 0})
-                      </Link>
+                      </CanonicalLink>
                     ))}
                     {ringFamilies.length > 3 && (
                       <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-gray-100 text-gray-600">

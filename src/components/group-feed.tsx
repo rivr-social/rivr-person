@@ -19,13 +19,15 @@ import { MapPin, Users, Percent } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { TypeBadge } from "@/components/type-badge"
 import { TypeIcon } from "@/components/type-icon"
-import Link from "next/link"
+import { CanonicalLink } from "@/components/canonical-link"
 import { getGlobalUrl } from "@/lib/federation/global-url"
 import { GroupType, JoinType, type Ring, type Family, type User, type FlowPass, type GroupJoinSettings } from "@/lib/types"
 
 interface Group {
   id: string
   name: string
+  /** Canonical link target (local path or absolute sovereign-home URL). */
+  homeHref?: string
   description: string
   members?: string[]
   avatar?: string
@@ -209,18 +211,19 @@ export function GroupFeed({
                   </Avatar>
                   <div>
                     <div>
-                      <Link
+                      <CanonicalLink
                         href={
-                          group.type === GroupType.Ring
+                          group.homeHref ??
+                          (group.type === GroupType.Ring
                             ? `/rings/${group.id}`
                             : group.type === GroupType.Family
                               ? `/families/${group.id}`
-                              : `/groups/${group.id}`
+                              : `/groups/${group.id}`)
                         }
                         className="text-xl font-bold hover:underline"
                       >
                         {group.name}
-                      </Link>
+                      </CanonicalLink>
                       {/* Conditional badge indicates an active qualifying flow pass. */}
                       {"flowPasses" in group && group.flowPasses?.some(pass => pass.isActive && pass.type === "percentage" && pass.value === 10) && (
                         <div className="flex items-center gap-1 mt-1">
@@ -304,7 +307,7 @@ export function GroupFeed({
                 <Button asChild variant="secondary">
                   {/* aria-label disambiguates this from the card title link,
                       which points to the same group with the bare group name. */}
-                  <Link href={getGlobalUrl(`/groups/${group.id}`)} aria-label={`View ${group.name}`}>View Group</Link>
+                  <CanonicalLink href={group.homeHref ?? getGlobalUrl(`/groups/${group.id}`)} aria-label={`View ${group.name}`}>View Group</CanonicalLink>
                 </Button>
               ) : (
                 <Button

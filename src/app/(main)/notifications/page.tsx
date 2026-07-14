@@ -19,7 +19,8 @@
  * - No `metadata` export is defined in this file; metadata is managed elsewhere in the app tree.
  */
 import { useEffect, useMemo, useState } from "react"
-import Link from "next/link"
+import { CanonicalLink } from "@/components/canonical-link"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import { useRouter } from "next/navigation"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -66,7 +67,9 @@ function resolveNotificationLink(notification: SerializedNotification): string {
   }
 
   if (type === "join") {
-    if (targetId) return `/groups/${targetId}`;
+    // No local `/groups/[id]` route here, and notifications carry no home stamp
+    // → route to the global aggregator (never a bare local path, which 404s).
+    if (targetId) return getGlobalUrl(`/groups/${targetId}`);
     return "/notifications";
   }
 
@@ -239,7 +242,7 @@ export default function NotificationsPage() {
                   key={notification.id}
                   className={`p-4 flex items-center gap-3 ${!isRead ? "border-l-4 border-l-primary" : ""}`}
                 >
-                  <Link
+                  <CanonicalLink
                     href={link}
                     className="flex items-center gap-3 flex-1 min-w-0"
                     onClick={() => {
@@ -262,7 +265,7 @@ export default function NotificationsPage() {
                         {formatNotificationTime(notification.timestamp)}
                       </p>
                     </div>
-                  </Link>
+                  </CanonicalLink>
 
                   <Button variant="outline" size="sm" onClick={() => void toggleRead(notification.id)}>
                     {isRead ? "Mark unread" : "Mark read"}

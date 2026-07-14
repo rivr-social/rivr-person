@@ -582,6 +582,14 @@ export type VoucherClaim = {
 export type Group = {
   id: string
   name: string
+  /**
+   * Canonical link target for this group. Local path (`/groups/<id>`) when the
+   * group is homed on / renderable by this instance; an absolute URL on the
+   * group's sovereign HOME instance when it is a remote federated projection.
+   * Stamped by `agentToGroup`; render with `<CanonicalLink>` so cross-origin
+   * hrefs become plain anchors.
+   */
+  homeHref?: string
   description: string
   image: string
   memberCount: number
@@ -626,6 +634,13 @@ export type Group = {
 export type Ring = {
   id: string
   name: string
+  /**
+   * Canonical link target for this ring. The person app has no local
+   * `/rings/<id>` route, so this is an absolute URL on the ring's sovereign
+   * HOME instance when it is a remote federated projection, else the global
+   * aggregator URL. Stamped by `agentToRing`; render with `<CanonicalLink>`.
+   */
+  homeHref?: string
   description: string
   image: string
   memberCount: number
@@ -661,6 +676,14 @@ export type Ring = {
 export type Family = {
   id: string
   name: string
+  /**
+   * Canonical link target for this family. The person app has no local
+   * `/families/<id>` route, so this is an absolute URL on the family's
+   * sovereign HOME instance when it is a remote federated projection, else the
+   * global aggregator URL. Stamped by `agentToFamily`; render with
+   * `<CanonicalLink>`.
+   */
+  homeHref?: string
   description: string
   image: string
   memberCount: number
