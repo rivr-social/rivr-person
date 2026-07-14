@@ -24,6 +24,9 @@ import {
 import { resolveBuilderOwner, isOwnerError } from "@/lib/builder/site-owner";
 import { getSitePublication, publishSite } from "@/lib/builder/site-publications";
 import { makeBuilderToolset } from "@/lib/builder/assistant-tools";
+import { deploySiteAsApp, SiteAppBridgeError } from "@/lib/builder/site-app-bridge";
+import { AppLifecycleError } from "@/lib/builder/app-lifecycle";
+import { assertAgentHqAccess } from "@/lib/agent-hq";
 import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
 import { resolveClaudeCodeConnectorToken } from "@/lib/autobot-connector-secrets";
 import {
@@ -55,8 +58,13 @@ function buildSystemPrompt(isPublished: boolean): string {
     "- Start by calling list_files, and read_file before editing anything.",
     "- write_file replaces the ENTIRE file — always write complete contents.",
     "- Keep the site's existing structure and style unless asked to change it.",
-    "- NEVER call publish_site unless the operator explicitly asked to publish",
-    "  or deploy in this conversation turn. Edits are previewed first.",
+    "- NEVER call publish_site or deploy_site_environment unless the operator",
+    "  explicitly asked to publish or deploy in this conversation turn. Edits",
+    "  are previewed first.",
+    "- publish_site updates the instance-served site; deploy_site_environment",
+    "  ships the workspace as its OWN static-app environment (own container +",
+    "  hostname) via the app broker — use it when the operator asks to deploy",
+    "  the site as its own app/environment.",
     isPublished
       ? "- A published version is live; publishing replaces it."
       : "- Nothing is published yet; the first publish makes the site live.",
@@ -125,14 +133,63 @@ export async function POST(request: Request): Promise<NextResponse> {
       return { versionNumber: result.versionNumber };
     });
 
+    // Own-environment deploy tool (broker lane). Offered only when the caller
+    // holds agent-hq access — the same gate as /api/builder/apps.
+    let environmentDeployed: { appId: string; requestId: string } | null = null;
+    const canUseAppLane = await assertAgentHqAccess()
+      .then(() => true)
+      .catch(() => false);
+    const deployTool = {
+      name: "deploy_site_environment",
+      description:
+        "Deploy the CURRENT workspace as its OWN static-app environment (own container + hostname) via the app broker. Only when the operator explicitly asked to deploy the site as its own app/environment.",
+      input_schema: {
+        type: "object",
+        properties: {
+          app_id: {
+            type: "string",
+            description:
+              "Lowercase app id (2-32 chars: letters, digits, dashes) — becomes the subdomain.",
+          },
+        },
+        required: ["app_id"],
+        additionalProperties: false,
+      },
+    };
+    const tools = canUseAppLane ? [...toolset.tools, deployTool] : toolset.tools;
+    const executeTool = async (
+      name: string,
+      input: Record<string, unknown>,
+    ): Promise<unknown> => {
+      if (name === "deploy_site_environment") {
+        if (!canUseAppLane) return { error: "The app lane is not available here." };
+        const appId = typeof input.app_id === "string" ? input.app_id.trim().toLowerCase() : "";
+        try {
+          const result = await deploySiteAsApp(appId, appId, toolset.getFiles());
+          environmentDeployed = { appId: result.appId, requestId: result.requestId };
+          return {
+            ok: true,
+            ...result,
+            note: "Deploy queued — the broker builds and routes it; check the Apps tab for the live URL.",
+          };
+        } catch (error) {
+          if (error instanceof SiteAppBridgeError || error instanceof AppLifecycleError) {
+            return { error: error.message };
+          }
+          throw error;
+        }
+      }
+      return toolset.executeTool(name, input);
+    };
+
     const chat = await nativeCloudChat({
       selectedModel: DEFAULT_MODEL,
       systemPrompt: buildSystemPrompt(publication?.publishedVersionNumber != null),
       history: sanitizeHistory(body.history),
       message,
       connectorToken: claudeConnectorToken ?? undefined,
-      tools: toolset.tools,
-      executeTool: toolset.executeTool,
+      tools,
+      executeTool,
     });
 
     const published = toolset.wasPublished();
@@ -145,6 +202,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         publication: published
           ? await getSitePublication(owner.agentId).catch(() => publication)
           : publication,
+        environmentDeployed,
         toolCalls: chat.toolCalls ?? [],
       },
       { status: STATUS_OK, headers: { "Cache-Control": "private, no-store" } },

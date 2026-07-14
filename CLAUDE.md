@@ -335,7 +335,23 @@ unless explicitly asked. Tests:
 identical pure module in the group repo; keep in lockstep). App-codebase
 deploys land with the own-environment/broker lane (documented boundary).
 
-### Builder: publish → serve on custom domains
+### Builder: own-environment site deploys (broker lane, 2026-07-14)
+
+"It should be its own whole environment deployed": a builder SITE can ship as
+a first-class STATIC APP through the existing app-broker contract —
+`lib/builder/site-app-bridge.ts` `deploySiteAsApp(appId, name, files)` writes
+the site files + a static `rivr-app.json` into the app workspace
+(`<root>/<appId>/`, stale snapshot files pruned; REFUSES to clobber a
+non-static app workspace) and queues a broker `deploy` via
+`queueAppLifecycleRequest` (which re-reads + re-validates the manifest — no
+bypass; the HOST broker re-validates again, builds the static container, and
+routes the subdomain; `*.camalot.me` wildcard DNS verified live 2026-07-14).
+Surfaces: `POST /api/builder/site-app` (agent-hq + owner gates, same as
+`/api/builder/apps`), the "Own environment" panel in the builder Deploy view
+(`components/site-environment-panel.tsx` — deploy queues, then the Apps tab
+shows phase/URL), and the assistant tool `deploy_site_environment` (offered
+only with agent-hq access; explicit-ask-only in the system prompt).
+
 
 The site builder can publish a workspace and serve it on the user's own domain
 (e.g. `camalot.me`) straight from this instance — no GitHub/external host.

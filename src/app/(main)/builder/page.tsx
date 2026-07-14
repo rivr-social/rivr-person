@@ -70,6 +70,7 @@ import type {
 } from "@/lib/bespoke/types";
 import { GitHubDeploySettings } from "@/components/github-deploy-settings";
 import { BuilderAssistantPanel } from "@/components/builder-assistant-panel";
+import { SiteEnvironmentPanel } from "@/components/site-environment-panel";
 import { CustomDomainPanel } from "@/components/custom-domain-panel";
 import { BuilderAppsPanel } from "@/components/builder-apps-panel";
 import { BuilderTablesPanel } from "@/components/builder-tables-panel";
@@ -3070,6 +3071,12 @@ export default function BuilderPage() {
                       setDeployMessage("Published by the assistant.");
                     }}
                   />
+                  <div className="border-t pt-6">
+                    <SiteEnvironmentPanel
+                      siteFiles={siteFiles}
+                      onDeployed={() => handleSelectRightPanelView("apps")}
+                    />
+                  </div>
                   <div className="border-t pt-6">
                     <GitHubDeploySettings />
                   </div>
