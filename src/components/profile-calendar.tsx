@@ -15,6 +15,7 @@ import { ChevronLeft, ChevronRight, Calendar, Clock, MapPin, ExternalLink, Brief
 import type { JobShift } from "@/types/domain"
 import Link from "next/link"
 import { Event, MarketplaceListing } from "@/lib/types"
+import type { ClaimedJobCalendarItem } from "@/lib/job-claim-calendar"
 
 // Common interface for calendar items
 interface CalendarItem {
@@ -27,13 +28,49 @@ interface CalendarItem {
   link: string
   time?: string
   location?: string
+  /** True when `link` is a cross-origin URL (a job on a remote sovereign) and
+   * must be rendered as a plain anchor rather than a client-side `next/link`. */
+  external?: boolean
 }
 
 interface ProfileCalendarProps {
   userShifts: JobShift[]
   userEvents?: Event[]
   userServices?: MarketplaceListing[]
+  /** Jobs the owner claimed on a REMOTE sovereign (A8 federated projection);
+   * each links back to the job on its home instance via a cross-origin anchor. */
+  userClaimedJobs?: ClaimedJobCalendarItem[]
   currentUserId: string
+}
+
+/**
+ * Renders a calendar item's title/child as a link — a plain cross-origin anchor
+ * for federated (remote-sovereign) items, or a client-side `next/link` for local
+ * ones. Keeps remote job entries from being treated as in-app routes.
+ */
+function CalendarItemLink({
+  item,
+  className,
+  title,
+  children,
+}: {
+  item: CalendarItem
+  className?: string
+  title?: string
+  children: React.ReactNode
+}) {
+  if (item.external) {
+    return (
+      <a href={item.link} target="_blank" rel="noopener noreferrer" className={className} title={title}>
+        {children}
+      </a>
+    )
+  }
+  return (
+    <Link href={item.link} className={className} title={title}>
+      {children}
+    </Link>
+  )
 }
 
 // Helper functions for calendar items - Updated color coding
@@ -58,7 +95,7 @@ const formatTime = (dateString: string) => {
   })
 }
 
-export function ProfileCalendar({ userShifts, userEvents = [], userServices = [], currentUserId }: ProfileCalendarProps) {
+export function ProfileCalendar({ userShifts, userEvents = [], userServices = [], userClaimedJobs = [], currentUserId }: ProfileCalendarProps) {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [viewMode, setViewMode] = useState<'month' | 'week'>('month')
@@ -120,8 +157,32 @@ export function ProfileCalendar({ userShifts, userEvents = [], userServices = []
       )
     )
 
+  // Convert federated (cross-instance) job claims to calendar items. The job
+  // lives on a remote sovereign, so `link` is its canonical cross-origin URL and
+  // the entry is flagged `external` to render as a plain anchor. Anchored on the
+  // work-window start, falling back to the deadline then the claim timestamp.
+  const claimedJobItems: CalendarItem[] = userClaimedJobs
+    .map((job): CalendarItem | null => {
+      const dateString = job.startDate ?? job.deadline ?? job.claimedAt
+      if (!dateString) return null
+      const date = new Date(dateString)
+      if (isNaN(date.getTime())) return null
+      return {
+        id: `claimed-${job.id}`,
+        title: job.title,
+        date,
+        type: 'shift',
+        color: getTypeColor('shift'),
+        link: job.jobUrl,
+        external: true,
+        time: formatTime(dateString),
+        location: job.groupName || undefined,
+      }
+    })
+    .filter((item): item is CalendarItem => item !== null)
+
   // Combine all calendar items
-  const allCalendarItems = [...shiftItems, ...eventItems, ...serviceItems]
+  const allCalendarItems = [...shiftItems, ...eventItems, ...serviceItems, ...claimedJobItems]
 
   // Get items for current month
   const monthItems = allCalendarItems.filter(item => 
@@ -295,7 +356,7 @@ export function ProfileCalendar({ userShifts, userEvents = [], userServices = []
                           </div>
                           <div className="space-y-1">
                             {dayData.items.slice(0, 2).map(item => (
-                              <Link key={item.id} href={item.link}>
+                              <CalendarItemLink key={item.id} item={item}>
                                 <div
                                   className={`
                                     text-xs px-1 py-0.5 rounded text-white truncate hover:opacity-80 transition-opacity cursor-pointer
@@ -303,12 +364,12 @@ export function ProfileCalendar({ userShifts, userEvents = [], userServices = []
                                   `}
                                   title={`${item.title} - Click to view details`}
                                 >
-                                  {item.title.length > 12 
-                                    ? `${item.title.substring(0, 12)}...` 
+                                  {item.title.length > 12
+                                    ? `${item.title.substring(0, 12)}...`
                                     : item.title
                                   }
                                 </div>
-                              </Link>
+                              </CalendarItemLink>
                             ))}
                             {dayData.items.length > 2 && (
                               <div 
@@ -452,11 +513,11 @@ export function ProfileCalendar({ userShifts, userEvents = [], userServices = []
                   {selectedDateItems.map(item => (
                     <div key={item.id} className="border border-border rounded-lg p-3">
                       <div className="flex items-start justify-between mb-2">
-                        <Link href={item.link}>
+                        <CalendarItemLink item={item}>
                           <h4 className="font-medium text-sm hover:text-blue-600 hover:underline cursor-pointer">
                             {item.title}
                           </h4>
-                        </Link>
+                        </CalendarItemLink>
                         <Badge 
                           variant="secondary"
                           className={`
@@ -491,12 +552,12 @@ export function ProfileCalendar({ userShifts, userEvents = [], userServices = []
                       </div>
                       
                       <div className="flex items-center justify-end mt-3 pt-2 border-t">
-                        <Link href={item.link}>
+                        <CalendarItemLink item={item}>
                           <Button variant="outline" size="sm" className="h-6 px-2 text-xs">
                             <ExternalLink className="h-3 w-3 mr-1" />
                             View Details
                           </Button>
-                        </Link>
+                        </CalendarItemLink>
                       </div>
                     </div>
                   ))}

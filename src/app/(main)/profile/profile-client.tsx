@@ -19,6 +19,10 @@ import { MetaMaskConnectButton } from "@/components/metamask-connect-button";
 import type { ReactionCountsMap } from "@/app/actions/graph";
 import type { SerializedAgent, SerializedResource } from "@/lib/graph-serializers";
 import {
+  claimedJobResourceToCalendarItem,
+  type ClaimedJobCalendarItem,
+} from "@/lib/job-claim-calendar";
+import {
   getMyWalletAction,
   getTransactionHistoryAction,
   getConnectBalanceAction,
@@ -1192,6 +1196,20 @@ export default function ProfilePage() {
     [marketplace, userId]
   );
 
+  // Cross-instance job claims (A8): jobs the owner claimed on a REMOTE sovereign
+  // arrive as private `claimed_job` projection resources (materialized by the
+  // federation importer, see `@/lib/job-claim-calendar`). They live in the same
+  // owned-resources set the profile already fetches, so no extra query — map the
+  // projections through the shared read-side mapper and hand them to the
+  // calendar, which links each entry back to the job on its home sovereign.
+  const userClaimedJobs = useMemo<ClaimedJobCalendarItem[]>(
+    () =>
+      profileResources
+        .map((resource) => claimedJobResourceToCalendarItem(resource))
+        .filter((item): item is ClaimedJobCalendarItem => item !== null),
+    [profileResources]
+  );
+
   const savedListings = useMemo(
     () => marketplace.filter((listing) => savedListingIds.includes(listing.id)),
     [marketplace, savedListingIds]
@@ -1917,6 +1935,7 @@ export default function ProfilePage() {
               userShifts={[]}
               userEvents={calendarEvents}
               userServices={userServices}
+              userClaimedJobs={userClaimedJobs}
               currentUserId={userId}
             />
           </TabsContent>
