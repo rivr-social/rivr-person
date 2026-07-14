@@ -9,20 +9,23 @@
  * Data requirements:
  * - Fetches shifts, projects, and user badge IDs from the database.
  *
- * Auth: Public route. Badge permissions are derived from the server-side
- *   `auth()` session when present; anonymous visitors resolve to no badges.
+ * Auth: Public route. Badge permissions and claim/manage affordances are
+ *   derived from the unified session — NextAuth locals AND SSO-landed
+ *   remote viewers (who hold only the `rivr_remote_viewer` cookie, never a
+ *   NextAuth session). Resolving via bare `auth()` rendered a sovereign-homed
+ *   admin as anonymous and stripped every claim/attest affordance.
  * Metadata: No `metadata` export; metadata is inherited from the layout.
  *
  * @module jobs/[id]/page
  */
-import { auth } from "@/auth"
+import { getSession } from "@/lib/auth/get-session"
 import { getJobById, getShifts, getProjects, getUserBadgeIds } from "@/lib/queries/resources"
 import { JobDetailClient } from "./job-detail"
 
 export default async function JobPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params
   const jobId = params.id as string
-  const session = await auth()
+  const session = await getSession()
   const currentUserId = session?.user?.id ?? null
 
   // Fetch the job DIRECTLY by id (type job OR legacy shift). Resolving via

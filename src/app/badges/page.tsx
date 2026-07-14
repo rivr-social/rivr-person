@@ -1,10 +1,12 @@
 import { getBadgeDefinitions, getShifts } from "@/lib/queries/resources"
 import { BadgesPageClient } from "./badges-page"
-import { auth } from "@/auth"
+import { getSession } from "@/lib/auth/get-session"
 import { fetchUserBadges } from "@/app/actions/graph"
 
 export default async function BadgesPage() {
-  const session = await auth()
+  // Unified session so an SSO-landed remote viewer (cookie-only, no NextAuth
+  // session) still resolves to their own actor and sees their earned badges.
+  const session = await getSession()
   const userId = session?.user?.id
 
   const [allBadges, jobShifts, userBadgeResources] = await Promise.all([

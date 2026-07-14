@@ -154,6 +154,37 @@ function buildCspHeader(nonce: string): string {
     process.env.GLOBAL_IDENTITY_AUTHORITY_URL?.trim() ||
     "https://a.rivr.social";
 
+  // Federated-peer connect sources. Next soft-navigations / RSC prefetches to
+  // peer instances (a remote viewer's home links, canonical redirects) are
+  // cross-origin fetches from the browser; when connect-src blocks them the
+  // client throws a fatal RSC fetch error — the transient "Application error"
+  // flash (same class global fixed 2026-06-28 by allowing same-apex peers).
+  // `*.rivr.social` above covers the hosted fleet, but a sovereign person
+  // instance can run on its OWN domain (camalot.me) whose peers share a
+  // DIFFERENT apex, so also:
+  // (1) allow `https://*.<apex>` derived from the runtime app URL, and
+  // (2) allow operator-listed peer origins OUTSIDE the apex via
+  // FEDERATED_PEER_ORIGINS (comma-separated absolute origins; runtime env —
+  // NEXT_PUBLIC_ vars inline EMPTY into the middleware bundle at build time,
+  // the 2026-06-28 lesson).
+  const apexPeerSources: string[] = [];
+  try {
+    if (appUrl) {
+      const host = new URL(appUrl).hostname;
+      const parts = host.split(".");
+      if (parts.length >= 2) {
+        const apex = parts.slice(-2).join(".");
+        apexPeerSources.push(`https://*.${apex}`);
+      }
+    }
+  } catch {
+    // Unparseable app URL — skip the apex wildcard rather than break CSP.
+  }
+  const envPeerOrigins = (process.env.FEDERATED_PEER_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter((origin) => /^https:\/\/[a-z0-9.-]+$/i.test(origin));
+
   const connectSources = [
     "'self'",
     "ws://localhost:*",
@@ -166,6 +197,8 @@ function buildCspHeader(nonce: string): string {
     ...(appWss ? [appWss] : []),
     globalBaseUrl,
     "https://*.rivr.social",
+    ...apexPeerSources,
+    ...envPeerOrigins,
     // Allow GLB/GLTF fetches by the self-hosted three.js avatar viewer from
     // this instance's MinIO bucket (e.g. https://s3.camalot.me) — same-origin
     // patterns above only cover *.rivr.social, so sovereign instances need
