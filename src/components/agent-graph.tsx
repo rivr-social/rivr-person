@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { getGlobalUrl } from "@/lib/federation/global-url"
+import { navigateToHref } from "@/components/canonical-link"
 import * as d3 from "d3"
 import {
   fetchGroupDetail,
@@ -168,7 +169,9 @@ export function AgentGraph({ agentId, agentName, agentType }: AgentGraphProps) {
               id: group.id,
               label: group.name || "Subgroup",
               type: NODE_TYPE.GROUP,
-              href: getGlobalUrl(`/groups/${group.id}`),
+              // Canonical sovereign-home URL (federated projection) or global —
+              // the person app has no local `/groups/[id]` route.
+              href: group.homeHref ?? getGlobalUrl(`/groups/${group.id}`),
             })
             newLinks.push({
               id: makeLinkId(agentId, group.id),
@@ -288,7 +291,10 @@ export function AgentGraph({ agentId, agentName, agentType }: AgentGraphProps) {
             const href = objNodeType === NODE_TYPE.PERSON
               ? `/profile/${activity.objectId}`
               : objNodeType === NODE_TYPE.GROUP
-                ? `/groups/${activity.objectId}`
+                // No local `/groups/[id]` route here; activity objects carry no
+                // home stamp, so route to the global aggregator (never a bare
+                // local path, which 404s).
+                ? getGlobalUrl(`/groups/${activity.objectId}`)
                 : objNodeType === NODE_TYPE.EVENT
                   ? `/events/${activity.objectId}`
                   : `/posts/${activity.objectId}`
@@ -450,7 +456,9 @@ export function AgentGraph({ agentId, agentName, agentType }: AgentGraphProps) {
     nodeGroup.on("click", (event, d) => {
       event.stopPropagation()
       if (d.isCenter) return // don't navigate away from current page
-      router.push(d.href)
+      // Node hrefs may be cross-origin sovereign-home URLs (federated
+      // projections) — Next's router can't route to another origin.
+      navigateToHref(router, d.href)
     })
 
     // Draw shapes
