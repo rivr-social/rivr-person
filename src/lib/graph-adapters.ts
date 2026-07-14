@@ -633,6 +633,10 @@ export function agentToProject(agent: SerializedAgent) {
   return {
     id: agent.id,
     name: agent.name,
+    // Projects have no local `/projects/[id]` route here; globalFallback routes
+    // an unstamped project to the aggregator, a federated projection to its
+    // sovereign home. See `agentCanonicalHref`.
+    homeHref: agentCanonicalHref(agent, true),
     description: agent.description ?? "",
     type: "project" as const,
     image: agent.image ?? "/placeholder-project.jpg",
@@ -662,8 +666,11 @@ export function resourceToMarketplaceListing(
 ): MarketplaceListing {
   const meta = resource.metadata ?? {};
   const ownerIsGroup = Boolean(ownerAgent && ownerAgent.type !== "person");
+  // Canonical owner link: a person owner routes to their local/home profile; a
+  // GROUP owner has no local `/groups/[id]` route here, so globalFallback sends
+  // an unstamped group to the aggregator (a federated projection to its home).
   const ownerPath = ownerAgent
-    ? agentProfilePath(ownerAgent)
+    ? agentCanonicalHref(ownerAgent, ownerIsGroup)
     : `/profile/${resource.ownerId}`;
 
   const seller: User = ownerAgent
@@ -918,6 +925,10 @@ export function agentToRing(agent: SerializedAgent): Ring {
   return {
     id: agent.id,
     name: agent.name,
+    // Rings are group-class agents with no local `/rings/[id]` route here, so
+    // globalFallback resolves an unstamped ring to the aggregator; a federated
+    // projection routes to its sovereign home. See `agentCanonicalHref`.
+    homeHref: agentCanonicalHref(agent, true),
     description: agent.description ?? "",
     image: agent.image ?? "/placeholder.svg",
     memberCount: (meta.memberCount as number) ?? 0,
@@ -961,6 +972,10 @@ export function agentToFamily(agent: SerializedAgent): Family {
   return {
     id: agent.id,
     name: agent.name,
+    // Families are group-class agents with no local `/families/[id]` route
+    // here; globalFallback routes an unstamped family to the aggregator, a
+    // federated projection to its sovereign home. See `agentCanonicalHref`.
+    homeHref: agentCanonicalHref(agent, true),
     description: agent.description ?? "",
     image: agent.image ?? "/placeholder.svg",
     memberCount: (meta.memberCount as number) ?? 0,
