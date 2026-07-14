@@ -316,6 +316,25 @@ faceted-tag doc Resources (the same rows the Tags view / `faceted-fs` render).
 - **Tests:** `src/lib/__tests__/parachute-vault-md.test.ts`,
   `src/lib/__tests__/autobot-parachute-sync.test.ts` (run under Node ≥22).
 
+### Builder assistant — agentic edit + publish in the Deploy view (2026-07-14)
+
+The tool-loop sibling of the streaming generator chat: `POST
+/api/builder/assistant` runs a workspace-jailed tool loop
+(`lib/builder/assistant-tools.ts` — `makeBuilderToolset`: list/read/write/
+delete + `publish_site`; path jail w/ extension allowlist, 400KB-file/2MB-
+workspace/60-file caps, undeletable index.html; publish injected — the SAME
+owner-gated `publishSite` service the Deploy button calls) over the CLIENT'S
+current workspace (the builder page sends `files` and applies the returned
+map, so edits preview before going live). Owner-gated via
+`resolveBuilderOwner`; credential = the owner's Claude Code connector token
+(same resolution as the generator chat), env fallback inside native-chat.
+UI: `components/builder-assistant-panel.tsx` at the top of the Deploy view
+(changed-file chips, Published badge). The system prompt forbids publishing
+unless explicitly asked. Tests:
+`lib/builder/__tests__/assistant-tools.test.ts` (`pnpm test:unit`, 8 cases —
+identical pure module in the group repo; keep in lockstep). App-codebase
+deploys land with the own-environment/broker lane (documented boundary).
+
 ### Builder: publish → serve on custom domains
 
 The site builder can publish a workspace and serve it on the user's own domain
