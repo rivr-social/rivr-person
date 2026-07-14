@@ -153,6 +153,47 @@ Still open:
 - **Sovereign-merge:** The connect-to-sovereign flow requires 7 manual fixes
   before it works for new users without hand-intervention.
 
+### Cross-instance `job.claimed` calendar projection (A8, materialize side)
+
+When the owner claims a job on a REMOTE sovereign (a group instance), that group
+emits a self-describing `job.claimed` federation event; THIS instance (the
+claimant's HOME) materializes it onto the owner's calendar. The EMIT side ships
+in rivr-group (`src/lib/federation/job-claim-event.ts` — the wire contract;
+`JOB_CLAIMED_EVENT_TYPE = 'job.claimed'` + `JobClaimCalendarPayload`). Keep the
+person copy in `src/lib/job-claim-calendar.ts` in lockstep with it.
+
+- **Pure lane:** `src/lib/job-claim-calendar.ts` — payload parse/narrow
+  (`parseJobClaimCalendarPayload`), owner match (`claimantMatchesLocalOwner`),
+  the idempotency key (`syntheticClaimedJobEntityKey`), the projection metadata
+  builder, and the read-side mapper (`claimedJobResourceToCalendarItem`). No IO,
+  so it is imported by BOTH the server importer and the client calendar. Unit
+  test: `src/lib/__tests__/job-claim-calendar.test.ts` (`pnpm test:unit`).
+- **Materializer:** `materializeClaimedJobCalendar` in `src/lib/federation.ts`,
+  called from `importFederationEvents` on a verified `job.claimed` event. Writes
+  a private `resources` row tagged `metadata.resourceKind = 'claimed_job'` (no
+  enum/schema migration — mirrors the group's `fund`/`workperiod` convention),
+  owned by `PRIMARY_AGENT_ID`, carrying the canonical cross-origin job URL + the
+  self-describing calendar fields. It projects ONLY when the claimant resolves
+  to the local owner (raw id, or a `federation_entity_map` agent alias — no
+  mapping is minted for a non-owner claim). This app hosts exactly one person,
+  so a claim for anyone else is ignored.
+- **Idempotency:** upsert keyed on `{owner, job}` via
+  `syntheticClaimedJobEntityKey(primaryAgentId, jobId)` → a namespaced synthetic
+  `federation_entity_map` external id → a stable local `resources.id`. Redelivery
+  of the same claim updates the row in place (never duplicates).
+- **Read path:** the profile **Calendar** tab. `fetchProfileData` already returns
+  the owner's own resources (private included), so `profile-client.tsx` maps
+  those rows through `claimedJobResourceToCalendarItem` and passes them to
+  `ProfileCalendar` as `userClaimedJobs` — NOT a parallel store. `ProfileCalendar`
+  renders each as a green shift-type entry whose link is the remote job's
+  canonical URL, opened via a plain cross-origin `<a>` (`CalendarItemLink`), not
+  `next/link`.
+- **GAP — no unclaim/release event:** the wire contract has NO `job.released`
+  (or `job.claimed` retraction) event, so when the owner releases a claim on the
+  origin the projection is NOT removed and the entry lingers on the calendar
+  until manually cleared. Adding a release event is a coordinated federation
+  change (group EMIT + person/global MATERIALIZE); do not invent one unilaterally.
+
 ### Federated visitor access (browsing-SSO parity)
 
 A cross-instance SSO actor who lands via `/api/federation/sso/land` is

@@ -33,6 +33,13 @@ import {
   tombstoneManifestReference,
   upsertManifestReference,
 } from "@/lib/federation/manifest-references";
+import {
+  JOB_CLAIMED_EVENT_TYPE,
+  buildClaimedJobProjectionMetadata,
+  claimantMatchesLocalOwner,
+  parseJobClaimCalendarPayload,
+  syntheticClaimedJobEntityKey,
+} from "@/lib/job-claim-calendar";
 
 /**
  * Core federation orchestration for node lifecycle, peer trust, event export/import,
@@ -972,6 +979,89 @@ async function resolveLocalEntityId(
 }
 
 /**
+ * Materializes a cross-instance `job.claimed` event (A8) into a local calendar
+ * projection when — and only when — the claimant is THIS instance's
+ * locally-homed owner (`PRIMARY_AGENT_ID`).
+ *
+ * The projection is a private `resources` row tagged
+ * `metadata.resourceKind = 'claimed_job'` (no enum/schema migration), owned by
+ * the local owner, carrying the canonical cross-origin job URL + the
+ * self-describing calendar fields the profile calendar reads. Idempotent on
+ * {claimant, job}: a namespaced synthetic external id mints a stable local id
+ * via `federation_entity_map`, so re-delivery of the same claim upserts in
+ * place rather than duplicating.
+ *
+ * Called from the importer only AFTER signature/replay/version verification has
+ * passed — it neither performs nor weakens any verification, and a non-owner
+ * claim is ignored (this app hosts exactly one person).
+ *
+ * @returns The local owner agent id when a projection was written, else null.
+ */
+async function materializeClaimedJobCalendar(params: {
+  payload: Record<string, unknown>;
+  peerNode: { id: string; slug: string };
+}): Promise<string | null> {
+  const payload = parseJobClaimCalendarPayload(params.payload);
+  if (!payload) return null;
+
+  const primaryAgentId = getInstanceConfig().primaryAgentId ?? null;
+  if (!primaryAgentId) return null;
+
+  // Resolve the origin's claimant id into our local id space via an existing
+  // (read-only) entity-map alias, then require it to be our locally-homed
+  // owner. No mapping is minted here — a non-owner claim leaves no trace.
+  const aliasRow = await db.query.federationEntityMap.findFirst({
+    where: and(
+      eq(federationEntityMap.originNodeId, params.peerNode.id),
+      eq(federationEntityMap.externalEntityId, payload.claimantId),
+      eq(federationEntityMap.entityType, "agent"),
+    ),
+    columns: { localEntityId: true },
+  });
+  const mappedLocalClaimantId = aliasRow?.localEntityId ?? null;
+  if (!claimantMatchesLocalOwner(payload, primaryAgentId, mappedLocalClaimantId)) {
+    return null;
+  }
+
+  // Stable, collision-free local id for the projection, keyed on {owner, job}.
+  const projectionLocalId = await resolveLocalEntityId(
+    params.peerNode.id,
+    syntheticClaimedJobEntityKey(primaryAgentId, payload.jobId),
+    "resource",
+  );
+
+  const metadata = buildClaimedJobProjectionMetadata(payload, {
+    nodeId: params.peerNode.id,
+    nodeSlug: params.peerNode.slug,
+  });
+
+  await db
+    .insert(resources)
+    .values({
+      id: projectionLocalId,
+      name: payload.jobName,
+      type: "resource" as typeof resources.$inferInsert.type,
+      ownerId: primaryAgentId,
+      visibility: "private",
+      description: null,
+      metadata,
+      tags: [],
+    })
+    .onConflictDoUpdate({
+      target: resources.id,
+      set: {
+        name: payload.jobName,
+        visibility: "private",
+        deletedAt: null,
+        metadata,
+        updatedAt: new Date(),
+      },
+    });
+
+  return primaryAgentId;
+}
+
+/**
  * Ensures a local `agents` row exists for a mapped remote agent id.
  *
  * Real-time resource events can arrive before the owning agent's upsert
@@ -1818,6 +1908,20 @@ export async function importFederationEvents(params: {
           );
         }
       }
+    }
+
+    // A8 (cross-instance): a `job.claimed` event carries a self-describing
+    // calendar payload (see `@/lib/job-claim-calendar`). When the claimant is
+    // THIS instance's locally-homed owner, materialize an idempotent private
+    // "claimed job" calendar projection so the profile calendar renders the job
+    // — no round-trip to the origin, and no separate job resource is imported.
+    if (event.eventType === JOB_CLAIMED_EVENT_TYPE) {
+      const localOwnerId = await materializeClaimedJobCalendar({
+        payload: event.payload,
+        peerNode,
+      });
+      // Bind the imported event to the local owner for audit when it matched.
+      if (localOwnerId) importRecord.actorId = localOwnerId;
     }
   }
 
