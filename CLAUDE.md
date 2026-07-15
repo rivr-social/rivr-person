@@ -352,6 +352,7 @@ Surfaces: `POST /api/builder/site-app` (agent-hq + owner gates, same as
 shows phase/URL), and the assistant tool `deploy_site_environment` (offered
 only with agent-hq access; explicit-ask-only in the system prompt).
 
+### Builder: publish → serve on custom domains
 
 The site builder can publish a workspace and serve it on the user's own domain
 (e.g. `camalot.me`) straight from this instance — no GitHub/external host.
