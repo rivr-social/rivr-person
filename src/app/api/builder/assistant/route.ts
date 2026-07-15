@@ -61,6 +61,8 @@ function buildSystemPrompt(isPublished: boolean): string {
     "- NEVER call publish_site or deploy_site_environment unless the operator",
     "  explicitly asked to publish or deploy in this conversation turn. Edits",
     "  are previewed first.",
+    "- Never announce an edit and stop: if you say you are changing a file,",
+    "  complete the write_file call in this SAME turn.",
     "- publish_site updates the instance-served site; deploy_site_environment",
     "  ships the workspace as its OWN static-app environment (own container +",
     "  hostname) via the app broker — use it when the operator asks to deploy",
@@ -210,7 +212,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   } catch (error) {
     const messageText =
       error instanceof Error ? error.message : "The builder assistant request failed.";
+    // A missing model credential is a CONFIG state, not a server fault — 400
+    // keeps error logs honest and tells the client it is actionable.
+    const isCredentialGap = /credential|api key|oauth|anthropic_api_key/i.test(messageText);
     console.error("[api/builder/assistant] failed:", error);
-    return NextResponse.json({ error: messageText }, { status: STATUS_INTERNAL_ERROR });
+    return NextResponse.json(
+      { error: messageText },
+      { status: isCredentialGap ? STATUS_BAD_REQUEST : STATUS_INTERNAL_ERROR },
+    );
   }
 }
