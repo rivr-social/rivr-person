@@ -316,7 +316,42 @@ faceted-tag doc Resources (the same rows the Tags view / `faceted-fs` render).
 - **Tests:** `src/lib/__tests__/parachute-vault-md.test.ts`,
   `src/lib/__tests__/autobot-parachute-sync.test.ts` (run under Node ≥22).
 
-### Builder: publish → serve on custom domains
+### Builder assistant — agentic edit + publish in the Deploy view (2026-07-14)
+
+The tool-loop sibling of the streaming generator chat: `POST
+/api/builder/assistant` runs a workspace-jailed tool loop
+(`lib/builder/assistant-tools.ts` — `makeBuilderToolset`: list/read/write/
+delete + `publish_site`; path jail w/ extension allowlist, 400KB-file/2MB-
+workspace/60-file caps, undeletable index.html; publish injected — the SAME
+owner-gated `publishSite` service the Deploy button calls) over the CLIENT'S
+current workspace (the builder page sends `files` and applies the returned
+map, so edits preview before going live). Owner-gated via
+`resolveBuilderOwner`; credential = the owner's Claude Code connector token
+(same resolution as the generator chat), env fallback inside native-chat.
+UI: `components/builder-assistant-panel.tsx` at the top of the Deploy view
+(changed-file chips, Published badge). The system prompt forbids publishing
+unless explicitly asked. Tests:
+`lib/builder/__tests__/assistant-tools.test.ts` (`pnpm test:unit`, 8 cases —
+identical pure module in the group repo; keep in lockstep). App-codebase
+deploys land with the own-environment/broker lane (documented boundary).
+
+### Builder: own-environment site deploys (broker lane, 2026-07-14)
+
+"It should be its own whole environment deployed": a builder SITE can ship as
+a first-class STATIC APP through the existing app-broker contract —
+`lib/builder/site-app-bridge.ts` `deploySiteAsApp(appId, name, files)` writes
+the site files + a static `rivr-app.json` into the app workspace
+(`<root>/<appId>/`, stale snapshot files pruned; REFUSES to clobber a
+non-static app workspace) and queues a broker `deploy` via
+`queueAppLifecycleRequest` (which re-reads + re-validates the manifest — no
+bypass; the HOST broker re-validates again, builds the static container, and
+routes the subdomain; `*.camalot.me` wildcard DNS verified live 2026-07-14).
+Surfaces: `POST /api/builder/site-app` (agent-hq + owner gates, same as
+`/api/builder/apps`), the "Own environment" panel in the builder Deploy view
+(`components/site-environment-panel.tsx` — deploy queues, then the Apps tab
+shows phase/URL), and the assistant tool `deploy_site_environment` (offered
+only with agent-hq access; explicit-ask-only in the system prompt).
+
 
 The site builder can publish a workspace and serve it on the user's own domain
 (e.g. `camalot.me`) straight from this instance — no GitHub/external host.
