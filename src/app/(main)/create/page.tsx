@@ -53,7 +53,8 @@ import {
   getSubscriptionStatusAction,
 } from "@/app/actions/billing"
 import { CreateOfferingModal } from "@/components/create-offering-modal"
-import type { OfferingDraftPayload } from "@/components/create-offering-form"
+import { CreateOfferingForm, type OfferingDraftPayload } from "@/components/create-offering-form"
+import { resolveInitialCreateTab } from "@/lib/create-tabs"
 import { JoinQuestionEditor } from "@/components/join-question-editor"
 import { SubscriptionGateDialog } from "@/components/subscription-gate-dialog"
 import { FEATURE_TIER_REQUIREMENTS, FEATURE_DESCRIPTIONS } from "@/lib/subscription-constants"
@@ -153,19 +154,14 @@ export default function CreatePage() {
   const urlReturnPath = searchParams.get('returnPath')
   const resumeGroupCreation = searchParams.get('resumeGroupCreation') === '1'
   const isLiveClass = urlType === 'live-class'
-  const supportedCreateTabs = new Set(["post", "event", "project", "group"])
-  const initialCreateTab = urlTab === "job"
-    ? "project"
-    : urlTab && supportedCreateTabs.has(urlTab)
-      ? urlTab
-      : "post"
+  const initialCreateTab = resolveInitialCreateTab(urlTab)
   const initialGroupType = (() => {
     if (urlType === "group") return "basic"
     if (urlType === "org" || urlType === "ring" || urlType === "family" || urlType === "basic") return urlType
     return "basic"
   })()
 
-  const [activeTab, setActiveTab] = useState(initialCreateTab)
+  const [activeTab, setActiveTab] = useState<string>(initialCreateTab)
 
   // Event form state - initialize from URL params where applicable
   const [eventTitle, setEventTitle] = useState(() => isLiveClass && urlTitle ? decodeURIComponent(urlTitle) : "")
@@ -1770,6 +1766,7 @@ export default function CreatePage() {
           <TabsTrigger value="event">Event</TabsTrigger>
           <TabsTrigger value="project">Project</TabsTrigger>
           <TabsTrigger value="group">Group</TabsTrigger>
+          <TabsTrigger value="offering">Offering</TabsTrigger>
         </ResponsiveTabsList>
 
         <TabsContent value="post" className="space-y-6">
@@ -3793,6 +3790,26 @@ export default function CreatePage() {
               </Button>
             </CardFooter>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="offering" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Create an Offering</CardTitle>
+              <CardDescription>
+                Compose a product, service, skill, voucher, or other offering from your resources.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CreateOfferingForm
+                locales={localeData.locales}
+                eftValues={eftValues}
+                capitalValues={capitalValues}
+                auditValues={auditValues}
+              />
+            </CardContent>
+          </Card>
+          <EftPicker value={eftValues} onChange={setEftValues} capitalValue={capitalValues} onCapitalChange={setCapitalValues} auditValue={auditValues} onAuditChange={setAuditValues} />
         </TabsContent>
 
       </Tabs>
