@@ -24,6 +24,7 @@ import {
   resolveAuthenticatedUserId,
   hasGroupWriteAccess,
 } from "./helpers";
+import { isGroupMember } from "@/lib/permissions";
 import type { ActionResult, UpdateGroupResourceInput } from "./types";
 import { desc } from "drizzle-orm";
 
@@ -892,6 +893,44 @@ export async function castGovernanceVoteAction(input: {
   }
 
   try {
+    // P0 (members-only voting): a governance vote is a member act — only active
+    // members of the owning group may vote. Being logged in is NOT sufficient
+    // (parity with global's cast path).
+    const membership = await isGroupMember(userId, input.groupId);
+    if (!membership.isMember) {
+      return {
+        success: false,
+        message: "You must be a group member to vote on this governance item.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+
+    // Load the group and locate the target item; a vote must reference a
+    // poll/proposal that actually belongs to this group.
+    const [groupRow] = await db
+      .select({ metadata: agents.metadata })
+      .from(agents)
+      .where(and(eq(agents.id, input.groupId), eq(agents.type, "organization"), sql`${agents.deletedAt} IS NULL`))
+      .limit(1);
+
+    if (!groupRow) {
+      return { success: false, message: "Group not found", error: { code: "NOT_FOUND" } };
+    }
+
+    const groupMeta = groupRow.metadata && typeof groupRow.metadata === "object"
+      ? (groupRow.metadata as Record<string, unknown>)
+      : {};
+    const metaKey = input.targetType === "poll" ? "polls" : "proposals";
+    const items = Array.isArray(groupMeta[metaKey]) ? [...(groupMeta[metaKey] as Record<string, unknown>[])] : [];
+    const idx = items.findIndex((item) => String(item.id) === input.targetId);
+    if (idx < 0) {
+      return {
+        success: false,
+        message: "Governance item does not belong to this group.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+
     // Deactivate any prior vote by this user on the same governance item before inserting the new one.
     await db.execute(sql`
       UPDATE ledger
@@ -919,6 +958,54 @@ export async function castGovernanceVoteAction(input: {
         votedAt: new Date().toISOString(),
       },
     } as NewLedgerEntry);
+
+    // P0 (tally write-back): the Governance tab renders vote counts from the
+    // group agent's metadata, but votes persist ONLY to the ledger — so the bars
+    // read 0% forever. Recompute the authoritative tally from the ACTIVE
+    // governance-vote ledger rows and write it back onto the item. Recomputing
+    // (rather than a per-cast increment) is what makes a CHANGED vote correct:
+    // the prior choice was deactivated above but a naive increment would never
+    // decrement it, drifting the counts on every re-vote.
+    const activeVoteRows = await db
+      .select({ vote: sql<string>`${ledger.metadata}->>'vote'` })
+      .from(ledger)
+      .where(
+        and(
+          eq(ledger.verb, "vote"),
+          eq(ledger.isActive, true),
+          eq(ledger.objectId, input.groupId),
+          sql`${ledger.metadata}->>'targetId' = ${input.targetId}`,
+          sql`${ledger.metadata}->>'groupId' = ${input.groupId}`,
+          sql`${ledger.metadata}->>'interactionType' = 'governance-vote'`,
+        ),
+      );
+
+    const item = { ...items[idx] };
+    if (input.targetType === "proposal") {
+      const votes = { yes: 0, no: 0, abstain: 0 };
+      for (const row of activeVoteRows) {
+        const key = String(row.vote ?? "").toLowerCase();
+        if (key === "yes" || key === "no" || key === "abstain") votes[key] += 1;
+      }
+      item.votes = votes;
+    } else {
+      // Poll: `input.vote` is the chosen option id — count active rows per option.
+      const counts = new Map<string, number>();
+      for (const row of activeVoteRows) {
+        const key = String(row.vote ?? "");
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      item.options = Array.isArray(item.options)
+        ? (item.options as Record<string, unknown>[]).map((o) => ({ ...o, votes: counts.get(String(o.id)) ?? 0 }))
+        : [];
+      item.totalVotes = activeVoteRows.length;
+    }
+    items[idx] = item;
+
+    await db
+      .update(agents)
+      .set({ metadata: { ...groupMeta, [metaKey]: items }, updatedAt: new Date() })
+      .where(and(eq(agents.id, input.groupId), eq(agents.type, "organization"), sql`${agents.deletedAt} IS NULL`));
 
     revalidatePath(`/groups/${input.groupId}`);
 
