@@ -24,7 +24,12 @@ import {
   resolveAuthenticatedUserId,
   hasGroupWriteAccess,
 } from "./helpers";
-import { isGroupMember } from "@/lib/permissions";
+import {
+  DEFAULT_VOTE_GATE,
+  parseEligibilityGate,
+  type EligibilityGate,
+} from "@/lib/governance-eligibility";
+import { evaluateGovernanceGateForUser } from "@/lib/governance-eligibility.server";
 import type { ActionResult, UpdateGroupResourceInput } from "./types";
 import { desc } from "drizzle-orm";
 
@@ -851,6 +856,16 @@ export async function addGroupRelationshipAction(input: {
   };
 }
 
+/** Resolve a stored governance item's vote-eligibility gate (legacy items
+ *  default to the P0 members-only baseline). */
+function voteGateFromItem(item: Record<string, unknown>): EligibilityGate {
+  const eligibility =
+    item.eligibility && typeof item.eligibility === "object"
+      ? (item.eligibility as Record<string, unknown>)
+      : {};
+  return parseEligibilityGate(eligibility.vote, DEFAULT_VOTE_GATE);
+}
+
 export async function castGovernanceVoteAction(input: {
   groupId: string;
   targetId: string;
@@ -893,18 +908,6 @@ export async function castGovernanceVoteAction(input: {
   }
 
   try {
-    // P0 (members-only voting): a governance vote is a member act — only active
-    // members of the owning group may vote. Being logged in is NOT sufficient
-    // (parity with global's cast path).
-    const membership = await isGroupMember(userId, input.groupId);
-    if (!membership.isMember) {
-      return {
-        success: false,
-        message: "You must be a group member to vote on this governance item.",
-        error: { code: "FORBIDDEN" },
-      };
-    }
-
     // Load the group and locate the target item; a vote must reference a
     // poll/proposal that actually belongs to this group.
     const [groupRow] = await db
@@ -927,6 +930,20 @@ export async function castGovernanceVoteAction(input: {
       return {
         success: false,
         message: "Governance item does not belong to this group.",
+        error: { code: "FORBIDDEN" },
+      };
+    }
+
+    // P0→P2 (eligibility gates): voting is gated by the ITEM's vote-eligibility
+    // gate — default members-only, the P0 baseline. The gate defines the
+    // electorate exactly; admins do NOT bypass it. Gates are authored on the
+    // group/global create surfaces; this repo only ENFORCES them.
+    const voteGate = voteGateFromItem(items[idx]);
+    const voteVerdict = await evaluateGovernanceGateForUser(userId, input.groupId, voteGate);
+    if (!voteVerdict.eligible) {
+      return {
+        success: false,
+        message: voteVerdict.reason ?? "You are not eligible to vote on this governance item.",
         error: { code: "FORBIDDEN" },
       };
     }
