@@ -16,6 +16,7 @@ import { auth } from "@/auth";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { isPersonaOf } from "@/lib/persona";
+import { getAutobotUserSettings } from "@/lib/autobot-user-settings";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import {
   createAvatarSession,
@@ -132,17 +133,29 @@ export async function POST(request: Request) {
     .where(eq(agents.id, targetAgentId))
     .limit(1);
 
-  if (!agentRow?.image) {
+  // An uploaded live-avatar picture (digital-twin "reference-portrait")
+  // overrides the profile photo; the profile photo is the default.
+  const targetSettings = await getAutobotUserSettings(targetAgentId).catch(
+    () => null,
+  );
+  const referencePortrait = targetSettings?.digitalTwin.assets.find(
+    (asset) =>
+      asset.kind === "reference-portrait" &&
+      asset.mimeType.startsWith("image/"),
+  );
+  const imageRef = referencePortrait?.url || agentRow?.image;
+
+  if (!imageRef) {
     return NextResponse.json(
       {
         error:
-          "No profile picture set. Add a profile photo first — the live avatar animates it.",
+          "No picture to animate. Set a profile photo, or upload a live avatar picture.",
       },
       { status: 400 },
     );
   }
 
-  const loaded = await loadAvatarImage(agentRow.image);
+  const loaded = await loadAvatarImage(imageRef);
   if ("error" in loaded) {
     return NextResponse.json({ error: loaded.error }, { status: 422 });
   }

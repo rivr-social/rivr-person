@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Mic, MicOff, Send, X } from "lucide-react";
+import { ImageUp, Loader2, Mic, MicOff, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { stripMarkdownForSpeech } from "@/lib/speech-text";
 
@@ -29,6 +29,7 @@ const SESSION_URL = "/api/autobot/live-avatar/session";
 const SPEAK_URL = "/api/autobot/live-avatar/speak";
 const STOP_URL = "/api/autobot/live-avatar/stop";
 const CHAT_URL = "/api/autobot/chat";
+const PORTRAIT_UPLOAD_URL = "/api/autobot/digital-twin/upload";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -82,6 +83,9 @@ export function LiveAvatarOverlay({
   const [lastHeard, setLastHeard] = useState("");
   const [lastReply, setLastReply] = useState("");
   const [typedInput, setTypedInput] = useState("");
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+  const [uploadingPortrait, setUploadingPortrait] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const historyRef = useRef<HistoryMessage[]>([]);
@@ -286,7 +290,7 @@ export function LiveAvatarOverlay({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [personaId]);
+  }, [personaId, sessionEpoch]);
 
   // Stop playback on unmount (separate effect so it runs last).
   useEffect(() => stopPlayback, [stopPlayback]);
@@ -347,6 +351,38 @@ export function LiveAvatarOverlay({
       if (recognitionRef.current === recognition) recognitionRef.current = null;
     };
   }, [bargeIn, micMuted, phase]);
+
+  // -- Alternative avatar picture upload -------------------------------------
+
+  const handlePortraitUpload = useCallback(
+    async (file: File) => {
+      setUploadingPortrait(true);
+      setError(null);
+      try {
+        const form = new FormData();
+        form.append("kind", "reference-portrait");
+        form.append("file", file);
+        const response = await fetch(PORTRAIT_UPLOAD_URL, {
+          method: "POST",
+          body: form,
+        });
+        const data: { error?: string } = await response.json();
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Upload failed (${response.status})`);
+        }
+        // Restart the session so the stream animates the new picture.
+        stopPlayback();
+        setStreamPath(null);
+        setPhase("connecting");
+        setSessionEpoch((epoch) => epoch + 1);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Upload failed");
+      } finally {
+        setUploadingPortrait(false);
+      }
+    },
+    [stopPlayback],
+  );
 
   // -- UI --------------------------------------------------------------------
 
@@ -427,6 +463,35 @@ export function LiveAvatarOverlay({
 
       {/* Controls */}
       <div className="mt-5 flex items-center gap-3">
+        {!personaId ? (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void handlePortraitUpload(file);
+              }}
+            />
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-12 w-12 rounded-full"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingPortrait || phase === "connecting"}
+              title="Use a different picture for the live avatar"
+            >
+              {uploadingPortrait ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <ImageUp className="h-5 w-5" />
+              )}
+            </Button>
+          </>
+        ) : null}
         {micSupported ? (
           <Button
             variant={micMuted ? "secondary" : "default"}

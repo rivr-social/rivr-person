@@ -334,8 +334,11 @@ text chat, and voices the reply (Chatterbox clone audio when available, else
 - **Routes:** `/api/autobot/live-avatar/{session,speak,stop,stream/[sessionId]}`
   — all `auth()`-gated; the stream route pipes the worker's MJPEG body through
   Next so the worker is never exposed to the browser. `session` POST resolves
-  the caller's `agents.image` (or an owned persona's, via `isPersonaOf`),
-  downloads it server-side, and opens the worker session.
+  the animated picture as: the target's digital-twin `reference-portrait`
+  asset if one exists (the "alternative live avatar picture", uploaded from
+  the overlay via the existing `/api/autobot/digital-twin/upload`), else
+  `agents.image` (own agent, or an owned persona's via `isPersonaOf`) —
+  downloaded server-side, then the worker session opens.
 - **Shared TTS:** `src/lib/chatterbox-tts.ts` (`requestChatterboxTts`) — used by
   both `/api/autobot/tts` and the live-avatar speak route.
 - **Config:** `LIVE_AVATAR_WORKER_URL` (+ optional `LIVE_AVATAR_WORKER_API_KEY`);
