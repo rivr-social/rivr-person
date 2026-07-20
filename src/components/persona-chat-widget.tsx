@@ -8,8 +8,9 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
-import { Bot, Loader2, MessageSquare, Minimize2, Send, X } from "lucide-react";
+import { Bot, Loader2, MessageSquare, Minimize2, Send, Video, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { LiveAvatarOverlay } from "@/components/live-avatar-overlay";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,10 +72,32 @@ export function PersonaChatWidget({
   const [inputValue, setInputValue] = useState("");
   const [sendState, setSendState] = useState<SendState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [liveAvatarOpen, setLiveAvatarOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const isAuthenticated = Boolean(session?.user?.id);
+  // Live avatar mode is the owner's assistant lane (voice + talking picture).
+  const canGoLive = isAuthenticated && useAutobotChat;
+
+  const appendExchange = useCallback((userText: string, assistantText: string) => {
+    const now = Date.now();
+    setMessages((prev) => [
+      ...prev.slice(-MAX_DISPLAY_MESSAGES + 2),
+      {
+        id: `user-${now}`,
+        role: "user" as const,
+        content: userText,
+        timestamp: new Date(now).toISOString(),
+      },
+      {
+        id: `assistant-${now + 1}`,
+        role: "assistant" as const,
+        content: assistantText,
+        timestamp: new Date(now + 1).toISOString(),
+      },
+    ]);
+  }, []);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -178,19 +201,43 @@ export function PersonaChatWidget({
     [sendMessage],
   );
 
-  // Collapsed state: floating button
+  // Collapsed state: floating button (the profile avatar when one exists)
   if (widgetState === "collapsed") {
     return (
-      <div className="fixed bottom-6 right-6 z-[120]">
-        <Button
-          onClick={() => setWidgetState("expanded")}
-          className="h-14 w-14 rounded-full shadow-lg"
-          size="icon"
-          title={`Chat with ${personaName}'s AI persona`}
-        >
-          <MessageSquare className="h-6 w-6" />
-        </Button>
-      </div>
+      <>
+        <div className="fixed bottom-6 right-6 z-[120]">
+          <Button
+            onClick={() => setWidgetState("expanded")}
+            className={cn(
+              "h-14 w-14 rounded-full shadow-lg",
+              personaImage && "p-0 overflow-hidden",
+            )}
+            size="icon"
+            title={`Chat with ${personaName}'s AI persona`}
+          >
+            {personaImage ? (
+              <Image
+                src={personaImage}
+                alt={personaName}
+                width={56}
+                height={56}
+                className="h-full w-full object-cover"
+                unoptimized
+              />
+            ) : (
+              <MessageSquare className="h-6 w-6" />
+            )}
+          </Button>
+        </div>
+        {liveAvatarOpen ? (
+          <LiveAvatarOverlay
+            personaName={personaName}
+            personaId={personaId}
+            onClose={() => setLiveAvatarOpen(false)}
+            onExchange={appendExchange}
+          />
+        ) : null}
+      </>
     );
   }
 
@@ -200,7 +247,17 @@ export function PersonaChatWidget({
       <Card className="flex flex-col shadow-2xl border overflow-hidden" style={{ maxHeight: "min(520px, calc(100dvh - 6rem))" }}>
         {/* Header */}
         <CardHeader className="flex flex-row items-center gap-3 px-4 py-3 border-b bg-muted/30">
-          <div className="relative h-9 w-9 rounded-full bg-muted overflow-hidden flex-shrink-0">
+          <button
+            type="button"
+            onClick={canGoLive ? () => setLiveAvatarOpen(true) : undefined}
+            disabled={!canGoLive}
+            className={cn(
+              "relative h-9 w-9 rounded-full bg-muted overflow-hidden flex-shrink-0",
+              canGoLive &&
+                "cursor-pointer ring-offset-1 hover:ring-2 hover:ring-emerald-400/80",
+            )}
+            title={canGoLive ? "Go live — talk to your avatar" : undefined}
+          >
             {personaImage ? (
               <Image
                 src={personaImage}
@@ -215,7 +272,7 @@ export function PersonaChatWidget({
                 <Bot className="h-5 w-5 text-muted-foreground" />
               </div>
             )}
-          </div>
+          </button>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold truncate">{personaName}</p>
             <Badge
@@ -226,6 +283,17 @@ export function PersonaChatWidget({
             </Badge>
           </div>
           <div className="flex items-center gap-1">
+            {canGoLive ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-emerald-600 hover:text-emerald-700"
+                onClick={() => setLiveAvatarOpen(true)}
+                title="Live avatar — talk with your voice"
+              >
+                <Video className="h-4 w-4" />
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="icon"
@@ -364,6 +432,14 @@ export function PersonaChatWidget({
           </div>
         </CardContent>
       </Card>
+      {liveAvatarOpen ? (
+        <LiveAvatarOverlay
+          personaName={personaName}
+          personaId={personaId}
+          onClose={() => setLiveAvatarOpen(false)}
+          onExchange={appendExchange}
+        />
+      ) : null}
     </div>
   );
 }

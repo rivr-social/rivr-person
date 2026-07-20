@@ -316,6 +316,32 @@ faceted-tag doc Resources (the same rows the Tags view / `faceted-fs` render).
 - **Tests:** `src/lib/__tests__/parachute-vault-md.test.ts`,
   `src/lib/__tests__/autobot-parachute-sync.test.ts` (run under Node ≥22).
 
+### Live avatar — voice conversation with the animated profile photo (2026-07-20)
+
+The assistant bubble (`persona-chat-widget.tsx`) has a **Live Avatar** mode
+(owner lane only, `useAutobotChat`): clicking the header avatar (or the Video
+button) opens `src/components/live-avatar-overlay.tsx` — a big round MJPEG
+stream of the profile photo that listens (browser `SpeechRecognition`, with
+barge-in), routes the transcript through the SAME `/api/autobot/chat` lane as
+text chat, and voices the reply (Chatterbox clone audio when available, else
+`speechSynthesis`), mouth motion driven server-side by the audio envelope.
+
+- **Worker:** `docs/live-avatar/` (FastAPI, same packaging as `docs/whisperx/`)
+  — MediaPipe-landmark portrait puppet (jaw/blink/sway warp via `cv2.remap`,
+  ~1–2ms/frame on CPU, no model weights). Sessions + `multipart/x-mixed-replace`
+  MJPEG at 8fps. Engine-agnostic API: a LivePortrait-class engine is a drop-in
+  `engine.py` swap. Python tests: `pytest docs/live-avatar/test_worker.py`.
+- **Routes:** `/api/autobot/live-avatar/{session,speak,stop,stream/[sessionId]}`
+  — all `auth()`-gated; the stream route pipes the worker's MJPEG body through
+  Next so the worker is never exposed to the browser. `session` POST resolves
+  the caller's `agents.image` (or an owned persona's, via `isPersonaOf`),
+  downloads it server-side, and opens the worker session.
+- **Shared TTS:** `src/lib/chatterbox-tts.ts` (`requestChatterboxTts`) — used by
+  both `/api/autobot/tts` and the live-avatar speak route.
+- **Config:** `LIVE_AVATAR_WORKER_URL` (+ optional `LIVE_AVATAR_WORKER_API_KEY`);
+  unset → session route 503s and the UI explains. Speech-text prep in
+  `src/lib/speech-text.ts` (unit-tested).
+
 ### Builder assistant — agentic edit + publish in the Deploy view (2026-07-14)
 
 The tool-loop sibling of the streaming generator chat: `POST
