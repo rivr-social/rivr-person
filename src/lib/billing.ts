@@ -18,7 +18,7 @@
 import Stripe from 'stripe';
 import { db } from '@/db';
 import { agents, subscriptions, type MembershipTier } from '@/db/schema';
-import { eq, and, or } from 'drizzle-orm';
+import { eq, and, or, gt } from 'drizzle-orm';
 import { getStripeSecretKey, STRIPE_API_VERSION, isStripeConfigured } from '@/lib/integrations/stripe';
 import { getMembershipConnectSurchargeCents } from '@/lib/membership-pricing';
 
@@ -211,7 +211,14 @@ export async function getActiveSubscription(agentId: string) {
         eq(subscriptions.agentId, agentId),
         or(
           eq(subscriptions.status, 'active'),
-          eq(subscriptions.status, 'trialing'),
+          // A `trialing` row whose period has already ended is a STALE trial
+          // (missed end-of-trial webhook or a local trial) — it must NOT read
+          // as active, else a lapsed trial grants paid tiers for free. Active
+          // rows are left as-is (a brief renewal-webhook-delay window is grace).
+          and(
+            eq(subscriptions.status, 'trialing'),
+            gt(subscriptions.currentPeriodEnd, new Date()),
+          ),
         ),
       )
     )
@@ -244,6 +251,9 @@ export async function getAllActiveSubscriptions(agentId: string) {
       and(
         eq(subscriptions.agentId, agentId),
         eq(subscriptions.status, 'trialing'),
+        // Exclude stale trials whose period already ended (see
+        // getActiveSubscription for the rationale).
+        gt(subscriptions.currentPeriodEnd, new Date()),
       )
     );
 
