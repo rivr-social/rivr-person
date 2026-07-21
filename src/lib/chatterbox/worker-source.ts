@@ -83,14 +83,37 @@ def cached_fetch(url: str, suffix: str) -> Path:
 
 
 _model = None
+_model_lock = __import__("threading").Lock()
+_model_error: Optional[str] = None
 
 
 def load_model():
-    global _model
-    if _model is None:
-        from chatterbox.tts import ChatterboxTTS
-        _model = ChatterboxTTS.from_pretrained(device=DEVICE)
+    global _model, _model_error
+    with _model_lock:
+        if _model is None:
+            try:
+                from chatterbox.tts import ChatterboxTTS
+                _model = ChatterboxTTS.from_pretrained(device=DEVICE)
+                _model_error = None
+            except Exception as exc:  # noqa: BLE001
+                _model_error = str(exc)[:400]
+                raise
     return _model
+
+
+def _preload_model_async() -> None:
+    """Kick the model load at boot so 'ready' means READY (first request
+    otherwise pays a multi-minute download and callers fall back)."""
+    import threading
+
+    def run():
+        try:
+            load_model()
+            print("model preloaded", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"model preload failed: {exc}", flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def to_float32_mono(wav) -> np.ndarray:
@@ -135,6 +158,7 @@ def health():
         "service": "rivr-chatterbox",
         "device": DEVICE,
         "model_loaded": _model is not None,
+        "model_error": _model_error,
         # Ready only when the onstart stamped deps-done AFTER pip finished —
         # inference.py existing alone races the still-running installs.
         "liveportrait_ready": (LIVEPORTRAIT_DIR / ".deps-done").is_file(),
@@ -314,6 +338,7 @@ def _run_viseme_bake(image_url: str) -> dict:
 
 
 if __name__ == "__main__":
+    _preload_model_async()
     uvicorn.run(app, host=HOST, port=PORT)
 `;
 

@@ -147,16 +147,24 @@ async function getWalletBalanceSummary(userId: string) {
 // Worker probing + status resolution
 // ---------------------------------------------------------------------------
 
-async function probeWorkerHealth(url: string): Promise<boolean> {
+type WorkerProbe = { healthy: boolean; modelLoaded: boolean };
+
+async function probeWorkerHealth(url: string): Promise<WorkerProbe> {
   try {
     const response = await fetch(`${url}/health`, {
       signal: AbortSignal.timeout(WORKER_HEALTH_TIMEOUT_MS),
     });
-    if (!response.ok) return false;
-    const data = (await response.json()) as { ok?: boolean };
-    return data.ok === true;
+    if (!response.ok) return { healthy: false, modelLoaded: false };
+    const data = (await response.json()) as {
+      ok?: boolean;
+      model_loaded?: boolean;
+    };
+    return {
+      healthy: data.ok === true,
+      modelLoaded: data.model_loaded === true,
+    };
   } catch {
-    return false;
+    return { healthy: false, modelLoaded: false };
   }
 }
 
@@ -206,8 +214,13 @@ async function resolveGpuStatus(
   const url = workerUrl(instance);
   if (!url) return { ...base, status: "gpu_starting" };
 
-  const healthy = await probeWorkerHealth(url);
-  if (!healthy) return { ...base, status: "gpu_starting", url };
+  // "running" means the VOICE is ready — a healthy worker whose model is
+  // still loading reports gpu_starting so the UI never claims a voice it
+  // can't deliver (the badge shows this as warming).
+  const probe = await probeWorkerHealth(url);
+  if (!probe.healthy || !probe.modelLoaded) {
+    return { ...base, status: "gpu_starting", url };
+  }
 
   // Persist the resolved URL for the TTS lane; defensive idle stop.
   if (gpu.url !== url) {
