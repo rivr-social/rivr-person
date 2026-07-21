@@ -51,6 +51,12 @@ import type {
   DigitalTwinProfile,
   VoiceSample,
 } from "@/lib/autobot-user-settings";
+import {
+  publishGpuStatus,
+  requestGpuRefresh,
+  subscribeGpuRefresh,
+  subscribeGpuStatus,
+} from "@/lib/gpu-status-bus";
 
 type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
 type SpeechRecognitionResultList = ArrayLike<SpeechRecognitionResult> & { length: number };
@@ -1435,6 +1441,7 @@ export default function AutobotChatPage() {
       if (res.ok) {
         const data = await res.json();
         setGpuStatus(data.status || "unknown");
+        publishGpuStatus(data); // keep the bottom-left badge in lockstep
       }
     } catch {
       setGpuStatus("unknown");
@@ -1452,6 +1459,8 @@ export default function AutobotChatPage() {
       if (res.ok) {
         const data = await res.json();
         setGpuStatus(data.status || "provisioning");
+        publishGpuStatus(data);
+        requestGpuRefresh();
       }
     } catch {
       setGpuStatus("unknown");
@@ -1471,6 +1480,8 @@ export default function AutobotChatPage() {
       if (res.ok) {
         const data = await res.json();
         setGpuStatus(data.status || "stopped");
+        publishGpuStatus(data);
+        requestGpuRefresh();
       }
     } catch {
       // Next poll will correct
@@ -1508,10 +1519,22 @@ export default function AutobotChatPage() {
     return () => stopGpuHeartbeat();
   }, [ttsEnabled, startGpu, startGpuHeartbeat]);
 
-  // Poll GPU status every 15s so the inline indicator stays current
+  // Poll GPU status every 15s so the inline indicator stays current, and
+  // adopt whatever the bottom-left badge publishes so both agree instantly.
   useEffect(() => {
     const interval = setInterval(fetchGpuStatus, 15_000);
-    return () => clearInterval(interval);
+    const unsubStatus = subscribeGpuStatus((payload) => {
+      const data = payload as { status?: string };
+      if (data && typeof data.status === "string") {
+        setGpuStatus(data.status as GpuStatus);
+      }
+    });
+    const unsubRefresh = subscribeGpuRefresh(fetchGpuStatus);
+    return () => {
+      clearInterval(interval);
+      unsubStatus();
+      unsubRefresh();
+    };
   }, [fetchGpuStatus]);
 
   // ---------------------------------------------------------------------------

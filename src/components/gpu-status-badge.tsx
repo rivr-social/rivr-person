@@ -50,6 +50,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import {
+  publishGpuStatus,
+  requestGpuRefresh,
+  subscribeGpuRefresh,
+  subscribeGpuStatus,
+} from "@/lib/gpu-status-bus";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -170,6 +176,7 @@ export function GpuStatusBadge() {
       const data: GpuStatusResponse = await res.json();
       setGpuStatus(data);
       setFetchError(false);
+      publishGpuStatus(data); // keep the settings control in lockstep
 
       // Detect provisioning -> running transition
       const prev = prevStatusRef.current;
@@ -216,9 +223,23 @@ export function GpuStatusBadge() {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
+    // Adopt status the settings control publishes, and refetch when either
+    // surface fires a start/stop.
+    const unsubStatus = subscribeGpuStatus((payload) => {
+      const data = payload as GpuStatusResponse;
+      if (data && typeof data.status === "string") {
+        setGpuStatus(data);
+        setFetchError(false);
+        prevStatusRef.current = data.status;
+      }
+    });
+    const unsubRefresh = subscribeGpuRefresh(fetchStatus);
+
     return () => {
       stopPolling();
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      unsubStatus();
+      unsubRefresh();
     };
   }, [fetchStatus]);
 
@@ -233,6 +254,7 @@ export function GpuStatusBadge() {
       });
       if (res.ok) {
         await fetchStatus();
+        requestGpuRefresh(); // pull the settings control along
       }
     } catch {
       // Swallow — next poll will correct state
