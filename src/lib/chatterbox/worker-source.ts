@@ -332,8 +332,10 @@ export function buildOnstartScript(options: {
     ? String.raw`
 (
   cd /workspace
-  if [ ! -d LivePortrait ]; then
-    git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git
+  # Guard on the completion stamp, NOT the directory — a box stopped
+  # mid-install must resume the setup on restart.
+  if [ ! -f LivePortrait/.deps-done ]; then
+    [ -d LivePortrait ] || git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git
     # LivePortrait's pins clobber Chatterbox's (transformers/protobuf/hub) —
     # it gets its OWN venv; the bake subprocess runs lp-venv's python.
     python -m venv --system-site-packages /workspace/lp-venv
