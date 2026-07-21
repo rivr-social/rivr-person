@@ -312,11 +312,12 @@ function sanitizeChatterboxGpu(input: unknown): ChatterboxGpuState | null {
     typeof input.instanceId === "number" && Number.isFinite(input.instanceId)
       ? input.instanceId
       : null;
+  // The maintained Chatterbox server has NO bearer auth, so authToken is
+  // optional (empty string). Only instanceId is required — requiring a
+  // non-empty token here silently nulled the whole GPU record.
   const authToken =
-    typeof input.authToken === "string" && input.authToken.trim()
-      ? input.authToken.trim()
-      : null;
-  if (instanceId === null || !authToken) return null;
+    typeof input.authToken === "string" ? input.authToken.trim() : "";
+  if (instanceId === null) return null;
   return {
     instanceId,
     authToken,
