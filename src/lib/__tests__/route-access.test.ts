@@ -272,6 +272,7 @@ describe("route-access", () => {
     it("API prefix list matches exported PUBLIC_API_PREFIXES", () => {
       const EXPECTED_API_PREFIXES = [
         "/api/auth",
+        "/api/autobot/gpu/worker-source",
         "/api/billing/trial-reminders",
         "/api/cron/federation-deliver",
         "/api/cron/federation-sync",

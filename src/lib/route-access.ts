@@ -39,6 +39,9 @@ const PUBLIC_PAGE_PREFIXES = [
 
 const PUBLIC_API_PREFIXES = [
   "/api/auth",
+  // Chatterbox worker source: the Vast GPU box curls this anonymously at
+  // boot (plain source code, no secrets — auth token arrives via env).
+  "/api/autobot/gpu/worker-source",
   "/api/billing/trial-reminders",
   "/api/cron/federation-deliver",
   "/api/cron/federation-sync",
