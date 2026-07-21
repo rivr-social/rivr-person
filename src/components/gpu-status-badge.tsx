@@ -269,7 +269,10 @@ export function GpuStatusBadge() {
       ? `$${gpuStatus.providerBalance.toFixed(2)}`
       : null;
   const isProviderEmpty = gpuStatus?.providerBalanceStatus === "empty";
-  const isWalletEmpty = gpuStatus?.walletBalanceStatus === "empty";
+  // The first-party Vast lane bills the user's own Vast account directly —
+  // the RIVR wallet no longer gates the voice GPU (legacy OpenClaw metering).
+  const isWalletEmpty = false;
+  void gpuStatus?.walletBalanceStatus;
   const settingsUrl = gpuStatus?.settingsUrl || "/autobot/chat?settings=voice";
 
   const openSettings = useCallback(() => {
