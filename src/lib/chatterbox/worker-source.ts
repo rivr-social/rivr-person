@@ -258,8 +258,11 @@ def _run_viseme_bake(image_url: str) -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
         out_dir = Path(tmpdir) / "out"
         out_dir.mkdir()
+        lp_python = "/workspace/lp-venv/bin/python"
+        if not Path(lp_python).is_file():
+            lp_python = "python"
         proc = subprocess.run(
-            ["python", "inference.py", "-s", str(portrait), "-d", str(driving),
+            [lp_python, "inference.py", "-s", str(portrait), "-d", str(driving),
              "-o", str(out_dir), "--flag-force-cpu" if DEVICE == "cpu" else "--no-flag-force-cpu"],
             cwd=str(LIVEPORTRAIT_DIR), capture_output=True, text=True, timeout=600,
         )
@@ -331,11 +334,13 @@ export function buildOnstartScript(options: {
   cd /workspace
   if [ ! -d LivePortrait ]; then
     git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git
+    # LivePortrait's pins clobber Chatterbox's (transformers/protobuf/hub) —
+    # it gets its OWN venv; the bake subprocess runs lp-venv's python.
+    python -m venv --system-site-packages /workspace/lp-venv
     cd LivePortrait
-    pip install -r requirements.txt && \
-    pip install -U "huggingface_hub[cli]" && \
-    hf download KwaiVGI/LivePortrait --local-dir pretrained_weights --exclude "*.git*" && \
-    pip install "mediapipe==0.10.14" "protobuf>=4.25.3,<5" && \
+    /workspace/lp-venv/bin/pip install -r requirements.txt && \
+    /workspace/lp-venv/bin/pip install "huggingface_hub[cli]>=0.30,<1.0" && \
+    /workspace/lp-venv/bin/hf download KwaiVGI/LivePortrait --local-dir pretrained_weights --exclude "*.git*" && \
     touch .deps-done
   fi
 ) >> /workspace/setup-liveportrait.log 2>&1 &
@@ -346,7 +351,7 @@ export function buildOnstartScript(options: {
 set -x
 exec >> /workspace/onstart.log 2>&1
 apt-get update -y && apt-get install -y ffmpeg git libgl1 libglib2.0-0
-pip install --no-cache-dir chatterbox-tts fastapi "uvicorn[standard]" soundfile "mediapipe==0.10.14" "protobuf>=4.25.3,<5" opencv-python-headless
+pip install --no-cache-dir chatterbox-tts "transformers>=4.46,<5" "huggingface_hub>=0.30,<1.0" fastapi "uvicorn[standard]" soundfile "mediapipe==0.10.14" "protobuf>=4.25.3,<5" opencv-python-headless
 ${livePortraitSetup}
 mkdir -p /workspace
 curl -fsSL "${options.workerSourceUrl}" -o /workspace/server.py

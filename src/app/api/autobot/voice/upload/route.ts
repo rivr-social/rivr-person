@@ -71,6 +71,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
+      // The recorder component reads `sample` and re-persists it client-side;
+      // it must carry the full record or the save clobbers storedFileName.
+      sample: voiceSample,
       voiceId,
       storedFileName: uploaded.key,
       url: uploaded.url,

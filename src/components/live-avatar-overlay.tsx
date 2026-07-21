@@ -209,9 +209,14 @@ export function LiveAvatarOverlay({
         } | null = speakResponse ? await speakResponse.json() : null;
 
         const onSpeechDone = () => {
-          if (!closedRef.current && phaseRef.current === "speaking") {
-            setPhaseSafe(micMuted ? "muted" : "listening");
-          }
+          // Small settle delay so the speaker tail fades before the mic
+          // rearms — otherwise recognition catches the last word of the
+          // avatar's own reply.
+          setTimeout(() => {
+            if (!closedRef.current && phaseRef.current === "speaking") {
+              setPhaseSafe(micMuted ? "muted" : "listening");
+            }
+          }, 500);
         };
 
         if (
@@ -339,7 +344,10 @@ export function LiveAvatarOverlay({
       setMicSupported(false);
       return undefined;
     }
-    if (micMuted || phase === "connecting" || phase === "error") {
+    // Recognition runs ONLY while genuinely listening. Keeping it on while
+    // the avatar speaks makes it hear ITSELF through the speakers and
+    // barge-in on (or even answer) its own voice.
+    if (micMuted || phase !== "listening") {
       recognitionRef.current?.stop?.();
       recognitionRef.current = null;
       return undefined;
@@ -353,13 +361,11 @@ export function LiveAvatarOverlay({
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
+      // Recognition only runs while listening (see the gate above), so
+      // anything final here is genuinely the user.
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const result = event.results[i];
-        if (!result.isFinal) {
-          // The user talking over the avatar is a barge-in.
-          if (phaseRef.current === "speaking") bargeIn();
-          continue;
-        }
+        if (!result.isFinal) continue;
         const transcript = String(result[0]?.transcript || "").trim();
         if (transcript) void utteranceRef.current(transcript);
       }
@@ -382,7 +388,7 @@ export function LiveAvatarOverlay({
       recognition.stop?.();
       if (recognitionRef.current === recognition) recognitionRef.current = null;
     };
-  }, [bargeIn, micMuted, phase]);
+  }, [micMuted, phase]);
 
   // -- Alternative avatar picture upload -------------------------------------
 
