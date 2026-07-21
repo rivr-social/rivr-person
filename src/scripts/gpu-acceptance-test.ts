@@ -154,7 +154,7 @@ async function main(): Promise<void> {
   if (!voiceKey.includes("/")) {
     fail("setup", "agent has no stored voice sample (Settings -> Assistant -> Voice)");
   }
-  const username = settings.voiceSample?.originalFileName ?? "owner";
+  const username = settings.voiceSample?.fileName ?? "owner";
 
   let instanceId: number;
   if (adopt) {
