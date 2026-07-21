@@ -14,9 +14,11 @@
  * reference_run_app_tsx_against_live_infra):
  *
  *   node_modules/.bin/tsx src/scripts/gpu-acceptance-test.ts <agentId> \
- *     [--keep-existing] [--text "hello"]
+ *     [--adopt] [--text "hello"]
  *
- * Exits 0 only when BOTH synth passes return clone audio.
+ * --adopt resumes on the box already recorded in settings (skips destroy
+ * + provision) — for re-running the ready/synth/restart phases after an
+ * interrupted run. Exits 0 only when BOTH synth passes return clone audio.
  */
 
 import {
@@ -136,8 +138,8 @@ async function assertCloneSynth(
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const agentId = args.find((value) => !value.startsWith("--"));
-  if (!agentId) fail("setup", "usage: gpu-acceptance-test.ts <agentId> [--keep-existing] [--text ...]");
-  const keepExisting = args.includes("--keep-existing");
+  if (!agentId) fail("setup", "usage: gpu-acceptance-test.ts <agentId> [--adopt] [--text ...]");
+  const adopt = args.includes("--adopt");
   const textFlagIndex = args.indexOf("--text");
   const synthText =
     textFlagIndex >= 0 && args[textFlagIndex + 1]
@@ -153,40 +155,16 @@ async function main(): Promise<void> {
   }
   const username = settings.voiceSample?.originalFileName ?? "owner";
 
-  // ── Phase 1: clean slate — destroy the existing box + any orphans ──────
-  if (!keepExisting) {
-    if (settings.chatterboxGpu) {
-      log("destroy", `destroying recorded box ${settings.chatterboxGpu.instanceId}`);
-      await destroyInstance(apiKey, settings.chatterboxGpu.instanceId).catch((error) =>
-        log("destroy", `recorded box destroy: ${error instanceof Error ? error.message : error}`),
-      );
-      await saveAutobotUserSettings(agentId, { chatterboxGpu: null });
-    }
-    const orphans = await listChatterboxInstances(apiKey);
-    for (const orphan of orphans) {
-      log("destroy", `destroying orphan rivr-chatterbox box ${orphan.instanceId}`);
-      await destroyInstance(apiKey, orphan.instanceId).catch((error) =>
-        log("destroy", `orphan destroy: ${error instanceof Error ? error.message : error}`),
-      );
-    }
+  let instanceId: number;
+  if (adopt) {
+    // Resume on the recorded box (an interrupted run already provisioned
+    // it through the app path) — the ready/synth/restart phases still run.
+    if (!settings.chatterboxGpu) fail("adopt", "no recorded chatterboxGpu to adopt");
+    instanceId = settings.chatterboxGpu.instanceId;
+    log("adopt", `resuming on recorded instance ${instanceId}`);
+  } else {
+    instanceId = await destroyAndProvision(agentId, apiKey, voiceKey, settings);
   }
-
-  // ── Phase 2: provision EXACTLY as the route's start action does ────────
-  const voiceSampleUrl = getVoiceSampleUrl(voiceKey);
-  log("provision", `voice sample url: ${voiceSampleUrl}`);
-  const offerId = await findCheapestOffer(apiKey);
-  log("provision", `cheapest offer: ${offerId}`);
-  const instanceId = await createChatterboxInstance(apiKey, offerId, { voiceSampleUrl });
-  log("provision", `created instance ${instanceId} (app create body, runtype ssh_proxy)`);
-
-  const gpuState: ChatterboxGpuState = {
-    instanceId,
-    url: "",
-    authToken: "",
-    createdAt: new Date().toISOString(),
-    lastUsedAt: new Date().toISOString(),
-  };
-  await saveAutobotUserSettings(agentId, { chatterboxGpu: gpuState });
 
   // ── Phase 3: first boot -> voice ready -> cloned-voice synth ───────────
   await waitVoiceReady("first-boot", apiKey, agentId, instanceId, PROVISION_READY_TIMEOUT_MS);
@@ -229,6 +207,47 @@ async function main(): Promise<void> {
       "stopped, restarted, and synthesized again — zero SSH, zero hand-edits",
   );
   process.exit(0);
+}
+
+/** Phases 1+2: clean slate, then provision exactly as the route's start action does. */
+async function destroyAndProvision(
+  agentId: string,
+  apiKey: string,
+  voiceKey: string,
+  settings: Awaited<ReturnType<typeof getAutobotUserSettings>>,
+): Promise<number> {
+  if (settings.chatterboxGpu) {
+    log("destroy", `destroying recorded box ${settings.chatterboxGpu.instanceId}`);
+    await destroyInstance(apiKey, settings.chatterboxGpu.instanceId).catch((error) =>
+      log("destroy", `recorded box destroy: ${error instanceof Error ? error.message : error}`),
+    );
+    await saveAutobotUserSettings(agentId, { chatterboxGpu: null });
+  }
+  const orphans = await listChatterboxInstances(apiKey);
+  for (const orphan of orphans) {
+    log("destroy", `destroying orphan rivr-chatterbox box ${orphan.instanceId}`);
+    await destroyInstance(apiKey, orphan.instanceId).catch((error) =>
+      log("destroy", `orphan destroy: ${error instanceof Error ? error.message : error}`),
+    );
+  }
+
+  // Provision EXACTLY as the route's start action does.
+  const voiceSampleUrl = getVoiceSampleUrl(voiceKey);
+  log("provision", `voice sample url: ${voiceSampleUrl}`);
+  const offerId = await findCheapestOffer(apiKey);
+  log("provision", `cheapest offer: ${offerId}`);
+  const instanceId = await createChatterboxInstance(apiKey, offerId, { voiceSampleUrl });
+  log("provision", `created instance ${instanceId} (app create body, runtype ssh_proxy)`);
+
+  const gpuState: ChatterboxGpuState = {
+    instanceId,
+    url: "",
+    authToken: "",
+    createdAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString(),
+  };
+  await saveAutobotUserSettings(agentId, { chatterboxGpu: gpuState });
+  return instanceId;
 }
 
 main().catch((error) => {
