@@ -37,7 +37,7 @@ COPY engine.py engine_frames.py phonemes.py audio_env.py app.py ./
 
 ENV PORT=8012 \
     API_KEY="" \
-    AVATAR_FPS=8 \
+    AVATAR_FPS=12 \
     MAX_SESSIONS=8 \
     SESSION_IDLE_TIMEOUT=900
 

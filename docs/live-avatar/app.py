@@ -16,7 +16,9 @@ API:
 Environment variables:
   PORT                 -- listen port (default 8012)
   API_KEY              -- optional Bearer token (also accepted as ?key= on /stream)
-  AVATAR_FPS           -- animation framerate (default 8)
+  AVATAR_FPS           -- animation framerate (default 12; speech runs
+                          10-15 phones/s, so lower rates undersample the
+                          mouth and read as "flappy")
   MAX_SESSIONS         -- concurrent session cap (default 8)
   SESSION_IDLE_TIMEOUT -- seconds before an untouched session is reaped (default 900)
   FETCH_TIMEOUT_S      -- reference-image download timeout (default 20)
@@ -65,7 +67,7 @@ from phonemes import viseme_timeline
 
 PORT = int(os.environ.get("PORT", "8012"))
 API_KEY = os.environ.get("API_KEY", "")
-AVATAR_FPS = float(os.environ.get("AVATAR_FPS", "8"))
+AVATAR_FPS = float(os.environ.get("AVATAR_FPS", "12"))
 MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "8"))
 SESSION_IDLE_TIMEOUT_S = float(os.environ.get("SESSION_IDLE_TIMEOUT", "900"))
 FETCH_TIMEOUT_S = float(os.environ.get("FETCH_TIMEOUT_S", "20"))

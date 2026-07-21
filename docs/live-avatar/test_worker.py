@@ -229,7 +229,11 @@ class TestTextEnvelope:
 # ---------------------------------------------------------------------------
 
 from engine_frames import build_frame_pack, render_pack_frame, resolve_label
-from phonemes import viseme_sequence_from_text, viseme_timeline
+from phonemes import (
+    viseme_sequence_from_text,
+    viseme_timeline,
+    weighted_viseme_sequence,
+)
 
 
 def make_frame_bytes(color: tuple[int, int, int], size: int = 200) -> bytes:
@@ -261,6 +265,41 @@ class TestVisemeTimeline:
 
     def test_empty_frame_count(self):
         assert viseme_timeline("hi", 0) == []
+
+    def test_weighted_sequence_has_positive_varied_weights(self):
+        # "go" = brief stop + long vowel in BOTH backends (phonemizer or
+        # heuristic), so weights must differ and all be positive.
+        pairs = weighted_viseme_sequence("go")
+        assert len(pairs) >= 2
+        weights = [weight for _, weight in pairs]
+        assert all(weight > 0 for weight in weights)
+        assert max(weights) > min(weights)
+
+    def test_vowels_occupy_more_frames_than_consonants(self):
+        # Duration weighting: the vowel of "ba" should own most frames
+        # (consonant bins are closed/slight in either backend).
+        timeline = viseme_timeline("ba", 30)
+        vowel_frames = [
+            label for label in timeline if label not in ("slight", "closed")
+        ]
+        assert len(vowel_frames) > len(timeline) // 2
+
+    def test_loud_frames_promote_openness(self):
+        rank = {
+            "closed": 0, "slight": 1, "round": 2,
+            "wide": 2, "open": 3, "wide_open": 4,
+        }
+        base = viseme_timeline("hello there", 24)
+        loud = viseme_timeline("hello there", 24, [0.9] * 24)
+        assert all(rank[l] >= rank[b] for b, l in zip(base, loud))
+        assert any(rank[l] > rank[b] for b, l in zip(base, loud))
+
+    def test_quiet_frames_demote_openness(self):
+        # 0.2 is above the silence gate but under the quiet threshold:
+        # nothing should reach the widest bin.
+        quiet = viseme_timeline("father calling arms", 30, [0.2] * 30)
+        assert "wide_open" not in quiet
+        assert any(label != "closed" for label in quiet)
 
 
 class TestFramePack:
