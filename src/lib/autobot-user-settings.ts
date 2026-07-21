@@ -82,7 +82,12 @@ export type ChatterboxGpuState = {
 
 /** Baked viseme frame pack for the live avatar (one-time GPU generation). */
 export type VisemePack = {
-  /** bin label (closed/slight/open/wide_open/round/wide) → stored frame URL */
+  /**
+   * Frame label → stored frame URL. Labels: mouth bins (closed/slight/
+   * open/wide_open/round/wide), openness-ladder steps (step_00..step_11,
+   * real in-between shapes for transitions), and region variants
+   * (eyes_closed/brows_raised for blink + expression compositing).
+   */
   frames: Record<string, string>;
   generatedAt: string;
   /** Source image URL the pack was baked from (staleness check). */

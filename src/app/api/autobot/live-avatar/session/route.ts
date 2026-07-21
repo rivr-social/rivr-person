@@ -24,6 +24,7 @@ import {
   isLiveAvatarConfigured,
   LiveAvatarWorkerError,
 } from "@/lib/live-avatar-worker";
+import { getInstance, sidecarUrl } from "@/lib/vast-gpu";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -160,6 +161,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: loaded.error }, { status: 422 });
   }
 
+  // GPU-live enhancement: when the CALLER's voice box is warm, hand the
+  // worker its sidecar URL so replies can render as true audio-driven
+  // mouth frames (worker falls back to the pack on any failure).
+  let gpuAnimateUrl: string | undefined;
+  const callerSettings =
+    targetAgentId === session.user.id
+      ? targetSettings
+      : await getAutobotUserSettings(session.user.id).catch(() => null);
+  const callerGpu = callerSettings?.chatterboxGpu;
+  const callerApiKey = callerSettings?.gpuProviderApiKey?.trim();
+  if (callerGpu?.url && callerApiKey) {
+    const instance = await getInstance(callerApiKey, callerGpu.instanceId).catch(
+      () => null,
+    );
+    if (instance?.actualStatus === "running") {
+      gpuAnimateUrl = sidecarUrl(instance) ?? undefined;
+    }
+  }
+
   try {
     // Frame-swap mode when a baked viseme pack matches this picture;
     // manual calibration helps the warp engine when detection fails.
@@ -173,6 +193,7 @@ export async function POST(request: Request) {
       {
         visemeFrames: usePack ? pack.frames : undefined,
         calibration: targetSettings?.liveAvatarCalibration ?? undefined,
+        gpuAnimateUrl,
       },
     );
     return NextResponse.json({

@@ -23,6 +23,7 @@ import {
 } from "@/lib/autobot-user-settings";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { uploadDigitalTwinAsset, StorageError } from "@/lib/storage";
+import { getInstance, sidecarUrl } from "@/lib/vast-gpu";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -50,6 +51,24 @@ export async function POST() {
       {
         error:
           "The voice GPU isn't running. Start it (and make sure your Vast balance is funded), then bake again.",
+        needGpu: true,
+      },
+      { status: 409 },
+    );
+  }
+
+  // The bake runs on the box's SIDECAR (port-mapped separately from the
+  // voice server); resolve its live URL from the instance's port table.
+  const apiKey = settings.gpuProviderApiKey?.trim() ?? "";
+  const instance = apiKey
+    ? await getInstance(apiKey, gpu.instanceId).catch(() => null)
+    : null;
+  const bakeBaseUrl = instance ? sidecarUrl(instance) : null;
+  if (!bakeBaseUrl) {
+    return NextResponse.json(
+      {
+        error:
+          "This voice box predates the bake sidecar. Decommission it and Start Voice again — the fresh box provisions with baking enabled.",
         needGpu: true,
       },
       { status: 409 },
@@ -97,7 +116,7 @@ export async function POST() {
       "Content-Type": "application/json",
       Authorization: `Bearer ${gpu.authToken}`,
     };
-    const startResponse = await fetch(`${gpu.url}/viseme-pack`, {
+    const startResponse = await fetch(`${bakeBaseUrl}/viseme-pack`, {
       method: "POST",
       headers: workerHeaders,
       body: JSON.stringify({ image_url: imageUrl }),
@@ -122,7 +141,7 @@ export async function POST() {
     let job: { status?: string; frames?: Record<string, string>; detail?: string } = {};
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5_000));
-      const poll = await fetch(`${gpu.url}/viseme-pack/${started.jobId}`, {
+      const poll = await fetch(`${bakeBaseUrl}/viseme-pack/${started.jobId}`, {
         headers: workerHeaders,
         signal: AbortSignal.timeout(15_000),
       });

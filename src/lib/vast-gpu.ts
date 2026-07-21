@@ -12,6 +12,7 @@
 import {
   buildOnstartScript,
   CHATTERBOX_WORKER_PORT,
+  SIDECAR_WORKER_PORT,
 } from "@/lib/chatterbox/worker-source";
 
 const VAST_API_BASE = "https://console.vast.ai/api/v0";
@@ -51,8 +52,10 @@ export interface VastInstanceSummary {
   /** Vast lifecycle state: running | stopped | loading | ... */
   actualStatus: string;
   publicIp: string | null;
-  /** Host port mapped to the worker port, when running. */
+  /** Host port mapped to the voice-server port, when running. */
   workerPort: number | null;
+  /** Host port mapped to the sidecar (bake/animate) port, when running. */
+  sidecarPort: number | null;
   dphTotal: number | null;
   gpuName: string | null;
   label: string | null;
@@ -144,6 +147,8 @@ export async function findCheapestOffer(apiKey: string): Promise<number> {
 export interface CreateInstanceOptions {
   /** Public URL to the user's stored voice sample (the clone reference). */
   voiceSampleUrl: string;
+  /** This instance's /api/autobot/gpu/worker-source URL (sidecar code). */
+  workerSourceUrl: string;
 }
 
 /** Creates the instance; returns the new contract/instance id. */
@@ -167,7 +172,10 @@ export async function createChatterboxInstance(
       label: INSTANCE_LABEL,
       onstart,
       runtype: "ssh_proxy",
-      env: { [`-p ${CHATTERBOX_WORKER_PORT}:${CHATTERBOX_WORKER_PORT}`]: "1" },
+      env: {
+        [`-p ${CHATTERBOX_WORKER_PORT}:${CHATTERBOX_WORKER_PORT}`]: "1",
+        [`-p ${SIDECAR_WORKER_PORT}:${SIDECAR_WORKER_PORT}`]: "1",
+      },
     }),
   })) as Record<string, unknown>;
 
@@ -186,18 +194,22 @@ function summarizeInstance(raw: Record<string, unknown>): VastInstanceSummary {
     string,
     Array<{ HostPort?: string }> | undefined
   >;
-  const mapped = ports[`${CHATTERBOX_WORKER_PORT}/tcp`];
-  const workerPort =
-    Array.isArray(mapped) && mapped[0]?.HostPort
-      ? Number(mapped[0].HostPort)
-      : null;
+  const mappedHostPort = (containerPort: number): number | null => {
+    const mapped = ports[`${containerPort}/tcp`];
+    const hostPort =
+      Array.isArray(mapped) && mapped[0]?.HostPort
+        ? Number(mapped[0].HostPort)
+        : null;
+    return Number.isFinite(hostPort) ? hostPort : null;
+  };
 
   return {
     instanceId: Number(raw.id),
     actualStatus: String(raw.actual_status ?? raw.status_msg ?? "unknown"),
     publicIp:
       typeof raw.public_ipaddr === "string" ? raw.public_ipaddr.trim() : null,
-    workerPort: Number.isFinite(workerPort) ? workerPort : null,
+    workerPort: mappedHostPort(CHATTERBOX_WORKER_PORT),
+    sidecarPort: mappedHostPort(SIDECAR_WORKER_PORT),
     dphTotal: typeof raw.dph_total === "number" ? raw.dph_total : null,
     gpuName: typeof raw.gpu_name === "string" ? raw.gpu_name : null,
     label: typeof raw.label === "string" ? raw.label : null,
@@ -254,8 +266,14 @@ export async function destroyInstance(apiKey: string, instanceId: number): Promi
   await vastFetch(apiKey, `/instances/${instanceId}/`, { method: "DELETE" });
 }
 
-/** The worker's public base URL once the instance is running. */
+/** The voice server's public base URL once the instance is running. */
 export function workerUrl(instance: VastInstanceSummary): string | null {
   if (!instance.publicIp || !instance.workerPort) return null;
   return `http://${instance.publicIp}:${instance.workerPort}`;
+}
+
+/** The sidecar's (bake/animate) public base URL once the instance is running. */
+export function sidecarUrl(instance: VastInstanceSummary): string | null {
+  if (!instance.publicIp || !instance.sidecarPort) return null;
+  return `http://${instance.publicIp}:${instance.sidecarPort}`;
 }

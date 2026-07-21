@@ -27,6 +27,7 @@ import {
   type ChatterboxGpuState,
 } from "@/lib/autobot-user-settings";
 import { requestChatterboxTts } from "@/lib/chatterbox-tts";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { getVoiceSampleUrl } from "@/lib/storage";
 import {
   createChatterboxInstance,
@@ -234,9 +235,13 @@ async function destroyAndProvision(
   // Provision EXACTLY as the route's start action does.
   const voiceSampleUrl = getVoiceSampleUrl(voiceKey);
   log("provision", `voice sample url: ${voiceSampleUrl}`);
+  const baseUrl = getInstanceConfig().baseUrl.replace(/\/+$/, "");
   const offerId = await findCheapestOffer(apiKey);
   log("provision", `cheapest offer: ${offerId}`);
-  const instanceId = await createChatterboxInstance(apiKey, offerId, { voiceSampleUrl });
+  const instanceId = await createChatterboxInstance(apiKey, offerId, {
+    voiceSampleUrl,
+    workerSourceUrl: `${baseUrl}/api/autobot/gpu/worker-source`,
+  });
   log("provision", `created instance ${instanceId} (app create body, runtype ssh_proxy)`);
 
   const gpuState: ChatterboxGpuState = {

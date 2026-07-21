@@ -24,6 +24,7 @@ import {
   type ChatterboxGpuState,
   type GpuProvider,
 } from "@/lib/autobot-user-settings";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { getVoiceSampleUrl } from "@/lib/storage";
 import {
   createChatterboxInstance,
@@ -333,9 +334,11 @@ export async function POST(request: Request) {
           );
         }
         const voiceSampleUrl = getVoiceSampleUrl(voiceKey);
+        const baseUrl = getInstanceConfig().baseUrl.replace(/\/+$/, "");
         const offerId = await findCheapestOffer(apiKey);
         const instanceId = await createChatterboxInstance(apiKey, offerId, {
           voiceSampleUrl,
+          workerSourceUrl: `${baseUrl}/api/autobot/gpu/worker-source`,
         });
 
         const gpuState: ChatterboxGpuState = {

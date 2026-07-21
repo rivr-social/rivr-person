@@ -27,6 +27,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ from audio_env import (
 )
 from engine import (
     FaceLayout,
+    JPEG_QUALITY,
     PortraitRig,
     build_rig,
     render_frame,
@@ -104,6 +106,10 @@ class Utterance:
     envelope: list[float]
     started_at: float  # time.monotonic()
     visemes: list[str] | None = None
+    #: GPU-rendered speaking frames (already session-sized JPEGs). When
+    #: present they REPLACE viseme/warp mouth animation for this utterance.
+    clip_frames: list[bytes] | None = None
+    clip_fps: float = 25.0
 
     def frame_index(self, now: float, fps: float) -> int | None:
         index = int((now - self.started_at) * fps)
@@ -127,6 +133,17 @@ class Utterance:
             return VISEME_REST
         return self.visemes[index]
 
+    def clip_frame_at(self, now: float) -> bytes | None:
+        """GPU clip frame for the elapsed time, or None once finished."""
+        if not self.clip_frames:
+            return None
+        index = int((now - self.started_at) * self.clip_fps)
+        if index < 0:
+            index = 0
+        if index >= len(self.clip_frames):
+            return None
+        return self.clip_frames[index]
+
 
 @dataclass
 class AvatarSession:
@@ -134,6 +151,10 @@ class AvatarSession:
     rig: PortraitRig
     """Viseme frame pack; when present the session animates by frame swap."""
     pack: FramePack | None = None
+    """GPU sidecar base URL for per-utterance Wav2Lip renders ("" = off)."""
+    gpu_animate_url: str = ""
+    """Session portrait as JPEG — the face the GPU sidecar animates."""
+    portrait_jpeg: bytes | None = None
     created_at: float = field(default_factory=time.monotonic)
     last_access: float = field(default_factory=time.monotonic)
     utterance: Utterance | None = None
@@ -142,6 +163,7 @@ class AvatarSession:
     animator: asyncio.Task | None = None
     next_blink_at: float = 0.0
     blink_started_at: float | None = None
+    brow_level: float = 0.0
     viewers: int = 0
 
     def touch(self) -> None:
@@ -207,26 +229,22 @@ async def _animate(session: AvatarSession) -> None:
 
             mouth_amp = 0.0
             viseme = VISEME_REST
+            clip_frame: bytes | None = None
             if session.utterance is not None:
+                clip_frame = session.utterance.clip_frame_at(started)
                 amplitude = session.utterance.amplitude_at(started, AVATAR_FPS)
-                if amplitude is None:
+                if amplitude is None and clip_frame is None:
                     session.utterance = None
                 else:
-                    mouth_amp = amplitude
+                    mouth_amp = amplitude or 0.0
                     viseme = (
                         session.utterance.viseme_at(started, AVATAR_FPS)
                         or VISEME_REST
                     )
 
-            if session.pack is not None:
-                frame = await loop.run_in_executor(
-                    None,
-                    render_pack_frame,
-                    session.pack,
-                    viseme,
-                    started - session.created_at,
-                )
-                session.latest_frame = frame
+            # GPU-rendered utterance: relay the Wav2Lip frame directly.
+            if clip_frame is not None:
+                session.latest_frame = clip_frame
                 session.frame_event.set()
                 session.frame_event = asyncio.Event()
                 elapsed = time.monotonic() - started
@@ -234,6 +252,27 @@ async def _animate(session: AvatarSession) -> None:
                 continue
 
             blink_amp = _blink_amplitude(session, started)
+
+            if session.pack is not None:
+                # Brow emphasis rides loud stretches (fast attack, slow decay).
+                target = 1.0 if mouth_amp > 0.85 else 0.0
+                rate = 0.5 if target > session.brow_level else 0.12
+                session.brow_level += (target - session.brow_level) * rate
+                frame = await loop.run_in_executor(
+                    None,
+                    render_pack_frame,
+                    session.pack,
+                    viseme,
+                    started - session.created_at,
+                    blink_amp,
+                    session.brow_level,
+                )
+                session.latest_frame = frame
+                session.frame_event.set()
+                session.frame_event = asyncio.Event()
+                elapsed = time.monotonic() - started
+                await asyncio.sleep(max(0.0, 1.0 / AVATAR_FPS - elapsed))
+                continue
 
             frame = await loop.run_in_executor(
                 None,
@@ -253,6 +292,83 @@ async def _animate(session: AvatarSession) -> None:
         raise
     except Exception:
         logger.exception("Animator crashed for session %s", session.session_id)
+
+
+GPU_ANIMATE_WAIT_S = 30.0
+GPU_ANIMATE_POLL_S = 1.0
+
+
+def _fit_clip_frames(frames_b64: list, size: tuple[int, int]) -> list[bytes]:
+    """Decode sidecar frames and re-encode at the session's geometry."""
+    width, height = size
+    fitted: list[bytes] = []
+    for encoded in frames_b64:
+        try:
+            data = base64.b64decode(encoded)
+        except Exception:
+            continue
+        image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
+        ok, jpeg = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if ok:
+            fitted.append(jpeg.tobytes())
+    return fitted
+
+
+async def _try_gpu_clip(
+    session: AvatarSession, audio_bytes: bytes, content_type: str,
+) -> tuple[list[bytes], float] | None:
+    """Ask the GPU sidecar to render the portrait actually speaking this
+    audio (Wav2Lip). Bounded wait; None on ANY failure — callers fall back
+    to the baked-pack timeline, so this lane can never break speech."""
+    if not session.gpu_animate_url or not session.portrait_jpeg:
+        return None
+    payload = {
+        "audio_b64": base64.b64encode(audio_bytes).decode(),
+        "audio_mime": content_type or "audio/mpeg",
+        "image_b64": base64.b64encode(session.portrait_jpeg).decode(),
+    }
+    deadline = time.monotonic() + GPU_ANIMATE_WAIT_S
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            start = await client.post(
+                f"{session.gpu_animate_url}/animate", json=payload,
+            )
+            if start.status_code != 200:
+                logger.info("gpu animate declined (%s)", start.status_code)
+                return None
+            job_id = (start.json() or {}).get("jobId")
+            if not job_id:
+                return None
+            while time.monotonic() < deadline:
+                await asyncio.sleep(GPU_ANIMATE_POLL_S)
+                poll = await client.get(
+                    f"{session.gpu_animate_url}/animate/{job_id}",
+                )
+                if poll.status_code != 200:
+                    continue
+                job = poll.json() or {}
+                if job.get("status") == "error":
+                    logger.info(
+                        "gpu animate failed: %s", str(job.get("detail"))[:200],
+                    )
+                    return None
+                if job.get("status") == "done":
+                    loop = asyncio.get_running_loop()
+                    frames = await loop.run_in_executor(
+                        None,
+                        _fit_clip_frames,
+                        job.get("frames") or [],
+                        session.rig.size,
+                    )
+                    fps = float(job.get("fps") or 25.0)
+                    return (frames, fps) if frames else None
+    except Exception as exc:  # noqa: BLE001 — degrade, never break speech
+        logger.info("gpu animate unavailable: %s", exc)
+    logger.info("gpu animate timed out after %.0fs", GPU_ANIMATE_WAIT_S)
+    return None
 
 
 async def _destroy_session(session_id: str) -> None:
@@ -420,13 +536,32 @@ async def create_session(
         height_r, width_r = resized.shape[:2]
         layout = _layout_from_calibration(calibration, width_r, height_r)
 
+    # Optional GPU sidecar for per-utterance Wav2Lip renders. The portrait
+    # is kept as JPEG — it is the face the sidecar animates per reply.
+    gpu_animate_url = ""
+    raw_animate = session_options.get("gpuAnimateUrl")
+    if isinstance(raw_animate, str) and raw_animate.startswith("http"):
+        gpu_animate_url = raw_animate.rstrip("/")
+
     async with _sessions_lock:
         if len(_sessions) >= MAX_SESSIONS:
             raise HTTPException(status_code=429, detail="Session limit reached.")
         session_id = uuid.uuid4().hex[:16]
         loop = asyncio.get_running_loop()
         rig = await loop.run_in_executor(None, build_rig, decoded, layout)
-        session = AvatarSession(session_id=session_id, rig=rig, pack=pack)
+        portrait_jpeg: bytes | None = None
+        if gpu_animate_url:
+            ok_jpeg, encoded = cv2.imencode(
+                ".jpg", rig.base, [cv2.IMWRITE_JPEG_QUALITY, 92],
+            )
+            portrait_jpeg = encoded.tobytes() if ok_jpeg else None
+        session = AvatarSession(
+            session_id=session_id,
+            rig=rig,
+            pack=pack,
+            gpu_animate_url=gpu_animate_url,
+            portrait_jpeg=portrait_jpeg,
+        )
         session.animator = asyncio.create_task(_animate(session))
         _sessions[session_id] = session
 
@@ -527,8 +662,24 @@ async def speak(
             None, viseme_timeline, speech_text, len(envelope), envelope
         )
 
+    # GPU-live enhancement: with real audio and a sidecar attached, render
+    # the portrait actually speaking (bounded wait, pack fallback).
+    clip_frames: list[bytes] | None = None
+    clip_fps = 25.0
+    if source == "audio" and session.gpu_animate_url:
+        clip = await _try_gpu_clip(
+            session, audio_bytes, (file and file.content_type) or "audio/mpeg",
+        )
+        if clip:
+            clip_frames, clip_fps = clip
+            source = "gpu"
+
     session.utterance = Utterance(
-        envelope=envelope, started_at=time.monotonic(), visemes=visemes
+        envelope=envelope,
+        started_at=time.monotonic(),
+        visemes=visemes,
+        clip_frames=clip_frames,
+        clip_fps=clip_fps,
     )
     duration_ms = int(len(envelope) / AVATAR_FPS * 1000)
     logger.info(

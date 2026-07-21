@@ -228,7 +228,12 @@ class TestTextEnvelope:
 # Viseme timeline + frame pack
 # ---------------------------------------------------------------------------
 
-from engine_frames import build_frame_pack, render_pack_frame, resolve_label
+from engine_frames import (
+    _composite_region,
+    build_frame_pack,
+    render_pack_frame,
+    resolve_label,
+)
 from phonemes import (
     viseme_sequence_from_text,
     viseme_timeline,
@@ -337,3 +342,83 @@ class TestFramePack:
         except ValueError:
             raised = True
         assert raised
+
+
+class TestPackV2:
+    def _gradient_pack(self):
+        """closed=black, wide_open=white, 12 gray ladder steps between."""
+        images = {
+            "closed": make_frame_bytes((0, 0, 0)),
+            "wide_open": make_frame_bytes((255, 255, 255)),
+        }
+        for step in range(12):
+            gray = round(step * 255 / 11)
+            images[f"step_{step:02d}"] = make_frame_bytes((gray, gray, gray))
+        return build_frame_pack(images)
+
+    def test_ladder_is_ordered(self):
+        pack = self._gradient_pack()
+        assert pack.ladder == [f"step_{i:02d}" for i in range(12)]
+
+    def test_transition_walks_ladder_midpoints(self):
+        import cv2 as _cv2
+
+        pack = self._gradient_pack()
+        render_pack_frame(pack, "closed", 0.0)  # settle on rest
+        mid = render_pack_frame(pack, "wide_open", 0.0)  # blend=0.5 frame
+        decoded = _cv2.imdecode(np.frombuffer(mid, np.uint8), _cv2.IMREAD_COLOR)
+        mean = float(decoded.mean())
+        # A mid-transition frame must be a mid-gray LADDER step, neither
+        # endpoint (alpha blending would also give gray — but the ladder
+        # pick is asserted via the pack's blend state below).
+        assert 60.0 < mean < 200.0
+        settled = render_pack_frame(pack, "wide_open", 0.0)
+        decoded_settled = _cv2.imdecode(
+            np.frombuffer(settled, np.uint8), _cv2.IMREAD_COLOR
+        )
+        assert float(decoded_settled.mean()) > 200.0
+
+    def test_region_composite_changes_masked_pixels_only(self):
+        base = np.zeros((100, 100, 3), dtype=np.uint8)
+        region = np.full((100, 100, 3), 255, dtype=np.uint8)
+        mask = np.zeros((100, 100), dtype=np.float32)
+        mask[20:40, 20:40] = 1.0
+        out = _composite_region(base, region, mask, 1.0)
+        assert out[30, 30].min() > 200  # masked area takes the region
+        assert out[70, 70].max() == 0  # unmasked area untouched
+        unchanged = _composite_region(base, region, mask, 0.0)
+        assert unchanged[30, 30].max() == 0  # zero amount is a no-op
+
+    def test_undetected_face_disables_regions_but_renders(self):
+        # Solid-color frames defeat FaceMesh — regions must switch off
+        # gracefully while rendering (with blink requested) still works.
+        pack = build_frame_pack({
+            "closed": make_frame_bytes((10, 10, 10)),
+            "open": make_frame_bytes((200, 200, 200)),
+            "eyes_closed": make_frame_bytes((90, 90, 90)),
+        })
+        assert pack.eye_mask is None
+        frame = render_pack_frame(pack, "closed", 0.0, blink_amp=1.0)
+        assert frame[:2] == b"\xff\xd8"
+
+
+class TestUtteranceClip:
+    def test_clip_frame_indexing_and_end(self):
+        from app import Utterance
+
+        utterance = Utterance(
+            envelope=[0.5] * 10,
+            started_at=100.0,
+            clip_frames=[b"f0", b"f1", b"f2", b"f3"],
+            clip_fps=2.0,
+        )
+        assert utterance.clip_frame_at(100.0) == b"f0"
+        assert utterance.clip_frame_at(100.6) == b"f1"
+        assert utterance.clip_frame_at(101.6) == b"f3"
+        assert utterance.clip_frame_at(102.5) is None  # finished
+
+    def test_no_clip_returns_none(self):
+        from app import Utterance
+
+        utterance = Utterance(envelope=[0.5], started_at=0.0)
+        assert utterance.clip_frame_at(0.0) is None

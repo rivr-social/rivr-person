@@ -36,7 +36,7 @@ export type AvatarSessionInfo = {
 };
 
 export type AvatarSessionOptions = {
-  /** Baked viseme pack: bin label → frame URL. */
+  /** Baked viseme pack: frame label → frame URL (bins + ladder + regions). */
   visemeFrames?: Record<string, string>;
   /** Manual mouth/eye placement (normalized 0..1). */
   calibration?: {
@@ -44,13 +44,20 @@ export type AvatarSessionOptions = {
     leftEye: [number, number];
     rightEye: [number, number];
   };
+  /**
+   * GPU sidecar base URL for per-utterance Wav2Lip rendering. Optional
+   * enhancement: the worker tries it per speak and falls back to the pack
+   * timeline when missing, slow, or failing.
+   */
+  gpuAnimateUrl?: string;
 };
 
 export type AvatarSpeakResult = {
   ok: boolean;
   durationMs: number;
   frames: number;
-  source: "audio" | "text";
+  /** "gpu" = the utterance renders as Wav2Lip frames from the sidecar. */
+  source: "audio" | "text" | "gpu";
 };
 
 export function isLiveAvatarConfigured(): boolean {
@@ -106,7 +113,10 @@ export async function createAvatarSession(
 ): Promise<AvatarSessionInfo> {
   const form = new FormData();
   form.append("file", new Blob([imageBytes], { type: mimeType }), fileName);
-  if (options && (options.visemeFrames || options.calibration)) {
+  if (
+    options &&
+    (options.visemeFrames || options.calibration || options.gpuAnimateUrl)
+  ) {
     form.append("options", JSON.stringify(options));
   }
   const response = await workerFetch("/sessions", {
@@ -131,9 +141,16 @@ export async function speakAudio(
     `speech.${extension}`,
   );
   if (text) form.append("text", text);
+  // GPU-animate sessions render the utterance on the box before answering;
+  // give the worker room beyond its own bounded render wait.
   const response = await workerFetch(
     `/sessions/${encodeURIComponent(sessionId)}/speak`,
-    { method: "POST", headers: workerHeaders(), body: form },
+    {
+      method: "POST",
+      headers: workerHeaders(),
+      body: form,
+      signal: AbortSignal.timeout(50_000),
+    },
   );
   return (await response.json()) as AvatarSpeakResult;
 }
