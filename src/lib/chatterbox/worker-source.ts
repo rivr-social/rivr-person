@@ -354,6 +354,9 @@ set -x
 exec >> /workspace/onstart.log 2>&1
 apt-get update -y && apt-get install -y ffmpeg git libgl1 libglib2.0-0
 pip install --no-cache-dir chatterbox-tts "transformers>=4.46,<5" "huggingface_hub>=0.30,<1.0" fastapi "uvicorn[standard]" soundfile "mediapipe==0.10.14" "protobuf>=4.25.3,<5" opencv-python-headless
+# chatterbox pulls a newer torch than the image's torchvision — realign the
+# trio or transformers' llama import dies on torchvision::nms.
+pip install -U --no-cache-dir torch torchvision torchaudio
 ${livePortraitSetup}
 mkdir -p /workspace
 curl -fsSL "${options.workerSourceUrl}" -o /workspace/server.py
