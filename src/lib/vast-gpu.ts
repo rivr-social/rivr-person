@@ -58,14 +58,21 @@ export interface VastInstanceSummary {
   label: string | null;
 }
 
+const VAST_ORIGIN = "https://console.vast.ai";
+
 async function vastFetch(
   apiKey: string,
   path: string,
   init?: RequestInit,
 ): Promise<unknown> {
+  // A path starting with "/api/" is absolute (lets callers pick the API
+  // version, e.g. the v1 instances list); everything else is v0-relative.
+  const url = path.startsWith("/api/")
+    ? `${VAST_ORIGIN}${path}`
+    : `${VAST_API_BASE}${path}`;
   let response: Response;
   try {
-    response = await fetch(`${VAST_API_BASE}${path}`, {
+    response = await fetch(url, {
       ...init,
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -107,27 +114,18 @@ export async function getVastBalance(apiKey: string): Promise<number | null> {
 
 /** Returns the cheapest matching rentable offer id. */
 export async function findCheapestOffer(apiKey: string): Promise<number> {
+  // Verified live against the endpoint: POST /bundles/ with the query
+  // FLATTENED at the top level (NOT wrapped in `q`), constraints as
+  // {op: value}, order/limit/type siblings. Bearer auth. (My earlier
+  // `q`-wrapped PUT/`/search/asks/` guesses 404'd/400'd — that was the
+  // silent Start-Voice failure.)
   const body = JSON.stringify({
     ...OFFER_QUERY,
     order: [["dph_total", "asc"]],
     limit: 10,
   });
 
-  // Newer API uses POST /search/asks/; older deployments use PUT /bundles/.
-  let payload: unknown;
-  try {
-    payload = await vastFetch(apiKey, "/search/asks/", { method: "POST", body });
-  } catch (error) {
-    if (error instanceof VastApiError && (error.status === 404 || error.status === 405)) {
-      payload = await vastFetch(apiKey, "/bundles/", {
-        method: "PUT",
-        body: JSON.stringify({ q: JSON.parse(body) }),
-      });
-    } else {
-      throw error;
-    }
-  }
-
+  const payload = await vastFetch(apiKey, "/bundles/", { method: "POST", body });
   const record = payload as Record<string, unknown>;
   const offers = (record.offers ?? record.bundles ?? []) as Array<Record<string, unknown>>;
   const usable = offers
@@ -205,10 +203,18 @@ function summarizeInstance(raw: Record<string, unknown>): VastInstanceSummary {
 export async function listChatterboxInstances(
   apiKey: string,
 ): Promise<VastInstanceSummary[]> {
-  const payload = (await vastFetch(apiKey, "/instances?owner=me")) as Record<
-    string,
-    unknown
-  >;
+  // The v0 /instances?owner=me list is deprecated and 301-redirects; the
+  // SDK pages the v1 endpoint. One page (25) is plenty for our per-user
+  // instances (we cap at one live box).
+  const params = new URLSearchParams({
+    select_filters: JSON.stringify({}),
+    order_by: JSON.stringify([{ col: "id", dir: "asc" }]),
+    limit: "25",
+  });
+  const payload = (await vastFetch(
+    apiKey,
+    `/api/v1/instances/?${params.toString()}`,
+  )) as Record<string, unknown>;
   const instances = (payload.instances ?? []) as Array<Record<string, unknown>>;
   return instances
     .map(summarizeInstance)
