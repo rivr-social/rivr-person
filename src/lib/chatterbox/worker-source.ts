@@ -198,17 +198,55 @@ class VisemeRequest(BaseModel):
     image_url: str
 
 
+# Bake jobs run in a worker thread and are fetched by id — the Vast port
+# forward kills long-idle HTTP connections, so the bake must never be a
+# single long request.
+_bake_jobs: dict = {}
+
+
 @app.post("/viseme-pack")
-def viseme_pack(req: VisemeRequest, authorization: Optional[str] = Header(default=None)):
+def viseme_pack_start(req: VisemeRequest, authorization: Optional[str] = Header(default=None)):
     require_auth(authorization)
     touch_idle_stamp()
-    import cv2
-    import mediapipe as mp
-
     if not (LIVEPORTRAIT_DIR / ".deps-done").is_file():
         raise HTTPException(status_code=503, detail="LivePortrait still installing on this box")
 
-    portrait = cached_fetch(req.image_url, ".jpg")
+    import threading
+    import uuid as _uuid
+
+    job_id = _uuid.uuid4().hex[:16]
+    _bake_jobs[job_id] = {"status": "running"}
+
+    def run():
+        try:
+            result = _run_viseme_bake(req.image_url)
+            _bake_jobs[job_id] = {"status": "done", **result}
+        except HTTPException as exc:
+            _bake_jobs[job_id] = {"status": "error", "detail": str(exc.detail)}
+        except Exception as exc:  # noqa: BLE001
+            _bake_jobs[job_id] = {"status": "error", "detail": str(exc)[:400]}
+        finally:
+            touch_idle_stamp()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"jobId": job_id, "status": "running"}
+
+
+@app.get("/viseme-pack/{job_id}")
+def viseme_pack_status(job_id: str, authorization: Optional[str] = Header(default=None)):
+    require_auth(authorization)
+    touch_idle_stamp()
+    job = _bake_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown bake job")
+    return job
+
+
+def _run_viseme_bake(image_url: str) -> dict:
+    import cv2
+    import mediapipe as mp
+
+    portrait = cached_fetch(image_url, ".jpg")
     driving = None
     for candidate in sorted((LIVEPORTRAIT_DIR / "assets" / "examples" / "driving").glob("*.mp4")):
         driving = candidate
@@ -244,8 +282,6 @@ def viseme_pack(req: VisemeRequest, authorization: Optional[str] = Header(defaul
             if not ok:
                 break
             frame_index += 1
-            if frame_index % 2:  # analyze every 2nd frame
-                continue
             result = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if not result.multi_face_landmarks:
                 continue
@@ -264,7 +300,9 @@ def viseme_pack(req: VisemeRequest, authorization: Optional[str] = Header(defaul
         # guarantee a rest frame: reuse the least-open capture
         first_label = min(best, key=lambda k: targets[k])
         best["closed"] = best[first_label]
-    if len(best) < 3:
+    # Two bins (rest + one open shape) already animate convincingly via the
+    # frame-swap engine's fallback ordering; more bins refine it.
+    if len(best) < 2:
         raise HTTPException(status_code=422,
                             detail=f"could not extract enough mouth shapes (got {len(best)})")
 
@@ -297,6 +335,7 @@ export function buildOnstartScript(options: {
     pip install -r requirements.txt && \
     pip install -U "huggingface_hub[cli]" && \
     hf download KwaiVGI/LivePortrait --local-dir pretrained_weights --exclude "*.git*" && \
+    pip install "mediapipe==0.10.14" "protobuf>=4.25.3,<5" && \
     touch .deps-done
   fi
 ) >> /workspace/setup-liveportrait.log 2>&1 &
@@ -307,7 +346,7 @@ export function buildOnstartScript(options: {
 set -x
 exec >> /workspace/onstart.log 2>&1
 apt-get update -y && apt-get install -y ffmpeg git libgl1 libglib2.0-0
-pip install --no-cache-dir chatterbox-tts fastapi "uvicorn[standard]" soundfile mediapipe opencv-python-headless
+pip install --no-cache-dir chatterbox-tts fastapi "uvicorn[standard]" soundfile "mediapipe==0.10.14" "protobuf>=4.25.3,<5" opencv-python-headless
 ${livePortraitSetup}
 mkdir -p /workspace
 curl -fsSL "${options.workerSourceUrl}" -o /workspace/server.py

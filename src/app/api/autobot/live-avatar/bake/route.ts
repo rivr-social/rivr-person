@@ -89,25 +89,60 @@ export async function POST() {
   }
 
   // Ask the GPU worker for the pack (LivePortrait pass + frame classify).
+  // The bake is a polled job — Vast's port forward kills long-held HTTP
+  // connections, so a single long request would drop mid-bake.
   let bake: { frames?: Record<string, string> };
   try {
-    const response = await fetch(`${gpu.url}/viseme-pack`, {
+    const workerHeaders = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${gpu.authToken}`,
+    };
+    const startResponse = await fetch(`${gpu.url}/viseme-pack`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${gpu.authToken}`,
-      },
+      headers: workerHeaders,
       body: JSON.stringify({ image_url: imageUrl }),
-      signal: AbortSignal.timeout(BAKE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
+    if (!startResponse.ok) {
+      const detail = await startResponse.text().catch(() => "");
       return NextResponse.json(
-        { error: `Bake failed on the GPU worker: ${detail.slice(0, 300)}` },
+        { error: `Bake failed to start on the GPU worker: ${detail.slice(0, 300)}` },
         { status: 502 },
       );
     }
-    bake = (await response.json()) as { frames?: Record<string, string> };
+    const started = (await startResponse.json()) as { jobId?: string };
+    if (!started.jobId) {
+      return NextResponse.json(
+        { error: "GPU worker returned no bake job id." },
+        { status: 502 },
+      );
+    }
+
+    const deadline = Date.now() + BAKE_TIMEOUT_MS;
+    let job: { status?: string; frames?: Record<string, string>; detail?: string } = {};
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      const poll = await fetch(`${gpu.url}/viseme-pack/${started.jobId}`, {
+        headers: workerHeaders,
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!poll.ok) continue; // transient — keep polling until the deadline
+      job = (await poll.json()) as typeof job;
+      if (job.status === "done" || job.status === "error") break;
+    }
+    if (job.status === "error") {
+      return NextResponse.json(
+        { error: `Bake failed on the GPU worker: ${(job.detail ?? "").slice(0, 300)}` },
+        { status: 502 },
+      );
+    }
+    if (job.status !== "done") {
+      return NextResponse.json(
+        { error: "The bake timed out — try again; the box stays warm." },
+        { status: 504 },
+      );
+    }
+    bake = { frames: job.frames };
   } catch (error) {
     return NextResponse.json(
       {

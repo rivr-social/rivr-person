@@ -4,5 +4,8 @@ python-multipart>=0.0.9
 httpx>=0.27,<1
 numpy>=1.26,<3
 opencv-python-headless>=4.9,<5
-mediapipe>=0.10.14,<0.11
+# PINNED: mediapipe 0.10.35+ removed the legacy `solutions` API this
+# engine's FaceMesh detection uses — 0.10.14 is the known-good version.
+mediapipe==0.10.14
+protobuf>=4.25.3,<5
 phonemizer>=3.2,<4
