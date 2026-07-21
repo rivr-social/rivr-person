@@ -24,7 +24,7 @@ import {
   type ChatterboxGpuState,
   type GpuProvider,
 } from "@/lib/autobot-user-settings";
-import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { getVoiceSampleUrl } from "@/lib/storage";
 import {
   createChatterboxInstance,
   destroyInstance,
@@ -150,19 +150,15 @@ async function getWalletBalanceSummary(userId: string) {
 type WorkerProbe = { healthy: boolean; modelLoaded: boolean };
 
 async function probeWorkerHealth(url: string): Promise<WorkerProbe> {
+  // The maintained Chatterbox server (devnen) has no /health, and it only
+  // starts serving AFTER the model finishes loading — so a 200 on /docs
+  // means genuinely ready to synthesize (verified against the live server).
   try {
-    const response = await fetch(`${url}/health`, {
+    const response = await fetch(`${url}/docs`, {
       signal: AbortSignal.timeout(WORKER_HEALTH_TIMEOUT_MS),
     });
-    if (!response.ok) return { healthy: false, modelLoaded: false };
-    const data = (await response.json()) as {
-      ok?: boolean;
-      model_loaded?: boolean;
-    };
-    return {
-      healthy: data.ok === true,
-      modelLoaded: data.model_loaded === true,
-    };
+    const up = response.ok;
+    return { healthy: up, modelLoaded: up };
   } catch {
     return { healthy: false, modelLoaded: false };
   }
@@ -323,19 +319,29 @@ export async function POST(request: Request) {
           });
         }
 
-        const baseUrl = getInstanceConfig().baseUrl.replace(/\/+$/, "");
-        const authToken = randomBytes(24).toString("hex");
+        // The clone reference is the user's stored voice sample — the box
+        // downloads it at boot. No sample → no voice to clone.
+        const voiceKey = settings.voiceSample?.storedFileName ?? "";
+        if (!voiceKey.includes("/")) {
+          return NextResponse.json(
+            {
+              error:
+                "Record a voice sample first (Settings → Assistant → Voice) — the GPU clones it.",
+              settingsUrl: AUTOBOT_SETTINGS_URL,
+            },
+            { status: 400 },
+          );
+        }
+        const voiceSampleUrl = getVoiceSampleUrl(voiceKey);
         const offerId = await findCheapestOffer(apiKey);
         const instanceId = await createChatterboxInstance(apiKey, offerId, {
-          workerSourceUrl: `${baseUrl}/api/autobot/gpu/worker-source`,
-          authToken,
-          bakeViseme: true,
+          voiceSampleUrl,
         });
 
         const gpuState: ChatterboxGpuState = {
           instanceId,
           url: "",
-          authToken,
+          authToken: "", // maintained server has no bearer auth
           createdAt: new Date().toISOString(),
           lastUsedAt: new Date().toISOString(),
         };

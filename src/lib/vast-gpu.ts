@@ -142,9 +142,8 @@ export async function findCheapestOffer(apiKey: string): Promise<number> {
 }
 
 export interface CreateInstanceOptions {
-  workerSourceUrl: string;
-  authToken: string;
-  bakeViseme: boolean;
+  /** Public URL to the user's stored voice sample (the clone reference). */
+  voiceSampleUrl: string;
 }
 
 /** Creates the instance; returns the new contract/instance id. */
@@ -154,6 +153,11 @@ export async function createChatterboxInstance(
   options: CreateInstanceOptions,
 ): Promise<number> {
   const onstart = buildOnstartScript(options);
+  // Body shape + field names verified against the vastai SDK's
+  // instances.create_instance. CRITICAL: runtype must be a VALID launch
+  // mode ("ssh_proxy"), never "onstart" — an invalid runtype made the host
+  // fail container creation (OCI runtime create failed) on every box.
+  // `env` port mapping matches the CLI's parse_env output ({"-p a:b":"1"}).
   const payload = (await vastFetch(apiKey, `/asks/${offerId}/`, {
     method: "PUT",
     body: JSON.stringify({
@@ -162,7 +166,7 @@ export async function createChatterboxInstance(
       disk: INSTANCE_DISK_GB,
       label: INSTANCE_LABEL,
       onstart,
-      runtype: "onstart",
+      runtype: "ssh_proxy",
       env: { [`-p ${CHATTERBOX_WORKER_PORT}:${CHATTERBOX_WORKER_PORT}`]: "1" },
     }),
   })) as Record<string, unknown>;

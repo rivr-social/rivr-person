@@ -14,7 +14,11 @@
  * Modernized from docs/archive/repos/Autobot/chatterbox/server.py.
  */
 
-export const CHATTERBOX_WORKER_PORT = 8001;
+/**
+ * The GPU box runs the MAINTAINED Chatterbox TTS server (devnen), which
+ * serves on 8004. This is the port the app resolves + probes.
+ */
+export const CHATTERBOX_WORKER_PORT = 8004;
 
 export const CHATTERBOX_WORKER_SOURCE = String.raw`#!/usr/bin/env python3
 """RIVR Chatterbox worker: voice-clone TTS + one-time viseme-pack bake."""
@@ -343,72 +347,53 @@ if __name__ == "__main__":
 `;
 
 /**
- * Onstart script for the Vast instance: installs deps, fetches this worker
- * source from the person instance, launches it, and self-STOPS the box
- * after 35 idle minutes (stopped Vast instances bill storage only; the
- * app's start action restarts them in ~30s instead of re-provisioning).
+ * Onstart script for the Vast instance — the DURABLE, proven recipe
+ * (verified live). It runs the MAINTAINED devnen Chatterbox TTS server,
+ * which solves the dependency avalanche internally (installs chatterbox
+ * with --no-deps + a locked version set). We add one protobuf bump the
+ * base image needs, download the user's voice sample as the clone
+ * reference, and self-STOP after 35 idle minutes.
+ *
+ * Install is guarded by a completion stamp so a box stopped mid-install
+ * resumes on restart. `voiceSampleUrl` is a public URL to the user's
+ * stored sample (any ffmpeg-decodable format; converted to voice.wav).
  */
 export function buildOnstartScript(options: {
-  workerSourceUrl: string;
-  authToken: string;
-  bakeViseme: boolean;
+  voiceSampleUrl: string;
 }): string {
-  const livePortraitSetup = options.bakeViseme
-    ? String.raw`
-(
-  cd /workspace
-  # Guard on the completion stamp, NOT the directory — a box stopped
-  # mid-install must resume the setup on restart.
-  if [ ! -f LivePortrait/.deps-done ]; then
-    [ -d LivePortrait ] || git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git
-    # LivePortrait's pins clobber Chatterbox's (transformers/protobuf/hub) —
-    # it gets its OWN venv; the bake subprocess runs lp-venv's python.
-    python -m venv --system-site-packages /workspace/lp-venv
-    cd LivePortrait
-    /workspace/lp-venv/bin/pip install -r requirements.txt && \
-    /workspace/lp-venv/bin/pip install "huggingface_hub[cli]>=0.30,<1.0" && \
-    /workspace/lp-venv/bin/hf download KwaiVGI/LivePortrait --local-dir pretrained_weights --exclude "*.git*" && \
-    touch .deps-done
-  fi
-) >> /workspace/setup-liveportrait.log 2>&1 &
-`
-    : "";
-
   return String.raw`#!/bin/bash
 set -x
 exec >> /workspace/onstart.log 2>&1
-apt-get update -y && apt-get install -y ffmpeg git libgl1 libglib2.0-0
-pip install --no-cache-dir chatterbox-tts "transformers>=4.46,<5" "huggingface_hub>=0.30,<1.0" fastapi "uvicorn[standard]" soundfile "mediapipe==0.10.14" "protobuf>=4.25.3,<5" opencv-python-headless
-# chatterbox pulls a newer torch than the image's torchvision — realign to a
-# PINNED, driver-safe trio. Never -U/latest: cu130 wheels need driver >=580
-# and left torch.cuda.is_available() false on a driver-570 host.
-pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-${livePortraitSetup}
-mkdir -p /workspace
-curl -fsSL "${options.workerSourceUrl}" -o /workspace/server.py
-cat > /workspace/idle-watchdog.sh <<'WATCHDOG'
+apt-get update -y && apt-get install -y git ffmpeg libgl1 libglib2.0-0 curl
+# --- Maintained Chatterbox server (install once; resume-safe) ---
+if [ ! -f /workspace/cbx/.ready ]; then
+  [ -d /workspace/cbx ] || git clone --depth 1 https://github.com/devnen/Chatterbox-TTS-Server /workspace/cbx
+  cd /workspace/cbx
+  # Their locked CUDA-12.1 torch + explicit deps. chatterbox itself installs
+  # with --no-deps (the key that avoids the torch/onnx/protobuf avalanche).
+  pip install --no-cache-dir -r requirements-nvidia.txt && \
+  pip install --no-cache-dir --no-deps git+https://github.com/devnen/chatterbox-v2.git@master s3tokenizer==0.3.0 onnx==1.16.0 && \
+  pip install --no-cache-dir "protobuf>=4.25.3,<5" && \
+  touch /workspace/cbx/.ready
+fi
+cd /workspace/cbx
+# --- Load the user's voice as the clone reference (every boot) ---
+mkdir -p reference_audio
+curl -fsSL "${options.voiceSampleUrl}" -o /tmp/ref.audio && ffmpeg -y -i /tmp/ref.audio reference_audio/voice.wav
+# --- Idle self-stop (35 min without a synthesis touches last-used) ---
+cat > /workspace/idle.sh <<'WATCHDOG'
 #!/bin/bash
 while true; do
   sleep 300
-  STAMP=/workspace/last-used
-  if [ -f "$STAMP" ]; then
-    LAST=$(cat "$STAMP" 2>/dev/null || echo 0)
-  else
-    LAST=$(date +%s)
-    echo "$LAST" > "$STAMP"
-  fi
-  NOW=$(date +%s)
-  if [ $((NOW - LAST)) -gt 2100 ]; then
-    shutdown -h now
-  fi
+  S=/workspace/last-used
+  [ -f "$S" ] || date +%s > "$S"
+  L=$(cat "$S" 2>/dev/null || echo 0); N=$(date +%s)
+  [ $((N - L)) -gt 2100 ] && shutdown -h now
 done
 WATCHDOG
-chmod +x /workspace/idle-watchdog.sh
-nohup /workspace/idle-watchdog.sh >/dev/null 2>&1 &
+chmod +x /workspace/idle.sh
+nohup /workspace/idle.sh >/dev/null 2>&1 &
 date +%s > /workspace/last-used
-cd /workspace
-CHATTERBOX_AUTH_TOKEN="${options.authToken}" CHATTERBOX_PORT=${String(
-    CHATTERBOX_WORKER_PORT,
-  )} python server.py
+python3 server.py
 `;
 }

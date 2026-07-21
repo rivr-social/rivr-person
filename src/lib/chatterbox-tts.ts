@@ -15,7 +15,6 @@ import {
   getAutobotUserSettings,
   saveAutobotUserSettings,
 } from "@/lib/autobot-user-settings";
-import { getVoiceSampleUrl } from "@/lib/storage";
 
 const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
 const CHATTERBOX_URL = (process.env.CHATTERBOX_URL || "").replace(/\/+$/, "");
@@ -23,6 +22,13 @@ const CHATTERBOX_API_KEY = process.env.CHATTERBOX_API_KEY || "";
 
 export const TTS_MAX_TEXT_LENGTH = 2000;
 const WORKER_TIMEOUT_MS = 90_000;
+
+/**
+ * Reference-audio filename on the GPU box. The Vast onstart downloads the
+ * user's stored voice sample and converts it to this exact name under the
+ * server's reference_audio/ dir; the clone request references it by name.
+ */
+export const REFERENCE_VOICE_FILE = "voice.wav";
 
 export type ChatterboxTtsResult =
   /** Synthesized speech audio ready to play / lip-sync against. */
@@ -39,8 +45,11 @@ async function tryWorkerLane(
   baseUrl: string,
   authToken: string,
   text: string,
-  voiceUrl: string,
 ): Promise<ChatterboxTtsResult | null> {
+  // The GPU box runs the maintained Chatterbox TTS server (devnen), which
+  // conditions on a reference file already loaded on the box (the user's
+  // sample, downloaded at boot to reference_audio/<REFERENCE_VOICE_FILE>)
+  // and clones it in one call.
   try {
     const response = await fetch(`${baseUrl}/tts`, {
       method: "POST",
@@ -50,8 +59,9 @@ async function tryWorkerLane(
       },
       body: JSON.stringify({
         text,
-        voice_url: voiceUrl,
-        response_format: "mp3",
+        voice_mode: "clone",
+        reference_audio_filename: REFERENCE_VOICE_FILE,
+        output_format: "mp3",
       }),
       signal: AbortSignal.timeout(WORKER_TIMEOUT_MS),
     });
@@ -76,16 +86,13 @@ export async function requestChatterboxTts(
   const settings = await getAutobotUserSettings(userId).catch(() => null);
   const speechText = text.slice(0, TTS_MAX_TEXT_LENGTH);
 
-  // Conditioning audio: the user's stored voice sample. Keys from the new
-  // MinIO lane contain a path ("voice-samples/<id>/..."); bare legacy names
-  // from the retired OpenClaw store are unreachable and skipped.
-  const voiceKey = settings?.voiceSample?.storedFileName ?? "";
-  const voiceUrl = voiceKey.includes("/") ? getVoiceSampleUrl(voiceKey) : "";
+  // The clone reference lives ON the GPU box (loaded at boot), so the app
+  // only needs the box URL — not a fetchable voice-sample URL.
 
-  // Lane 1: the user's own GPU worker.
+  // Lane 1: the user's own GPU worker (maintained Chatterbox server).
   const gpu = settings?.chatterboxGpu;
-  if (gpu?.url && voiceUrl) {
-    const result = await tryWorkerLane(gpu.url, gpu.authToken, speechText, voiceUrl);
+  if (gpu?.url) {
+    const result = await tryWorkerLane(gpu.url, gpu.authToken, speechText);
     if (result) {
       // Stamp usage so the idle reaper leaves an active box alone.
       saveAutobotUserSettings(userId, {
@@ -96,12 +103,11 @@ export async function requestChatterboxTts(
   }
 
   // Lane 2: static instance-level worker.
-  if (CHATTERBOX_URL && voiceUrl) {
+  if (CHATTERBOX_URL) {
     const result = await tryWorkerLane(
       CHATTERBOX_URL,
       CHATTERBOX_API_KEY,
       speechText,
-      voiceUrl,
     );
     if (result) return result;
   }
