@@ -23,5 +23,5 @@ IMAGE_REPO=rivr-person
 #
 # Rows (TSV):  channel <TAB> image_id(sha256:..) <TAB> tag <TAB> source_sha <TAB> built_at_utc
 # channel	image_id	tag	source_sha	built_at
-prod	sha256:a9e443fbccafa146d7dece3f4dede036e428281ade84570b8fa2ccd3f6697eae	rivr-person:prod-ef64c96bba5d	ef64c96bba5dd375812ce2260eb6bd7bae44c4f4	2026-07-21T17:33:56Z
+prod	sha256:aef973b5e6aee034410ae6a373492ea7725c9ef2da145929e24df76cc37704f0	rivr-person:prod-f02b75299093	f02b7529909383bac4e8cabed7042b54506f1faa	2026-07-21T17:50:25Z
 dev	sha256:6f40b14c148dcf17af473265c6241d4762f8cd37fac2ab0c4bb28751b9a55799	rivr-person:dev-4c8dd737d47c	4c8dd737d47ce69c6b2f73674533b0e7826b5a37	2026-07-21T02:46:27Z
