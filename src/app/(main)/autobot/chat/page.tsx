@@ -2310,9 +2310,10 @@ export default function AutobotChatPage() {
         </div>
       )}
 
-      {/* Settings panel */}
+      {/* Settings panel — the page root is a fixed overflow-hidden column,
+          so this panel must scroll itself or tall content gets clipped. */}
       {showSettings && (
-        <div className="shrink-0 px-4 py-3 border-b space-y-3 bg-muted/30">
+        <div className="shrink-0 max-h-[65%] overflow-y-auto px-4 py-3 border-b space-y-3 bg-muted/30">
           {/* Model selector */}
           <div className="space-y-1.5">
             <Label className="text-xs">Model</Label>
