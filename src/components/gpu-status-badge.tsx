@@ -329,12 +329,24 @@ export function GpuStatusBadge() {
     badgeColor = "border-red-500/40 bg-red-950/80 text-red-200";
     dotColor = "bg-red-500";
   } else if (isProvisioning) {
-    badgeLabel = gpuLabel ? `${gpuLabel} starting...` : "GPU Starting";
-    badgeSubLabel = priceLabel;
+    // Two honest phases: "provisioning" = the box itself isn't up yet;
+    // "gpu_starting" = box up but the voice server isn't serving yet.
+    // Neither means the cloned voice can answer — say so.
+    const voiceWarming = status === "gpu_starting";
+    badgeLabel = voiceWarming
+      ? "Voice warming"
+      : gpuLabel
+        ? `${gpuLabel} starting...`
+        : "GPU Starting";
+    badgeSubLabel = voiceWarming
+      ? priceLabel
+        ? `Don't talk yet — voice is loading · ${priceLabel}`
+        : "Don't talk yet — voice is loading"
+      : priceLabel;
     badgeColor = "border-amber-500/40 bg-amber-950/80 text-amber-300";
     dotColor = "bg-amber-500 animate-pulse";
   } else if (isRunning) {
-    badgeLabel = gpuLabel ? `${gpuLabel} active` : "GPU Active";
+    badgeLabel = gpuLabel ? `${gpuLabel} · voice ready` : "Voice ready";
     badgeSubLabel = priceLabel;
     badgeColor = "border-emerald-500/40 bg-emerald-950/80 text-emerald-300";
     dotColor = "bg-emerald-500";
