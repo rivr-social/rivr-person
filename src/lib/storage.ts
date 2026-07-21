@@ -447,9 +447,13 @@ export async function uploadVoiceSample(
     if (buffer.length > VOICE_SAMPLE_MAX_FILE_SIZE) {
       throw new FileSizeError(buffer.length, VOICE_SAMPLE_MAX_FILE_SIZE);
     }
-    if (!VOICE_SAMPLE_ALLOWED_MIME_TYPES.includes(mimeType as (typeof VOICE_SAMPLE_ALLOWED_MIME_TYPES)[number])) {
+    // MediaRecorder reports parameterized types ("audio/webm;codecs=opus") —
+    // validate and store the base type only.
+    const baseMimeType = mimeType.split(';')[0].trim().toLowerCase();
+    if (!VOICE_SAMPLE_ALLOWED_MIME_TYPES.includes(baseMimeType as (typeof VOICE_SAMPLE_ALLOWED_MIME_TYPES)[number])) {
       throw new InvalidMimeTypeError(mimeType, [...VOICE_SAMPLE_ALLOWED_MIME_TYPES]);
     }
+    mimeType = baseMimeType;
 
     const key = generateScopedStorageKey(`voice-samples/${ownerId}`, filename);
     const bucket = resolveBucket('exports');

@@ -135,7 +135,9 @@ def health():
         "service": "rivr-chatterbox",
         "device": DEVICE,
         "model_loaded": _model is not None,
-        "liveportrait_ready": (LIVEPORTRAIT_DIR / "inference.py").is_file(),
+        # Ready only when the onstart stamped deps-done AFTER pip finished —
+        # inference.py existing alone races the still-running installs.
+        "liveportrait_ready": (LIVEPORTRAIT_DIR / ".deps-done").is_file(),
     }
 
 
@@ -203,8 +205,8 @@ def viseme_pack(req: VisemeRequest, authorization: Optional[str] = Header(defaul
     import cv2
     import mediapipe as mp
 
-    if not (LIVEPORTRAIT_DIR / "inference.py").is_file():
-        raise HTTPException(status_code=503, detail="LivePortrait not installed on this box")
+    if not (LIVEPORTRAIT_DIR / ".deps-done").is_file():
+        raise HTTPException(status_code=503, detail="LivePortrait still installing on this box")
 
     portrait = cached_fetch(req.image_url, ".jpg")
     driving = None
@@ -292,9 +294,10 @@ export function buildOnstartScript(options: {
   if [ ! -d LivePortrait ]; then
     git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git
     cd LivePortrait
-    pip install -r requirements.txt || true
-    pip install -U "huggingface_hub[cli]"
-    huggingface-cli download KwaiVGI/LivePortrait --local-dir pretrained_weights --exclude "*.git*" "README.md" "docs" || true
+    pip install -r requirements.txt && \
+    pip install -U "huggingface_hub[cli]" && \
+    hf download KwaiVGI/LivePortrait --local-dir pretrained_weights --exclude "*.git*" && \
+    touch .deps-done
   fi
 ) >> /workspace/setup-liveportrait.log 2>&1 &
 `
