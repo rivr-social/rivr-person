@@ -379,9 +379,10 @@ set -x
 exec >> /workspace/onstart.log 2>&1
 apt-get update -y && apt-get install -y ffmpeg git libgl1 libglib2.0-0
 pip install --no-cache-dir chatterbox-tts "transformers>=4.46,<5" "huggingface_hub>=0.30,<1.0" fastapi "uvicorn[standard]" soundfile "mediapipe==0.10.14" "protobuf>=4.25.3,<5" opencv-python-headless
-# chatterbox pulls a newer torch than the image's torchvision — realign the
-# trio or transformers' llama import dies on torchvision::nms.
-pip install -U --no-cache-dir torch torchvision torchaudio
+# chatterbox pulls a newer torch than the image's torchvision — realign to a
+# PINNED, driver-safe trio. Never -U/latest: cu130 wheels need driver >=580
+# and left torch.cuda.is_available() false on a driver-570 host.
+pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 ${livePortraitSetup}
 mkdir -p /workspace
 curl -fsSL "${options.workerSourceUrl}" -o /workspace/server.py
