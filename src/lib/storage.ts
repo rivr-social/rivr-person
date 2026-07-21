@@ -58,6 +58,19 @@ export const ALLOWED_MIME_TYPES = [
   'model/vrm',
   'application/octet-stream',
 ];
+/** Voice-clone reference samples (Chatterbox conditioning audio). */
+export const VOICE_SAMPLE_MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+export const VOICE_SAMPLE_ALLOWED_MIME_TYPES = [
+  'audio/wav',
+  'audio/x-wav',
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/webm',
+  'audio/ogg',
+  'audio/mp4',
+  'audio/x-m4a',
+] as const;
+
 export const DIGITAL_TWIN_MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1GB
 export const DIGITAL_TWIN_ALLOWED_MIME_TYPES = [
   'image/jpeg',
@@ -408,6 +421,61 @@ export async function uploadDigitalTwinAsset(
       throw error;
     }
     throw new StorageError('Failed to upload digital twin asset', error);
+  }
+}
+
+/**
+ * Public URL for a stored voice sample key (exports bucket). Used to hand
+ * the GPU worker a fetchable conditioning-audio URL at synthesis time.
+ */
+export function getVoiceSampleUrl(key: string): string {
+  return generatePublicUrl(key, resolveBucket('exports'));
+}
+
+/**
+ * Uploads a voice-clone reference sample (Chatterbox conditioning audio).
+ * Stored under a per-owner scope in the exports bucket; the returned public
+ * URL is what the GPU worker fetches to condition synthesis.
+ */
+export async function uploadVoiceSample(
+  buffer: Buffer,
+  filename: string,
+  mimeType: string,
+  ownerId: string,
+): Promise<UploadResult> {
+  try {
+    if (buffer.length > VOICE_SAMPLE_MAX_FILE_SIZE) {
+      throw new FileSizeError(buffer.length, VOICE_SAMPLE_MAX_FILE_SIZE);
+    }
+    if (!VOICE_SAMPLE_ALLOWED_MIME_TYPES.includes(mimeType as (typeof VOICE_SAMPLE_ALLOWED_MIME_TYPES)[number])) {
+      throw new InvalidMimeTypeError(mimeType, [...VOICE_SAMPLE_ALLOWED_MIME_TYPES]);
+    }
+
+    const key = generateScopedStorageKey(`voice-samples/${ownerId}`, filename);
+    const bucket = resolveBucket('exports');
+    const params: PutObjectCommandInput = {
+      Bucket: bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType,
+      ContentLength: buffer.length,
+    };
+    const client = getS3Client();
+    await client.send(new PutObjectCommand(params));
+    const url = generatePublicUrl(key, bucket);
+    return {
+      key,
+      url,
+      bucket,
+      size: buffer.length,
+      mimeType,
+      timestamp: Date.now(),
+    };
+  } catch (error) {
+    if (error instanceof StorageError) {
+      throw error;
+    }
+    throw new StorageError('Failed to upload voice sample', error);
   }
 }
 

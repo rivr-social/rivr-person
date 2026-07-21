@@ -25,6 +25,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -35,7 +36,7 @@ from dataclasses import dataclass, field
 import cv2
 import httpx
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from audio_env import (
@@ -43,7 +44,20 @@ from audio_env import (
     envelope_from_audio,
     envelope_from_text,
 )
-from engine import PortraitRig, build_rig, render_frame
+from engine import (
+    FaceLayout,
+    PortraitRig,
+    build_rig,
+    render_frame,
+    resize_portrait,
+)
+from engine_frames import (
+    FramePack,
+    VISEME_REST,
+    build_frame_pack,
+    render_pack_frame,
+)
+from phonemes import viseme_timeline
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -87,21 +101,37 @@ app = FastAPI(
 class Utterance:
     envelope: list[float]
     started_at: float  # time.monotonic()
+    visemes: list[str] | None = None
+
+    def frame_index(self, now: float, fps: float) -> int | None:
+        index = int((now - self.started_at) * fps)
+        if index < 0:
+            return 0
+        if index >= len(self.envelope):
+            return None
+        return index
 
     def amplitude_at(self, now: float, fps: float) -> float | None:
         """Amplitude for the current frame, or None once finished."""
-        index = int((now - self.started_at) * fps)
-        if index < 0:
-            return 0.0
-        if index >= len(self.envelope):
+        index = self.frame_index(now, fps)
+        return None if index is None else self.envelope[index]
+
+    def viseme_at(self, now: float, fps: float) -> str | None:
+        """Viseme label for the current frame, or None once finished."""
+        index = self.frame_index(now, fps)
+        if index is None:
             return None
-        return self.envelope[index]
+        if not self.visemes or index >= len(self.visemes):
+            return VISEME_REST
+        return self.visemes[index]
 
 
 @dataclass
 class AvatarSession:
     session_id: str
     rig: PortraitRig
+    """Viseme frame pack; when present the session animates by frame swap."""
+    pack: FramePack | None = None
     created_at: float = field(default_factory=time.monotonic)
     last_access: float = field(default_factory=time.monotonic)
     utterance: Utterance | None = None
@@ -174,12 +204,32 @@ async def _animate(session: AvatarSession) -> None:
             started = time.monotonic()
 
             mouth_amp = 0.0
+            viseme = VISEME_REST
             if session.utterance is not None:
                 amplitude = session.utterance.amplitude_at(started, AVATAR_FPS)
                 if amplitude is None:
                     session.utterance = None
                 else:
                     mouth_amp = amplitude
+                    viseme = (
+                        session.utterance.viseme_at(started, AVATAR_FPS)
+                        or VISEME_REST
+                    )
+
+            if session.pack is not None:
+                frame = await loop.run_in_executor(
+                    None,
+                    render_pack_frame,
+                    session.pack,
+                    viseme,
+                    started - session.created_at,
+                )
+                session.latest_frame = frame
+                session.frame_event.set()
+                session.frame_event = asyncio.Event()
+                elapsed = time.monotonic() - started
+                await asyncio.sleep(max(0.0, 1.0 / AVATAR_FPS - elapsed))
+                continue
 
             blink_amp = _blink_amplitude(session, started)
 
@@ -251,12 +301,59 @@ async def health_check() -> dict[str, object]:
     }
 
 
+async def _fetch_url_bytes(url: str, cap: int = MAX_IMAGE_BYTES) -> bytes:
+    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_S, follow_redirects=True) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        if not response.content or len(response.content) > cap:
+            raise HTTPException(status_code=422, detail=f"Fetch empty/too large: {url}")
+        return response.content
+
+
+def _layout_from_calibration(
+    calibration: dict, width: int, height: int
+) -> FaceLayout | None:
+    """Build a FaceLayout from normalized tap-calibration points."""
+    try:
+        mouth = calibration["mouth"]
+        left_eye = calibration["leftEye"]
+        right_eye = calibration["rightEye"]
+        mouth_px = (float(mouth[0]) * width, float(mouth[1]) * height)
+        left_px = (float(left_eye[0]) * width, float(left_eye[1]) * height)
+        right_px = (float(right_eye[0]) * width, float(right_eye[1]) * height)
+    except (KeyError, TypeError, IndexError, ValueError):
+        return None
+
+    eye_span = max(8.0, abs(right_px[0] - left_px[0]))
+    eye_center_y = (left_px[1] + right_px[1]) / 2.0
+    face_height = max(24.0, (mouth_px[1] - eye_center_y) * 2.4)
+    return FaceLayout(
+        mouth_center=mouth_px,
+        mouth_width=eye_span * 0.75,
+        left_eye=left_px,
+        right_eye=right_px,
+        eye_width=eye_span * 0.22,
+        face_height=face_height,
+        detected=True,  # human-supplied placement is authoritative
+    )
+
+
 @app.post("/sessions")
 async def create_session(
     request: Request,
     file: UploadFile | None = File(default=None),
+    options: str | None = Form(default=None),
 ) -> JSONResponse:
     _validate_api_key(request)
+
+    session_options: dict = {}
+    if options:
+        try:
+            parsed = json.loads(options)
+            if isinstance(parsed, dict):
+                session_options = parsed
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="options must be JSON")
 
     image_bytes: bytes | None = None
     if file is not None:
@@ -294,20 +391,49 @@ async def create_session(
     if decoded is None:
         raise HTTPException(status_code=422, detail="Could not decode image.")
 
+    # Optional baked viseme pack: label → frame URL. Frame-swap mode when
+    # at least a couple of frames resolve.
+    pack: FramePack | None = None
+    viseme_frames = session_options.get("visemeFrames")
+    if isinstance(viseme_frames, dict) and viseme_frames:
+        images: dict[str, bytes] = {}
+        for label, url in viseme_frames.items():
+            if not isinstance(url, str) or not url:
+                continue
+            try:
+                images[str(label)] = await _fetch_url_bytes(url)
+            except (httpx.HTTPError, HTTPException) as exc:
+                logger.warning("viseme frame %s fetch failed: %s", label, exc)
+        if len(images) >= 2:
+            try:
+                pack = build_frame_pack(images)
+            except ValueError as exc:
+                logger.warning("viseme pack rejected: %s", exc)
+
+    # Optional manual calibration (used by the warp engine only).
+    layout: FaceLayout | None = None
+    calibration = session_options.get("calibration")
+    if isinstance(calibration, dict):
+        resized = resize_portrait(decoded)
+        height_r, width_r = resized.shape[:2]
+        layout = _layout_from_calibration(calibration, width_r, height_r)
+
     async with _sessions_lock:
         if len(_sessions) >= MAX_SESSIONS:
             raise HTTPException(status_code=429, detail="Session limit reached.")
         session_id = uuid.uuid4().hex[:16]
         loop = asyncio.get_running_loop()
-        rig = await loop.run_in_executor(None, build_rig, decoded)
-        session = AvatarSession(session_id=session_id, rig=rig)
+        rig = await loop.run_in_executor(None, build_rig, decoded, layout)
+        session = AvatarSession(session_id=session_id, rig=rig, pack=pack)
         session.animator = asyncio.create_task(_animate(session))
         _sessions[session_id] = session
 
     width, height = rig.size
+    mode = "frames" if pack is not None else "warp"
     logger.info(
-        "Session %s created (%dx%d, face_detected=%s)",
-        session_id, width, height, rig.layout.detected,
+        "Session %s created (%dx%d, mode=%s, face_detected=%s, pack=%s)",
+        session_id, width, height, mode, rig.layout.detected,
+        len(pack.frames) if pack else 0,
     )
     return JSONResponse(
         {
@@ -315,6 +441,7 @@ async def create_session(
             "width": width,
             "height": height,
             "faceDetected": rig.layout.detected,
+            "mode": mode,
             "fps": AVATAR_FPS,
         }
     )
@@ -348,12 +475,14 @@ async def speak(
     session_id: str,
     request: Request,
     file: UploadFile | None = File(default=None),
+    text: str | None = Form(default=None),
 ) -> dict[str, object]:
     _validate_api_key(request)
     session = _get_session(session_id)
 
     envelope: list[float]
     source: str
+    speech_text = (text or "").strip()
     if file is not None:
         audio_bytes = await file.read()
         loop = asyncio.get_running_loop()
@@ -369,15 +498,16 @@ async def speak(
             body = await request.json()
         except Exception:
             body = {}
-        text = body.get("text") if isinstance(body, dict) else None
-        if not text or not isinstance(text, str):
+        body_text = body.get("text") if isinstance(body, dict) else None
+        if not body_text or not isinstance(body_text, str):
             raise HTTPException(
                 status_code=400,
                 detail="Provide multipart audio 'file' or JSON {text, durationMs?}.",
             )
+        speech_text = body_text.strip()
         duration_ms = body.get("durationMs")
         envelope = envelope_from_text(
-            text,
+            speech_text,
             AVATAR_FPS,
             duration_ms if isinstance(duration_ms, (int, float)) and duration_ms > 0 else None,
         )
@@ -386,7 +516,18 @@ async def speak(
     if not envelope:
         raise HTTPException(status_code=422, detail="Empty speech envelope.")
 
-    session.utterance = Utterance(envelope=envelope, started_at=time.monotonic())
+    # Frame-swap sessions get a per-frame viseme timeline: phoneme sequence
+    # from the text stretched over the envelope, closed during silences.
+    visemes: list[str] | None = None
+    if session.pack is not None and speech_text:
+        loop = asyncio.get_running_loop()
+        visemes = await loop.run_in_executor(
+            None, viseme_timeline, speech_text, len(envelope), envelope
+        )
+
+    session.utterance = Utterance(
+        envelope=envelope, started_at=time.monotonic(), visemes=visemes
+    )
     duration_ms = int(len(envelope) / AVATAR_FPS * 1000)
     logger.info(
         "Session %s speaking: %s frames (%d ms, source=%s)",

@@ -55,7 +55,14 @@ export async function POST(request: Request) {
 
   try {
     if (tts.kind === "audio") {
-      const result = await speakAudio(sessionId, tts.audio, tts.contentType);
+      // Text rides along so frame-swap sessions can build a phoneme-viseme
+      // timeline matched to the real audio duration.
+      const result = await speakAudio(
+        sessionId,
+        tts.audio,
+        tts.contentType,
+        speechText,
+      );
       return NextResponse.json({
         mode: "clone",
         durationMs: result.durationMs,

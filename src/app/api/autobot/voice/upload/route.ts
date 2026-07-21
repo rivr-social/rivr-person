@@ -1,18 +1,32 @@
 /**
  * POST /api/autobot/voice/upload
  *
- * Proxies voice sample uploads to the OpenClaw token server for voice cloning.
- * Accepts multipart/form-data with an audio file.
+ * Stores a voice-clone reference sample in THIS instance's MinIO (the old
+ * OpenClaw voice store is retired — samples uploaded there were lost with
+ * it). The stored public URL conditions Chatterbox synthesis on the GPU
+ * worker; settings.voiceSample is updated in the same call.
  */
 
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { saveAutobotUserSettings } from "@/lib/autobot-user-settings";
+import {
+  uploadVoiceSample,
+  FileSizeError,
+  InvalidMimeTypeError,
+  StorageError,
+} from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
-const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "voice";
+}
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -31,41 +45,49 @@ export async function POST(request: Request) {
       );
     }
 
-    if (audioFile.size > MAX_FILE_SIZE_BYTES) {
-      return NextResponse.json(
-        { error: "File exceeds 25MB limit" },
-        { status: 400 },
-      );
-    }
-
-    // Forward the file to the OpenClaw token server
-    const upstreamForm = new FormData();
-    upstreamForm.append("audio", audioFile);
-    upstreamForm.append("username", session.user.name || session.user.email || "rivr-user");
-
-    const response = await fetch(`${OPENCLAW_URL}/api/voice/upload`, {
-      method: "POST",
-      body: upstreamForm,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      console.error(`Voice upload error: ${response.status}`, errorText);
-      return NextResponse.json(
-        { error: `Upload server returned ${response.status}` },
-        { status: 502 },
-      );
-    }
-
-    const data = await response.json();
-    return NextResponse.json(data);
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Failed to upload voice sample";
-    console.error("Voice upload proxy error:", errorMessage);
-    return NextResponse.json(
-      { error: `Voice upload proxy error: ${errorMessage}` },
-      { status: 502 },
+    const buffer = Buffer.from(await audioFile.arrayBuffer());
+    const uploaded = await uploadVoiceSample(
+      buffer,
+      audioFile.name || "voice.wav",
+      audioFile.type || "audio/wav",
+      session.user.id,
     );
+
+    const voiceId = slugify(
+      session.user.name || session.user.email || session.user.id,
+    );
+    const voiceSample = {
+      fileName: audioFile.name || "voice.wav",
+      size: uploaded.size,
+      mimeType: uploaded.mimeType,
+      uploadedAt: new Date(uploaded.timestamp).toISOString(),
+      // storedFileName carries the storage KEY; URL resolution happens
+      // server-side at synthesis time (see chatterbox-tts).
+      storedFileName: uploaded.key,
+      voiceId,
+    };
+
+    await saveAutobotUserSettings(session.user.id, { voiceSample });
+
+    return NextResponse.json({
+      ok: true,
+      voiceId,
+      storedFileName: uploaded.key,
+      url: uploaded.url,
+      size: uploaded.size,
+    });
+  } catch (error) {
+    if (error instanceof FileSizeError) {
+      return NextResponse.json({ error: error.message }, { status: 413 });
+    }
+    if (error instanceof InvalidMimeTypeError) {
+      return NextResponse.json({ error: error.message }, { status: 415 });
+    }
+    if (error instanceof StorageError) {
+      console.error("Voice sample upload failed:", error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    console.error("Voice sample upload failed:", error);
+    return NextResponse.json({ error: "Voice upload failed" }, { status: 500 });
   }
 }

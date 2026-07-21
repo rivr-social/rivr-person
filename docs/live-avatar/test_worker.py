@@ -222,3 +222,79 @@ class TestTextEnvelope:
         assert max(envelope) > 0.6
         assert min(envelope) < 0.4  # dips between syllables
         assert all(0.0 <= value <= 1.0 for value in envelope)
+
+
+# ---------------------------------------------------------------------------
+# Viseme timeline + frame pack
+# ---------------------------------------------------------------------------
+
+from engine_frames import build_frame_pack, render_pack_frame, resolve_label
+from phonemes import viseme_sequence_from_text, viseme_timeline
+
+
+def make_frame_bytes(color: tuple[int, int, int], size: int = 200) -> bytes:
+    image = np.full((size, size, 3), color, dtype=np.uint8)
+    ok, buf = __import__("cv2").imencode(".png", image)
+    assert ok
+    return buf.tobytes()
+
+
+class TestVisemeTimeline:
+    def test_sequence_nonempty_for_text(self):
+        sequence = viseme_sequence_from_text("hello round moon")
+        assert len(sequence) > 0
+        assert all(isinstance(label, str) for label in sequence)
+
+    def test_round_vowels_produce_round_shapes(self):
+        sequence = viseme_sequence_from_text("ooo oooh moon")
+        assert "round" in sequence
+
+    def test_timeline_length_matches_frames(self):
+        timeline = viseme_timeline("hello there friend", 24)
+        assert len(timeline) == 24
+
+    def test_silence_snaps_closed(self):
+        envelope = [0.0] * 10 + [0.8] * 10
+        timeline = viseme_timeline("hello hello hello", 20, envelope)
+        assert all(label == "closed" for label in timeline[:10])
+        assert any(label != "closed" for label in timeline[10:])
+
+    def test_empty_frame_count(self):
+        assert viseme_timeline("hi", 0) == []
+
+
+class TestFramePack:
+    def test_build_and_render(self):
+        pack = build_frame_pack({
+            "closed": make_frame_bytes((10, 10, 10)),
+            "open": make_frame_bytes((200, 200, 200)),
+        })
+        frame_a = render_pack_frame(pack, "closed", 0.0)
+        assert frame_a[:2] == b"\xff\xd8"
+        # switching viseme changes output (crossfade starts)
+        frame_b = render_pack_frame(pack, "open", 0.125)
+        assert frame_a != frame_b
+
+    def test_resolve_label_falls_back(self):
+        pack = build_frame_pack({
+            "closed": make_frame_bytes((0, 0, 0)),
+            "open": make_frame_bytes((255, 255, 255)),
+        })
+        assert resolve_label(pack, "wide_open") == "open"
+        assert resolve_label(pack, "round") == "open"
+        assert resolve_label(pack, "closed") == "closed"
+
+    def test_rest_frame_guaranteed(self):
+        pack = build_frame_pack({
+            "open": make_frame_bytes((100, 100, 100)),
+            "wide": make_frame_bytes((150, 150, 150)),
+        })
+        assert "closed" in pack.frames
+
+    def test_rejects_garbage(self):
+        try:
+            build_frame_pack({"closed": b"not an image"})
+            raised = False
+        except ValueError:
+            raised = True
+        assert raised

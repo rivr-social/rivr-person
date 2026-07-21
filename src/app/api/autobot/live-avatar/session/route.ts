@@ -161,14 +161,24 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Frame-swap mode when a baked viseme pack matches this picture;
+    // manual calibration helps the warp engine when detection fails.
+    const pack = targetSettings?.visemePack;
+    const usePack =
+      pack && (!pack.sourceImage || pack.sourceImage === imageRef);
     const info = await createAvatarSession(
       loaded.bytes,
       "avatar.jpg",
       loaded.mimeType,
+      {
+        visemeFrames: usePack ? pack.frames : undefined,
+        calibration: targetSettings?.liveAvatarCalibration ?? undefined,
+      },
     );
     return NextResponse.json({
       ...info,
       streamPath: `/api/autobot/live-avatar/stream/${info.sessionId}`,
+      hasVisemePack: Boolean(usePack),
     });
   } catch (error) {
     console.error("Live avatar session create failed:", error);

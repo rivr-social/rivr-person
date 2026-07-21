@@ -30,7 +30,20 @@ export type AvatarSessionInfo = {
   width: number;
   height: number;
   faceDetected: boolean;
+  /** "frames" when a viseme pack drives the mouth; "warp" otherwise. */
+  mode?: "frames" | "warp";
   fps: number;
+};
+
+export type AvatarSessionOptions = {
+  /** Baked viseme pack: bin label → frame URL. */
+  visemeFrames?: Record<string, string>;
+  /** Manual mouth/eye placement (normalized 0..1). */
+  calibration?: {
+    mouth: [number, number];
+    leftEye: [number, number];
+    rightEye: [number, number];
+  };
 };
 
 export type AvatarSpeakResult = {
@@ -89,9 +102,13 @@ export async function createAvatarSession(
   imageBytes: ArrayBuffer,
   fileName: string,
   mimeType: string,
+  options?: AvatarSessionOptions,
 ): Promise<AvatarSessionInfo> {
   const form = new FormData();
   form.append("file", new Blob([imageBytes], { type: mimeType }), fileName);
+  if (options && (options.visemeFrames || options.calibration)) {
+    form.append("options", JSON.stringify(options));
+  }
   const response = await workerFetch("/sessions", {
     method: "POST",
     headers: workerHeaders(),
@@ -104,6 +121,7 @@ export async function speakAudio(
   sessionId: string,
   audio: ArrayBuffer,
   contentType: string,
+  text?: string,
 ): Promise<AvatarSpeakResult> {
   const form = new FormData();
   const extension = contentType.includes("mpeg") ? "mp3" : "wav";
@@ -112,6 +130,7 @@ export async function speakAudio(
     new Blob([audio], { type: contentType }),
     `speech.${extension}`,
   );
+  if (text) form.append("text", text);
   const response = await workerFetch(
     `/sessions/${encodeURIComponent(sessionId)}/speak`,
     { method: "POST", headers: workerHeaders(), body: form },

@@ -345,6 +345,29 @@ text chat, and voices the reply (Chatterbox clone audio when available, else
   unset → session route 503s and the UI explains. Speech-text prep in
   `src/lib/speech-text.ts` (unit-tested).
 
+### Voice clone + viseme mouth (2026-07-20, same-day follow-on)
+
+- **Chatterbox lane is FIRST-PARTY now** (OpenClaw retired): the user's own
+  Vast GPU runs `src/lib/chatterbox/worker-source.ts` (python served at
+  `GET /api/autobot/gpu/worker-source`; the instance onstart curls it —
+  registry-free). Lifecycle in `src/lib/vast-gpu.ts` (cheapest-offer search,
+  create/stop/restart/destroy, self-STOP watchdog on the box after ~35 idle
+  min; stopped boxes bill storage only). `/api/autobot/gpu` actions drive it
+  (GpuStatusBadge unchanged). `lib/chatterbox-tts.ts` ladder: user's GPU
+  worker → env `CHATTERBOX_URL` → legacy OpenClaw → browser fallback.
+  Voice samples now land in OUR MinIO (`uploadVoiceSample`, key in
+  `settings.voiceSample.storedFileName`; bare legacy names are skipped).
+- **Viseme-pack mouth (Tier 2):** `POST /api/autobot/live-avatar/bake` runs
+  LivePortrait ONCE on the GPU box (`/viseme-pack`), classifies output
+  frames into mouth bins, stores PNGs via digital-twin storage, saves
+  `settings.visemePack`. Live-avatar sessions with a pack run the worker's
+  frame-swap engine (`docs/live-avatar/engine_frames.py` + `phonemes.py`
+  espeak-ng timeline; audio text rides along on speak) — photoreal lip
+  shapes, zero runtime GPU. Warp engine remains the fallback.
+- **Tap-to-calibrate:** portraits that defeat detection get a 3-tap
+  mouth/eyes placement in the overlay (`/api/autobot/live-avatar/calibration`
+  → `settings.liveAvatarCalibration` → worker layout override).
+
 ### Builder assistant — agentic edit + publish in the Deploy view (2026-07-14)
 
 The tool-loop sibling of the streaming generator chat: `POST

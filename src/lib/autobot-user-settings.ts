@@ -69,6 +69,34 @@ export type DigitalTwinProfile = {
   updatedAt?: string;
 };
 
+/** State of the user's Chatterbox voice GPU (Vast.ai instance). */
+export type ChatterboxGpuState = {
+  instanceId: number;
+  /** Worker base URL (http://ip:port) once running; empty while provisioning. */
+  url: string;
+  /** Bearer token the worker was booted with. */
+  authToken: string;
+  createdAt: string;
+  lastUsedAt: string;
+};
+
+/** Baked viseme frame pack for the live avatar (one-time GPU generation). */
+export type VisemePack = {
+  /** bin label (closed/slight/open/wide_open/round/wide) → stored frame URL */
+  frames: Record<string, string>;
+  generatedAt: string;
+  /** Source image URL the pack was baked from (staleness check). */
+  sourceImage: string;
+};
+
+/** Manual mouth/eye placement for portraits that defeat face detection. */
+export type LiveAvatarCalibration = {
+  /** Normalized [x, y] in 0..1 image space. */
+  mouth: [number, number];
+  leftEye: [number, number];
+  rightEye: [number, number];
+};
+
 /** Auto-provisioned scoped MCP token stored alongside settings. */
 export type AutobotMcpToken = {
   token: string;
@@ -86,6 +114,9 @@ export type AutobotUserSettings = {
   gpuProviderEndpoint: string;
   voiceSample: VoiceSample | null;
   digitalTwin: DigitalTwinProfile;
+  chatterboxGpu: ChatterboxGpuState | null;
+  visemePack: VisemePack | null;
+  liveAvatarCalibration: LiveAvatarCalibration | null;
   connections: AutobotConnection[];
   customSoulMd: string;
   includedPersonaKgIds: string[];
@@ -104,6 +135,9 @@ const DEFAULT_SETTINGS: AutobotUserSettings = {
   gpuProviderApiKey: "",
   gpuProviderEndpoint: "",
   voiceSample: null,
+  chatterboxGpu: null,
+  visemePack: null,
+  liveAvatarCalibration: null,
   connections: [],
   customSoulMd: "",
   includedPersonaKgIds: [],
@@ -272,6 +306,70 @@ function sanitizeDigitalTwinProfile(input: unknown): DigitalTwinProfile {
   };
 }
 
+function sanitizeChatterboxGpu(input: unknown): ChatterboxGpuState | null {
+  if (!isRecord(input)) return null;
+  const instanceId =
+    typeof input.instanceId === "number" && Number.isFinite(input.instanceId)
+      ? input.instanceId
+      : null;
+  const authToken =
+    typeof input.authToken === "string" && input.authToken.trim()
+      ? input.authToken.trim()
+      : null;
+  if (instanceId === null || !authToken) return null;
+  return {
+    instanceId,
+    authToken,
+    url: typeof input.url === "string" ? input.url.trim() : "",
+    createdAt:
+      typeof input.createdAt === "string" && input.createdAt.trim()
+        ? input.createdAt.trim()
+        : new Date(0).toISOString(),
+    lastUsedAt:
+      typeof input.lastUsedAt === "string" && input.lastUsedAt.trim()
+        ? input.lastUsedAt.trim()
+        : new Date(0).toISOString(),
+  };
+}
+
+function sanitizeVisemePack(input: unknown): VisemePack | null {
+  if (!isRecord(input) || !isRecord(input.frames)) return null;
+  const frames: Record<string, string> = {};
+  for (const [label, url] of Object.entries(input.frames)) {
+    if (typeof url === "string" && url.trim()) frames[label] = url.trim();
+  }
+  if (Object.keys(frames).length === 0) return null;
+  return {
+    frames,
+    generatedAt:
+      typeof input.generatedAt === "string" && input.generatedAt.trim()
+        ? input.generatedAt.trim()
+        : new Date(0).toISOString(),
+    sourceImage:
+      typeof input.sourceImage === "string" ? input.sourceImage.trim() : "",
+  };
+}
+
+function sanitizeNormalizedPoint(input: unknown): [number, number] | null {
+  if (!Array.isArray(input) || input.length !== 2) return null;
+  const [x, y] = input;
+  if (typeof x !== "number" || typeof y !== "number") return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return [x, y];
+}
+
+function sanitizeLiveAvatarCalibration(
+  input: unknown,
+): LiveAvatarCalibration | null {
+  if (!isRecord(input)) return null;
+  const mouth = sanitizeNormalizedPoint(input.mouth);
+  const leftEye = sanitizeNormalizedPoint(input.leftEye);
+  const rightEye = sanitizeNormalizedPoint(input.rightEye);
+  if (!mouth || !leftEye || !rightEye) return null;
+  return { mouth, leftEye, rightEye };
+}
+
 function sanitizeSettings(input: unknown): AutobotUserSettings {
   const record = isRecord(input) ? input : {};
   const selectedModel =
@@ -303,6 +401,11 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
         .map((value) => value.trim())
     : [];
   const digitalTwin = sanitizeDigitalTwinProfile(record.digitalTwin);
+  const chatterboxGpu = sanitizeChatterboxGpu(record.chatterboxGpu);
+  const visemePack = sanitizeVisemePack(record.visemePack);
+  const liveAvatarCalibration = sanitizeLiveAvatarCalibration(
+    record.liveAvatarCalibration,
+  );
   const updatedAt =
     typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : undefined;
 
@@ -314,6 +417,9 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
     gpuProviderApiKey,
     gpuProviderEndpoint,
     voiceSample,
+    chatterboxGpu,
+    visemePack,
+    liveAvatarCalibration,
     connections,
     customSoulMd,
     includedPersonaKgIds,

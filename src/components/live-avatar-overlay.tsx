@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ImageUp, Loader2, Mic, MicOff, Send, X } from "lucide-react";
+import { Crosshair, ImageUp, Loader2, Mic, MicOff, Send, Wand2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { stripMarkdownForSpeech } from "@/lib/speech-text";
 
@@ -30,6 +30,17 @@ const SPEAK_URL = "/api/autobot/live-avatar/speak";
 const STOP_URL = "/api/autobot/live-avatar/stop";
 const CHAT_URL = "/api/autobot/chat";
 const PORTRAIT_UPLOAD_URL = "/api/autobot/digital-twin/upload";
+const CALIBRATION_URL = "/api/autobot/live-avatar/calibration";
+const BAKE_URL = "/api/autobot/live-avatar/bake";
+const GPU_URL = "/api/autobot/gpu";
+
+const CALIBRATION_STEPS = ["mouth", "leftEye", "rightEye"] as const;
+type CalibrationStep = (typeof CALIBRATION_STEPS)[number];
+const CALIBRATION_PROMPT: Record<CalibrationStep, string> = {
+  mouth: "Tap the mouth",
+  leftEye: "Tap the LEFT eye (their left, your right)",
+  rightEye: "Tap the RIGHT eye",
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,7 +96,14 @@ export function LiveAvatarOverlay({
   const [typedInput, setTypedInput] = useState("");
   const [sessionEpoch, setSessionEpoch] = useState(0);
   const [uploadingPortrait, setUploadingPortrait] = useState(false);
+  const [faceDetected, setFaceDetected] = useState<boolean | null>(null);
+  const [hasVisemePack, setHasVisemePack] = useState(false);
+  const [calibrationStep, setCalibrationStep] = useState<CalibrationStep | null>(null);
+  const [baking, setBaking] = useState(false);
+  const [bakeNotice, setBakeNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const calibrationPointsRef = useRef<Partial<Record<CalibrationStep, [number, number]>>>({});
+  const streamImgRef = useRef<HTMLImageElement>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const historyRef = useRef<HistoryMessage[]>([]);
@@ -248,6 +266,16 @@ export function LiveAvatarOverlay({
     closedRef.current = false;
     let cancelled = false;
 
+    // Best-effort warm-up of the voice GPU (clone lane) — harmless 400
+    // when no Vast key is configured.
+    if (sessionEpoch === 0 && !personaId) {
+      void fetch(GPU_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      }).catch(() => {});
+    }
+
     (async () => {
       try {
         const response = await fetch(SESSION_URL, {
@@ -258,6 +286,8 @@ export function LiveAvatarOverlay({
         const data: {
           sessionId?: string;
           streamPath?: string;
+          faceDetected?: boolean;
+          hasVisemePack?: boolean;
           error?: string;
         } = await response.json();
         if (cancelled) return;
@@ -268,6 +298,8 @@ export function LiveAvatarOverlay({
         }
         sessionIdRef.current = data.sessionId;
         setStreamPath(data.streamPath);
+        setFaceDetected(data.faceDetected ?? null);
+        setHasVisemePack(data.hasVisemePack === true);
         setPhase("listening");
       } catch (err) {
         if (cancelled) return;
@@ -384,6 +416,96 @@ export function LiveAvatarOverlay({
     [stopPlayback],
   );
 
+  // -- Tap-to-calibrate (portraits that defeat face detection) ---------------
+
+  const handleCalibrationTap = useCallback(
+    (event: React.MouseEvent<HTMLImageElement>) => {
+      if (!calibrationStep) return;
+      const img = streamImgRef.current;
+      if (!img) return;
+      const rect = img.getBoundingClientRect();
+
+      // During calibration the image renders object-contain: map the tap
+      // into the letterboxed content region to get true image coordinates.
+      const naturalW = img.naturalWidth || rect.width;
+      const naturalH = img.naturalHeight || rect.height;
+      const scale = Math.min(rect.width / naturalW, rect.height / naturalH);
+      const contentW = naturalW * scale;
+      const contentH = naturalH * scale;
+      const offsetX = rect.left + (rect.width - contentW) / 2;
+      const offsetY = rect.top + (rect.height - contentH) / 2;
+      const x = Math.min(1, Math.max(0, (event.clientX - offsetX) / contentW));
+      const y = Math.min(1, Math.max(0, (event.clientY - offsetY) / contentH));
+
+      calibrationPointsRef.current[calibrationStep] = [x, y];
+      const nextIndex = CALIBRATION_STEPS.indexOf(calibrationStep) + 1;
+      if (nextIndex < CALIBRATION_STEPS.length) {
+        setCalibrationStep(CALIBRATION_STEPS[nextIndex]);
+        return;
+      }
+
+      setCalibrationStep(null);
+      const points = calibrationPointsRef.current;
+      calibrationPointsRef.current = {};
+      void (async () => {
+        try {
+          const response = await fetch(CALIBRATION_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(points),
+          });
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || `Calibration failed (${response.status})`);
+          }
+          stopPlayback();
+          setStreamPath(null);
+          setPhase("connecting");
+          setSessionEpoch((epoch) => epoch + 1);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Calibration failed");
+        }
+      })();
+    },
+    [calibrationStep, stopPlayback],
+  );
+
+  // -- Viseme-pack bake (photoreal mouth shapes; one-time GPU job) -----------
+
+  const handleBake = useCallback(async () => {
+    setBaking(true);
+    setBakeNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(BAKE_URL, { method: "POST" });
+      const data: { ok?: boolean; error?: string; needGpu?: boolean } =
+        await response.json();
+      if (response.status === 409 && data.needGpu) {
+        void fetch(GPU_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start" }),
+        }).catch(() => {});
+        setBakeNotice(
+          "Starting your voice GPU — give it a few minutes, then tap the wand again.",
+        );
+        return;
+      }
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || `Bake failed (${response.status})`);
+      }
+      setBakeNotice("Mouth shapes baked — restarting with the new pack.");
+      stopPlayback();
+      setStreamPath(null);
+      setPhase("connecting");
+      setSessionEpoch((epoch) => epoch + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bake failed");
+    } finally {
+      setBaking(false);
+    }
+  }, [stopPlayback]);
+
   // -- UI --------------------------------------------------------------------
 
   const submitTyped = useCallback(() => {
@@ -427,15 +549,27 @@ export function LiveAvatarOverlay({
           // MJPEG streams can't go through next/image -- plain img is required.
           // eslint-disable-next-line @next/next/no-img-element
           <img
+            ref={streamImgRef}
             src={streamPath}
             alt={`${personaName} live avatar`}
-            className="h-full w-full object-cover"
+            onClick={handleCalibrationTap}
+            className={cn(
+              "h-full w-full",
+              calibrationStep
+                ? "object-contain cursor-crosshair bg-black"
+                : "object-cover",
+            )}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-muted">
             <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
           </div>
         )}
+        {calibrationStep ? (
+          <div className="absolute inset-x-0 top-0 bg-background/85 px-3 py-2 text-center text-xs font-medium">
+            {CALIBRATION_PROMPT[calibrationStep]}
+          </div>
+        ) : null}
       </div>
 
       {/* Identity + status */}
@@ -490,6 +624,37 @@ export function LiveAvatarOverlay({
                 <ImageUp className="h-5 w-5" />
               )}
             </Button>
+            {faceDetected === false && !hasVisemePack ? (
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-12 w-12 rounded-full"
+                onClick={() => {
+                  calibrationPointsRef.current = {};
+                  setCalibrationStep(calibrationStep ? null : "mouth");
+                }}
+                disabled={phase === "connecting"}
+                title="Fix the mouth position (tap to place mouth and eyes)"
+              >
+                <Crosshair className={cn("h-5 w-5", calibrationStep && "text-emerald-500")} />
+              </Button>
+            ) : null}
+            {!hasVisemePack ? (
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-12 w-12 rounded-full"
+                onClick={() => void handleBake()}
+                disabled={baking || phase === "connecting"}
+                title="Bake real mouth shapes for this picture (one-time, uses your GPU)"
+              >
+                {baking ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Wand2 className="h-5 w-5" />
+                )}
+              </Button>
+            ) : null}
           </>
         ) : null}
         {micSupported ? (
@@ -512,6 +677,12 @@ export function LiveAvatarOverlay({
           </Button>
         ) : null}
       </div>
+
+      {bakeNotice ? (
+        <p className="mt-2 max-w-sm text-center text-xs text-muted-foreground">
+          {bakeNotice}
+        </p>
+      ) : null}
 
       {/* Typed fallback (also the lane for browsers without SpeechRecognition) */}
       <div className="mt-4 flex w-full max-w-sm items-center gap-2">
