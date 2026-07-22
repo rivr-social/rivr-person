@@ -22,7 +22,9 @@ import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { uploadDigitalTwinAsset } from "@/lib/storage";
 import { getInstance, sidecarUrl } from "@/lib/vast-gpu";
 
-const BAKE_TIMEOUT_MS = 280_000;
+// Longer than the route's 280s window — the admin lane can afford to wait
+// out a slow render instead of abandoning a job whose id it holds.
+const BAKE_TIMEOUT_MS = 420_000;
 const POLL_INTERVAL_MS = 5_000;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 

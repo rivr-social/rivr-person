@@ -160,8 +160,6 @@ def _poll_job(job_id: str, kind: str) -> dict:
 # ---------------------------------------------------------------------------
 
 VISEME_BINS = ["closed", "slight", "open", "wide_open", "round", "wide"]
-BIN_TARGETS = {"closed": 0.02, "slight": 0.09, "open": 0.20,
-               "wide_open": 0.38, "round": 0.18, "wide": 0.12}
 
 
 def measure_face(landmarks, width, height):
@@ -200,20 +198,6 @@ def measure_face(landmarks, width, height):
     }
 
 
-def bin_for(mar, width_ratio):
-    if mar < 0.04:
-        return "closed"
-    if mar > 0.12 and width_ratio < 0.62:
-        return "round"
-    if mar > 0.30:
-        return "wide_open"
-    if width_ratio > 0.78 and mar < 0.20:
-        return "wide"
-    if mar > 0.14:
-        return "open"
-    return "slight"
-
-
 # ---------------------------------------------------------------------------
 # Viseme-pack bake (LivePortrait pass -> bins + ladder + regions)
 # ---------------------------------------------------------------------------
@@ -239,14 +223,28 @@ def viseme_pack_status(job_id: str, authorization: Optional[str] = Header(defaul
     return _poll_job(job_id, "bake")
 
 
-def _render_liveportrait(portrait: Path, out_dir: Path) -> Path:
-    driving = None
-    for candidate in sorted((LIVEPORTRAIT_DIR / "assets" / "examples" / "driving").glob("*.mp4")):
-        driving = candidate
-        if candidate.name in ("d6.mp4", "d0.mp4"):
-            break
-    if driving is None:
-        raise HTTPException(status_code=503, detail="no driving clip available")
+# Driving clips to merge per bake — chosen by MEASURED coverage/second
+# (FaceMesh scan of the stock clips, 2026-07-22): d18 = 7.2s with mouth
+# range 0.003-0.58 and mostly neutral shapes (ladder + open bins); d0 =
+# 3.1s with rounding + the deepest blink. Render cost ≈ 18s per clip-
+# second, so ~10s of clip stays inside the bake route's 280s job window.
+# (d6 looks ideal but is 33.6s ≈ a 10-minute render — never pick it.)
+_DRIVING_PREFERENCE = ("d18.mp4", "d0.mp4", "d12.mp4", "d3.mp4")
+_MAX_DRIVING_CLIPS = 2
+
+
+def _pick_driving_clips() -> list[Path]:
+    driving_dir = LIVEPORTRAIT_DIR / "assets" / "examples" / "driving"
+    available = {p.name: p for p in driving_dir.glob("*.mp4")}
+    picked = [available[name] for name in _DRIVING_PREFERENCE if name in available]
+    for path in sorted(available.values()):
+        if path not in picked:
+            picked.append(path)
+    return picked[:_MAX_DRIVING_CLIPS]
+
+
+def _render_liveportrait(portrait: Path, driving: Path, out_dir: Path) -> Path | None:
+    """One LivePortrait pass; None on failure (callers merge what works)."""
     proc = subprocess.run(
         [str(LP_PYTHON), "inference.py", "-s", str(portrait), "-d", str(driving),
          "-o", str(out_dir)],
@@ -254,7 +252,7 @@ def _render_liveportrait(portrait: Path, out_dir: Path) -> Path:
     )
     videos = list(out_dir.rglob("*.mp4"))
     if proc.returncode != 0 or not videos:
-        raise HTTPException(status_code=500, detail=f"LivePortrait failed: {proc.stderr[-400:]}")
+        return None
     videos.sort(key=lambda p: ("concat" in p.name, len(p.name)))
     return videos[0]
 
@@ -264,49 +262,99 @@ def _run_viseme_bake(image_url: str) -> dict:
     import mediapipe as mp
 
     portrait = cached_fetch(image_url, ".jpg")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out_dir = Path(tmpdir) / "out"
-        out_dir.mkdir()
-        video = _render_liveportrait(portrait, out_dir)
+    clips = _pick_driving_clips()
+    if not clips:
+        raise HTTPException(status_code=503, detail="no driving clips available")
 
-        capture = cv2.VideoCapture(str(video))
-        mesh = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
-        samples = []  # (metrics, png_bytes)
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            result = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            if not result.multi_face_landmarks:
-                continue
-            height, width = frame.shape[:2]
-            metrics = measure_face(result.multi_face_landmarks[0].landmark, width, height)
-            ok2, png = cv2.imencode(".png", frame)
-            if ok2:
-                samples.append((metrics, png.tobytes()))
-        capture.release()
+    mesh = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
+    samples = []  # (metrics, png_bytes) merged across all driving clips
+    rendered = 0
+    try:
+        for driving in clips:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out_dir = Path(tmpdir) / "out"
+                out_dir.mkdir()
+                video = _render_liveportrait(portrait, driving, out_dir)
+                if video is None:
+                    continue
+                rendered += 1
+                capture = cv2.VideoCapture(str(video))
+                while True:
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    result = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    if not result.multi_face_landmarks:
+                        continue
+                    height, width = frame.shape[:2]
+                    metrics = measure_face(
+                        result.multi_face_landmarks[0].landmark, width, height,
+                    )
+                    ok2, png = cv2.imencode(".png", frame)
+                    if ok2:
+                        samples.append((metrics, png.tobytes()))
+                capture.release()
+            touch_idle_stamp()
+    finally:
         mesh.close()
 
+    if rendered == 0:
+        raise HTTPException(status_code=500, detail="LivePortrait failed on every driving clip")
     if len(samples) < 4:
         raise HTTPException(status_code=422,
                             detail=f"could not measure enough frames (got {len(samples)})")
 
     frames: dict[str, bytes] = {}
 
-    # 1. Best frame per mouth bin (unchanged classification).
-    best: dict[str, tuple[float, bytes]] = {}
+    # Classification is RELATIVE to this face's rendered distribution —
+    # absolute MAR/width thresholds are face-dependent (the 07-20/21 bakes
+    # collapsed to closed+round because one face's width ratio never
+    # crossed a constant). Quantiles guarantee every bin + the ladder.
+    mars = sorted(m["mar"] for m, _ in samples)
+    ratios = sorted(m["width_ratio"] for m, _ in samples)
+
+    def quantile(values, q):
+        if not values:
+            return 0.0
+        index = min(len(values) - 1, max(0, round(q * (len(values) - 1))))
+        return values[index]
+
+    mar_q = {q: quantile(mars, q) for q in (0.10, 0.25, 0.45, 0.60, 0.80, 0.92)}
+    round_ratio_cut = quantile(ratios, 0.15)   # most-pursed 15%
+    wide_ratio_cut = quantile(ratios, 0.85)    # widest-stretched 15%
+
+    def bin_for_face(mar, ratio):
+        if mar <= mar_q[0.10]:
+            return "closed"
+        if ratio <= round_ratio_cut and mar >= mar_q[0.45]:
+            return "round"
+        if mar >= mar_q[0.92]:
+            return "wide_open"
+        if ratio >= wide_ratio_cut and mar <= mar_q[0.60]:
+            return "wide"
+        if mar >= mar_q[0.60]:
+            return "open"
+        if mar <= mar_q[0.25]:
+            return "slight"
+        return "open" if mar >= mar_q[0.45] else "slight"
+
+    # 1. Best frame per mouth bin: the most central example of its bin.
+    bin_members: dict[str, list[tuple[float, bytes]]] = {}
     for metrics, png in samples:
-        label = bin_for(metrics["mar"], metrics["width_ratio"])
-        score = abs(metrics["mar"] - BIN_TARGETS[label])
-        if label not in best or score < best[label][0]:
-            best[label] = (score, png)
-    for label, (_, png) in best.items():
-        frames[label] = png
+        label = bin_for_face(metrics["mar"], metrics["width_ratio"])
+        bin_members.setdefault(label, []).append((metrics["mar"], png))
+    best: dict[str, tuple[float, bytes]] = {}
+    for label, members in bin_members.items():
+        members.sort(key=lambda item: item[0])
+        median_mar, median_png = members[len(members) // 2]
+        best[label] = (median_mar, median_png)
+        frames[label] = median_png
 
     # 2. Openness LADDER: quantile frames along mouth-aspect-ratio, shape-
-    # neutral (rounded frames excluded so the ladder reads as one motion).
+    # neutral (the most-pursed 15% excluded so the ladder reads as one
+    # coherent opening motion).
     neutral = sorted(
-        ((m["mar"], png) for m, png in samples if m["width_ratio"] >= 0.62),
+        ((m["mar"], png) for m, png in samples if m["width_ratio"] > round_ratio_cut),
         key=lambda item: item[0],
     )
     if len(neutral) >= LADDER_STEPS:
@@ -339,8 +387,8 @@ def _run_viseme_bake(image_url: str) -> dict:
                 frames["brows_raised"] = max_png
 
     if "closed" not in frames and best:
-        first_label = min(best, key=lambda k: BIN_TARGETS[k])
-        frames["closed"] = best[first_label][1]
+        least_open = min(best, key=lambda label: best[label][0])
+        frames["closed"] = best[least_open][1]
     if len([k for k in frames if k in VISEME_BINS]) < 2:
         raise HTTPException(status_code=422, detail="could not extract enough mouth shapes")
 
