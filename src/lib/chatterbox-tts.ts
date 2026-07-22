@@ -39,9 +39,7 @@ export type ChatterboxTtsResult =
   /** Upstream answered with a JSON signal (e.g. { fallback: true }). */
   | { kind: "json"; data: unknown }
   /** Upstream answered non-OK. */
-  | { kind: "error"; status: number; detail: string }
-  /** Network failure reaching the TTS backend. */
-  | { kind: "unreachable"; detail: string };
+  | { kind: "error"; status: number; detail: string };
 
 /** POST {text, voice_url} to a first-party worker; null on any failure. */
 async function tryWorkerLane(
@@ -83,16 +81,8 @@ async function tryWorkerLane(
 
 export async function requestChatterboxTts(
   userId: string,
-  /**
-   * Retained for call-site compatibility (the live-avatar speak route and the
-   * /api/autobot/tts route both pass it). It was only ever forwarded to the
-   * removed OpenClaw lane; the remaining worker lanes identify the caller by
-   * their own stored credentials.
-   */
-  username: string,
   text: string,
 ): Promise<ChatterboxTtsResult> {
-  void username;
   const settings = await getAutobotUserSettings(userId).catch(() => null);
   const speechText = text.slice(0, TTS_MAX_TEXT_LENGTH);
 

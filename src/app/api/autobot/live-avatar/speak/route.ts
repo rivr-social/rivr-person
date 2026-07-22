@@ -46,12 +46,7 @@ export async function POST(request: Request) {
   }
 
   const speechText = text.slice(0, TTS_MAX_TEXT_LENGTH);
-  const username = session.user.name || session.user.email || session.user.id;
-  const tts = await requestChatterboxTts(
-    session.user.id,
-    username,
-    speechText,
-  );
+  const tts = await requestChatterboxTts(session.user.id, speechText);
 
   try {
     if (tts.kind === "audio") {

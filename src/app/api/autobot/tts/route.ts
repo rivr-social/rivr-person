@@ -37,9 +37,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const username =
-    session.user.name || session.user.email || session.user.id;
-  const result = await requestChatterboxTts(session.user.id, username, text);
+  const result = await requestChatterboxTts(session.user.id, text);
 
   switch (result.kind) {
     case "audio":
@@ -58,9 +56,5 @@ export async function POST(request: Request) {
         { error: `TTS server returned ${result.status}` },
         { status: 502 },
       );
-    case "unreachable":
-      console.error("TTS proxy error:", result.detail);
-      // Return fallback signal so client uses browser TTS
-      return NextResponse.json({ fallback: true });
   }
 }

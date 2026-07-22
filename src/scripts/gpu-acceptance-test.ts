@@ -118,11 +118,10 @@ async function waitVoiceReady(
 async function assertCloneSynth(
   phase: string,
   agentId: string,
-  username: string,
   text: string,
 ): Promise<void> {
   const started = Date.now();
-  const result = await requestChatterboxTts(agentId, username, text);
+  const result = await requestChatterboxTts(agentId, text);
   if (result.kind !== "audio") {
     fail(phase, `expected clone audio, got ${JSON.stringify(result).slice(0, 300)}`);
   }
@@ -154,7 +153,6 @@ async function main(): Promise<void> {
   if (!voiceKey.includes("/")) {
     fail("setup", "agent has no stored voice sample (Settings -> Assistant -> Voice)");
   }
-  const username = settings.voiceSample?.fileName ?? "owner";
 
   let instanceId: number;
   if (adopt) {
@@ -169,7 +167,7 @@ async function main(): Promise<void> {
 
   // ── Phase 3: first boot -> voice ready -> cloned-voice synth ───────────
   await waitVoiceReady("first-boot", apiKey, agentId, instanceId, PROVISION_READY_TIMEOUT_MS);
-  await assertCloneSynth("first-synth", agentId, username, synthText);
+  await assertCloneSynth("first-synth", agentId, synthText);
 
   // ── Phase 4: stop (idle-stop analog), then restart durability ──────────
   log("stop", `stopping instance ${instanceId}`);
@@ -188,7 +186,7 @@ async function main(): Promise<void> {
   log("restart", `starting instance ${instanceId} (resume-guarded onstart is under test)`);
   await startInstance(apiKey, instanceId);
   await waitVoiceReady("restart", apiKey, agentId, instanceId, RESTART_READY_TIMEOUT_MS);
-  await assertCloneSynth("restart-synth", agentId, username, synthText);
+  await assertCloneSynth("restart-synth", agentId, synthText);
 
   // Leave the box running with fresh usage so the owner can talk now;
   // the idle reapers take it from here.

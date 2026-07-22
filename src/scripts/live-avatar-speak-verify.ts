@@ -96,7 +96,7 @@ async function main(): Promise<void> {
   );
 
   try {
-    const tts = await requestChatterboxTts(agentId, "owner", text);
+    const tts = await requestChatterboxTts(agentId, text);
     if (tts.kind !== "audio") {
       fail(`no clone audio (${JSON.stringify(tts).slice(0, 200)}) — is the voice box warm?`);
     }
