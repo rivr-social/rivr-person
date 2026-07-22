@@ -354,7 +354,8 @@ text chat, and voices the reply (Chatterbox clone audio when available, else
   create/stop/restart/destroy, self-STOP watchdog on the box after ~35 idle
   min; stopped boxes bill storage only). `/api/autobot/gpu` actions drive it
   (GpuStatusBadge unchanged). `lib/chatterbox-tts.ts` ladder: user's GPU
-  worker → env `CHATTERBOX_URL` → legacy OpenClaw → browser fallback.
+  worker → env `CHATTERBOX_URL` → browser fallback (the legacy OpenClaw
+  lane 3 was removed 2026-07-22).
   Voice samples now land in OUR MinIO (`uploadVoiceSample`, key in
   `settings.voiceSample.storedFileName`; bare legacy names are skipped).
 - **Viseme-pack mouth (Tier 2):** `POST /api/autobot/live-avatar/bake` runs

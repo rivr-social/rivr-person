@@ -45,6 +45,9 @@ const PUBLIC_API_PREFIXES = [
   "/api/billing/trial-reminders",
   "/api/cron/federation-deliver",
   "/api/cron/federation-sync",
+  // Own bearer/x-node-admin-key auth (route.ts) — must be reachable so that
+  // check runs; its siblings above are already allowlisted (2026-07-22).
+  "/api/cron/thanks-demurrage",
   "/api/health",
   "/api/federation",
   "/api/mcp",
