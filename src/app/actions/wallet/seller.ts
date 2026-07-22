@@ -157,7 +157,11 @@ export async function setupConnectAccountAction(
           walletId: wallet.id,
           ownerId: target.ownerId,
           walletType: target.walletType,
-          returnPath: ownerId ? `/groups/${ownerId}?tab=treasury` : '/settings',
+          // This app has no /groups/[id] route; land on Settings (which shows
+          // connect state) instead of a guaranteed 404. The connect callback
+          // only follows RELATIVE paths (open-redirect guard), so a global
+          // group URL cannot ride through here.
+          returnPath: '/settings?connect=done',
         };
         // Default account type: Custom (controller-based) when enabled — the only
         // type that can host Treasury/Issuing + platform bank-balance reads.
@@ -181,7 +185,7 @@ export async function setupConnectAccountAction(
       }
 
       const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
-      const targetPath = returnPath || (ownerId ? `/groups/${ownerId}?tab=treasury` : '/settings');
+      const targetPath = returnPath || '/settings?connect=done';
       const url = await createAccountLink(
         connectAccountId,
         `${baseUrl}/api/stripe/connect?account_id=${connectAccountId}&owner_id=${target.ownerId}&return_path=${encodeURIComponent(targetPath)}`,

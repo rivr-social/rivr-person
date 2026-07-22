@@ -58,6 +58,7 @@ import { resolveInitialCreateTab } from "@/lib/create-tabs"
 import { JoinQuestionEditor } from "@/components/join-question-editor"
 import { SubscriptionGateDialog } from "@/components/subscription-gate-dialog"
 import { FEATURE_TIER_REQUIREMENTS, FEATURE_DESCRIPTIONS } from "@/lib/subscription-constants"
+import { getGlobalUrl } from "@/lib/federation/global-url"
 import type { MembershipTier } from "@/db/schema"
 import type { EventHost, EventPayout, EventSession } from "@/types"
 
@@ -1573,8 +1574,14 @@ export default function CreatePage() {
         title: "Project created",
         description: `Your project has been created successfully${projectJobs.length > 0 ? ` with ${projectJobs.length} job(s)` : ""}.`,
       })
-      // Redirect to the owning group's project tab, or home if no group.
-      router.push(projectGroup ? `/groups/${projectGroup}?tab=projects` : "/")
+      // This app has no /groups/[id] route — a group's project tab lives on
+      // the global aggregator (canonical-links rule: cross-origin navigation
+      // never goes through router.push).
+      if (projectGroup) {
+        window.location.assign(getGlobalUrl(`/groups/${projectGroup}?tab=projects`))
+      } else {
+        router.push("/")
+      }
     } catch {
       setIsSubmitting(false)
       toast({
