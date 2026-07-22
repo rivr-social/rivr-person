@@ -492,15 +492,18 @@ apt-get install -y build-essential
 if [ ! -f /workspace/LivePortrait/.deps-done ]; then
   [ -d /workspace/LivePortrait ] || git clone --depth 1 https://github.com/KwaiVGI/LivePortrait /workspace/LivePortrait
   [ -d /workspace/lp-venv ] || python3 -m venv /workspace/lp-venv
-  # albumentations' loose albucore floor resolves to 2026 builds that pull
-  # numkong (source-only, AVX-512 flags this gcc rejects) — pin the last
-  # clean-wheel albucore.
-  echo "albucore==0.2.4" > /workspace/lp-constraints.txt
+  # albumentations 1.4.10's loose albucore floor resolves to modern albucore
+  # whose numkong dep is source-only (AVX-512 flags stock gcc rejects). Pin
+  # the contemporaneous pure-python albucore — nothing compiles at all.
+  echo "albucore==0.0.16" > /workspace/lp-constraints.txt
   /workspace/lp-venv/bin/pip install --no-cache-dir \
     -r /workspace/LivePortrait/requirements.txt -c /workspace/lp-constraints.txt && \
   /workspace/sidecar-venv/bin/pip install --no-cache-dir "huggingface_hub[cli]" && \
-  /workspace/sidecar-venv/bin/huggingface-cli download KwaiVGI/LivePortrait \
-    --local-dir /workspace/LivePortrait/pretrained_weights && \
+  # huggingface_hub 1.x renamed the CLI (huggingface-cli -> hf); support both.
+  ( /workspace/sidecar-venv/bin/hf download KwaiVGI/LivePortrait \
+      --local-dir /workspace/LivePortrait/pretrained_weights || \
+    /workspace/sidecar-venv/bin/huggingface-cli download KwaiVGI/LivePortrait \
+      --local-dir /workspace/LivePortrait/pretrained_weights ) && \
   touch /workspace/LivePortrait/.deps-done
 fi
 if [ ! -f /workspace/Wav2Lip/.deps-done ]; then
