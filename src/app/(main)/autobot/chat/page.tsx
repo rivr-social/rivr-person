@@ -43,11 +43,9 @@ import { cn } from "@/lib/utils";
 // VoiceRecorder is available for event/vidchat transcription via WhisperX
 // Chat input uses native SpeechRecognition for low-latency voice input
 import { VoiceCloneUpload } from "@/components/voice-clone-upload";
-import { DigitalTwinPreview } from "@/components/digital-twin-preview";
 import Link from "next/link";
 import type {
   DigitalTwinAssetKind,
-  DigitalTwinJobMode,
   DigitalTwinProfile,
   VoiceSample,
 } from "@/lib/autobot-user-settings";
@@ -136,10 +134,7 @@ const TTS_API_ENDPOINT = "/api/autobot/tts";
 const GPU_API_ENDPOINT = "/api/autobot/gpu";
 const SETTINGS_API_ENDPOINT = "/api/autobot/settings";
 const CONTEXT_API_ENDPOINT = "/api/autobot/context";
-const DIGITAL_TWIN_API_ENDPOINT = "/api/autobot/digital-twin";
 const DIGITAL_TWIN_UPLOAD_ENDPOINT = "/api/autobot/digital-twin/upload";
-const DIGITAL_TWIN_JOBS_ENDPOINT = "/api/autobot/digital-twin/jobs";
-const DIGITAL_TWIN_RUN_ENDPOINT = "/api/autobot/digital-twin/run";
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_DISPLAY_HISTORY = 40;
 const THREADS_STORAGE_KEY = "rivr_autobot_threads";
@@ -147,9 +142,7 @@ const ACTIVE_THREAD_KEY = "rivr_autobot_active_thread";
 const MODEL_STORAGE_KEY = "rivr_autobot_model";
 const TTS_ENABLED_KEY = "rivr_autobot_tts_enabled";
 const VOICE_MODE_KEY = "rivr_autobot_voice_mode";
-const GPU_PROVIDER_KEY = "rivr_autobot_gpu_provider";
 const GPU_PROVIDER_API_KEY = "rivr_autobot_gpu_provider_api_key";
-const GPU_PROVIDER_ENDPOINT = "rivr_autobot_gpu_provider_endpoint";
 
 const MCP_API_ENDPOINT = "/api/mcp";
 
@@ -464,16 +457,17 @@ interface Thread {
 type ProcessingState = "idle" | "sending" | "responding";
 type GpuStatus = "stopped" | "stopping" | "running" | "provisioning" | "gpu_starting" | "no_gpu" | "unknown";
 type VoiceMode = "browser" | "clone";
-type GpuProvider = "vast" | "local" | "custom";
+/**
+ * Vast.ai is the only GPU provider this app can actually drive. The former
+ * "local" / "custom" options only swapped a label — no code path ever dialed a
+ * non-Vast endpoint (2026-07-22 audit #12) — so the type is now a single member
+ * and the stored value is normalized on read for accounts that saved the old
+ * options.
+ */
+type GpuProvider = "vast";
 
 const DEFAULT_DIGITAL_TWIN: DigitalTwinProfile = {
-  pipeline: "retalk",
-  model: "edityourself",
-  hostFraming: "medium",
-  backgroundMode: "captured",
-  notes: "",
   assets: [],
-  jobs: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -690,24 +684,6 @@ function saveVoiceMode(mode: VoiceMode) {
   }
 }
 
-function loadGpuProvider(): GpuProvider {
-  try {
-    const value = localStorage.getItem(GPU_PROVIDER_KEY);
-    if (value === "vast" || value === "local" || value === "custom") return value;
-    return "vast";
-  } catch {
-    return "vast";
-  }
-}
-
-function saveGpuProvider(provider: GpuProvider) {
-  try {
-    localStorage.setItem(GPU_PROVIDER_KEY, provider);
-  } catch {
-    // Storage unavailable
-  }
-}
-
 function loadStoredGpuProviderApiKey(): string {
   try {
     return localStorage.getItem(GPU_PROVIDER_API_KEY) || "";
@@ -719,22 +695,6 @@ function loadStoredGpuProviderApiKey(): string {
 function saveStoredGpuProviderApiKey(value: string) {
   try {
     localStorage.setItem(GPU_PROVIDER_API_KEY, value);
-  } catch {
-    // Storage unavailable
-  }
-}
-
-function loadStoredGpuProviderEndpoint(): string {
-  try {
-    return localStorage.getItem(GPU_PROVIDER_ENDPOINT) || "";
-  } catch {
-    return "";
-  }
-}
-
-function saveStoredGpuProviderEndpoint(value: string) {
-  try {
-    localStorage.setItem(GPU_PROVIDER_ENDPOINT, value);
   } catch {
     // Storage unavailable
   }
@@ -1190,9 +1150,7 @@ export default function AutobotChatPage() {
   const [voiceCloneConfigured, setVoiceCloneConfigured] = useState(false);
   const [voiceSample, setVoiceSample] = useState<VoiceSample | null>(null);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("browser");
-  const [gpuProvider, setGpuProvider] = useState<GpuProvider>("vast");
   const [gpuProviderApiKey, setGpuProviderApiKey] = useState("");
-  const [gpuProviderEndpoint, setGpuProviderEndpoint] = useState("");
   const [settingsSubject, setSettingsSubject] = useState<SettingsSubject | null>(null);
   const [contextInventory, setContextInventory] = useState<ContextInventory | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
@@ -1203,10 +1161,6 @@ export default function AutobotChatPage() {
   const [digitalTwin, setDigitalTwin] = useState<DigitalTwinProfile>(DEFAULT_DIGITAL_TWIN);
   const [digitalTwinUploadKind, setDigitalTwinUploadKind] = useState<DigitalTwinAssetKind>("host-video");
   const [digitalTwinUploading, setDigitalTwinUploading] = useState(false);
-  const [digitalTwinJobMode, setDigitalTwinJobMode] = useState<DigitalTwinJobMode>("host-update");
-  const [digitalTwinJobText, setDigitalTwinJobText] = useState("");
-  const [digitalTwinQueueing, setDigitalTwinQueueing] = useState(false);
-  const [digitalTwinRunningJobId, setDigitalTwinRunningJobId] = useState<string | null>(null);
 
   // Tool preview state — keyed by "messageId:toolIndex"
   const [toolPreviewStatuses, setToolPreviewStatuses] = useState<Record<string, ToolPreviewStatus>>({});
@@ -1250,16 +1204,12 @@ export default function AutobotChatPage() {
     const storedModel = loadStoredModel();
     const storedTts = loadTtsEnabled();
     const storedVoiceMode = loadVoiceMode();
-    const storedGpuProvider = loadGpuProvider();
     const storedGpuProviderApiKey = loadStoredGpuProviderApiKey();
-    const storedGpuProviderEndpoint = loadStoredGpuProviderEndpoint();
 
     setSelectedModel(storedModel);
     setTtsEnabled(storedTts);
     setVoiceMode(storedVoiceMode);
-    setGpuProvider(storedGpuProvider);
     setGpuProviderApiKey(storedGpuProviderApiKey);
-    setGpuProviderEndpoint(storedGpuProviderEndpoint);
 
     if (storedThreads.length > 0) {
       setThreads(storedThreads);
@@ -1320,21 +1270,9 @@ export default function AutobotChatPage() {
           setVoiceMode(settings.voiceMode);
           saveVoiceMode(settings.voiceMode);
         }
-        if (
-          settings.gpuProvider === "vast" ||
-          settings.gpuProvider === "local" ||
-          settings.gpuProvider === "custom"
-        ) {
-          setGpuProvider(settings.gpuProvider);
-          saveGpuProvider(settings.gpuProvider);
-        }
         if (typeof settings.gpuProviderApiKey === "string") {
           setGpuProviderApiKey(settings.gpuProviderApiKey);
           saveStoredGpuProviderApiKey(settings.gpuProviderApiKey);
-        }
-        if (typeof settings.gpuProviderEndpoint === "string") {
-          setGpuProviderEndpoint(settings.gpuProviderEndpoint);
-          saveStoredGpuProviderEndpoint(settings.gpuProviderEndpoint);
         }
         if (settings.voiceSample && typeof settings.voiceSample === "object") {
           const persistedVoiceSample = settings.voiceSample as VoiceSample;
@@ -1997,16 +1935,6 @@ export default function AutobotChatPage() {
     }
   }, [ttsEnabled]);
 
-  const handleGpuProviderChange = useCallback((value: GpuProvider) => {
-    setGpuProvider(value);
-    saveGpuProvider(value);
-    fetch(SETTINGS_API_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gpuProvider: value }),
-    }).catch(() => {});
-  }, []);
-
   const handleSoulSave = useCallback(async () => {
     setSavingSoul(true);
     try {
@@ -2043,15 +1971,6 @@ export default function AutobotChatPage() {
     [includedPersonaKgIds, refreshContextInventory],
   );
 
-  const handleDigitalTwinPatch = useCallback((patch: Partial<DigitalTwinProfile>) => {
-    setDigitalTwin((prev) => ({ ...prev, ...patch }));
-    fetch(DIGITAL_TWIN_API_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }).catch(() => {});
-  }, []);
-
   const handleDigitalTwinUpload = useCallback(
     async (file: File | null) => {
       if (!file) return;
@@ -2074,43 +1993,6 @@ export default function AutobotChatPage() {
     },
     [digitalTwinUploadKind],
   );
-
-  const handleQueueDigitalTwinJob = useCallback(async () => {
-    const sourceText = digitalTwinJobText.trim();
-    if (!sourceText) return;
-    setDigitalTwinQueueing(true);
-    try {
-      const response = await fetch(DIGITAL_TWIN_JOBS_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: digitalTwinJobMode,
-          sourceType: "script",
-          sourceText,
-        }),
-      });
-      const data = await response.json();
-      if (response.ok && Array.isArray(data?.jobs)) {
-        setDigitalTwin((prev) => ({ ...prev, jobs: data.jobs }));
-        setDigitalTwinJobText("");
-      }
-    } finally {
-      setDigitalTwinQueueing(false);
-    }
-  }, [digitalTwinJobMode, digitalTwinJobText]);
-
-  const handleRunDigitalTwinJob = useCallback(async (jobId: string, sourceText: string, mode: DigitalTwinJobMode) => {
-    setDigitalTwinRunningJobId(jobId);
-    try {
-      await fetch(DIGITAL_TWIN_RUN_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId, sourceText, mode }),
-      });
-    } finally {
-      setDigitalTwinRunningJobId(null);
-    }
-  }, []);
 
   // ---------------------------------------------------------------------------
   // Tool preview confirm / cancel handlers
@@ -2530,73 +2412,31 @@ export default function AutobotChatPage() {
           {voiceMode === "clone" && (
             <>
               <div className="space-y-1.5">
-                <Label className="text-xs">GPU provider</Label>
-                <Select value={gpuProvider} onValueChange={(value) => handleGpuProviderChange(value as GpuProvider)}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="vast">Vast.ai</SelectItem>
-                    <SelectItem value="local">Local PM Core endpoint</SelectItem>
-                    <SelectItem value="custom">Custom remote endpoint</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="gpu-provider-api-key" className="text-xs">
+                  Vast API key
+                </Label>
+                <Input
+                  id="gpu-provider-api-key"
+                  type="password"
+                  value={gpuProviderApiKey}
+                  onChange={(event) => {
+                    setGpuProviderApiKey(event.target.value);
+                    saveStoredGpuProviderApiKey(event.target.value);
+                  }}
+                  onBlur={() => {
+                    fetch(SETTINGS_API_ENDPOINT, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ gpuProviderApiKey }),
+                    }).catch(() => {});
+                  }}
+                  placeholder="Paste your Vast API key"
+                  className="h-8 text-xs"
+                />
               </div>
 
-              {(gpuProvider === "vast" || gpuProvider === "custom") && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="gpu-provider-api-key" className="text-xs">
-                    {gpuProvider === "vast" ? "Vast API key" : "Provider API key"}
-                  </Label>
-                  <Input
-                    id="gpu-provider-api-key"
-                    type="password"
-                    value={gpuProviderApiKey}
-                    onChange={(event) => {
-                      setGpuProviderApiKey(event.target.value);
-                      saveStoredGpuProviderApiKey(event.target.value);
-                    }}
-                    onBlur={() => {
-                      fetch(SETTINGS_API_ENDPOINT, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ gpuProviderApiKey }),
-                      }).catch(() => {});
-                    }}
-                    placeholder={gpuProvider === "vast" ? "Paste your Vast API key" : "Paste your provider API key"}
-                    className="h-8 text-xs"
-                  />
-                </div>
-              )}
-
-              {(gpuProvider === "local" || gpuProvider === "custom") && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="gpu-provider-endpoint" className="text-xs">
-                    {gpuProvider === "local" ? "Local endpoint" : "Custom endpoint"}
-                  </Label>
-                  <Input
-                    id="gpu-provider-endpoint"
-                    type="url"
-                    value={gpuProviderEndpoint}
-                    onChange={(event) => {
-                      setGpuProviderEndpoint(event.target.value);
-                      saveStoredGpuProviderEndpoint(event.target.value);
-                    }}
-                    onBlur={() => {
-                      fetch(SETTINGS_API_ENDPOINT, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ gpuProviderEndpoint }),
-                      }).catch(() => {});
-                    }}
-                    placeholder={gpuProvider === "local" ? "http://pm-core.local:8001/v1" : "https://voice.example.com/v1"}
-                    className="h-8 text-xs"
-                  />
-                </div>
-              )}
-
               <p className="text-[10px] text-muted-foreground">
-                Provider preferences are saved to your Rivr profile settings and mirrored locally for fast startup. Your Vast.ai API key is used for GPU provisioning and discovery; the Chatterbox TTS auth token is managed by the deployment.
+                Vast.ai is the GPU provider for cloned-voice synthesis. Your API key is saved to your Rivr profile settings and mirrored locally for fast startup; it is used for GPU provisioning and discovery. The Chatterbox TTS auth token is managed by the deployment.
               </p>
 
               <VoiceCloneUpload
@@ -2616,81 +2456,20 @@ export default function AutobotChatPage() {
 
           <Separator />
 
+          {/*
+            Avatar reference assets. The generative VIDEO pipeline that used to
+            live here (pipeline/model/framing/background selects, the job queue,
+            and the render preview) was removed on 2026-07-22: it drove a worker
+            that has never existed in this repo (DIGITAL_TWIN_WORKER_URL, port
+            8011) and is superseded by the live-avatar lane. Uploads stay — the
+            live avatar reads its reference portrait out of digitalTwin.assets.
+          */}
           <div className="space-y-3">
             <div>
-              <Label className="text-xs">Digital twin pipeline</Label>
+              <Label className="text-xs">Avatar reference assets</Label>
               <p className="text-[10px] text-muted-foreground">
-                Local-first host video profile for a self-hosted Cameron clone on Vast. This stores your preferred pipeline, reference assets, and queued generation jobs.
+                Reference stills and clips for your live avatar, stored in your own Rivr-controlled object storage. The reference portrait is what the live avatar animates.
               </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label className="text-xs">Pipeline</Label>
-                <Select
-                  value={digitalTwin.pipeline}
-                  onValueChange={(value) => handleDigitalTwinPatch({ pipeline: value as DigitalTwinProfile["pipeline"] })}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="retalk">Retalk real footage</SelectItem>
-                    <SelectItem value="portrait">Portrait animation</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Model</Label>
-                <Select
-                  value={digitalTwin.model}
-                  onValueChange={(value) => handleDigitalTwinPatch({ model: value as DigitalTwinProfile["model"] })}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="edityourself">EditYourself</SelectItem>
-                    <SelectItem value="liveportrait">LivePortrait</SelectItem>
-                    <SelectItem value="skyreels">SkyReels</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Host framing</Label>
-                <Select
-                  value={digitalTwin.hostFraming}
-                  onValueChange={(value) => handleDigitalTwinPatch({ hostFraming: value as DigitalTwinProfile["hostFraming"] })}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="tight-medium">Tight medium</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="wide">Wide</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Background mode</Label>
-                <Select
-                  value={digitalTwin.backgroundMode}
-                  onValueChange={(value) => handleDigitalTwinPatch({ backgroundMode: value as DigitalTwinProfile["backgroundMode"] })}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="captured">Captured</SelectItem>
-                    <SelectItem value="clean">Clean keyed</SelectItem>
-                    <SelectItem value="generated">Generated composite</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
             </div>
 
             <div className="space-y-1.5">
@@ -2742,43 +2521,6 @@ export default function AutobotChatPage() {
               )}
             </div>
 
-            <div className="space-y-1.5">
-              <Label className="text-xs">Queue host video job</Label>
-              <Select
-                value={digitalTwinJobMode}
-                onValueChange={(value) => setDigitalTwinJobMode(value as DigitalTwinJobMode)}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="host-update">Host update</SelectItem>
-                  <SelectItem value="event-recap">Event recap</SelectItem>
-                  <SelectItem value="marketplace-promo">Marketplace promo</SelectItem>
-                </SelectContent>
-              </Select>
-              <textarea
-                value={digitalTwinJobText}
-                onChange={(event) => setDigitalTwinJobText(event.target.value)}
-                placeholder="Write the script or transcript excerpt for the host clip..."
-                className="w-full min-h-[84px] rounded-md border bg-background px-3 py-2 text-xs"
-              />
-              <Button
-                size="sm"
-                className="h-8 text-xs"
-                disabled={digitalTwinQueueing || !digitalTwinJobText.trim()}
-                onClick={() => void handleQueueDigitalTwinJob()}
-              >
-                Queue digital twin job
-              </Button>
-            </div>
-
-            <DigitalTwinPreview
-              jobs={digitalTwin.jobs}
-              onJobsChange={(updatedJobs) =>
-                setDigitalTwin((prev) => ({ ...prev, jobs: updatedJobs }))
-              }
-            />
           </div>
         </div>
       )}

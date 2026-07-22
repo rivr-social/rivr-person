@@ -49,6 +49,8 @@ const MAX_PHONE_LENGTH = 50;
 const TOKEN_BYTES = 32;
 const VERIFICATION_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const VERIFICATION_TOKEN_TYPE = "email_verification";
+/** New accounts are opted IN to transactional email until they say otherwise. */
+const DEFAULT_EMAIL_NOTIFICATIONS_ENABLED = true;
 
 export type UpdateProfileInput = {
   name: string;
@@ -69,12 +71,15 @@ export type UpdateProfileInput = {
   murmurationsPublishing?: boolean;
   socialLinks?: Record<string, string>;
   profilePhotos?: string[];
-  privacySettings?: Record<string, unknown>;
+  /**
+   * Only keys with a real consumer are accepted. `emailNotifications` is read by
+   * `isEmailEnabled` (`@/app/actions/email`); the former
+   * push/eventReminders/newMessages keys were dropped in the 2026-07-22
+   * truth-in-UI wave (no push infrastructure, no readers). Existing stored
+   * copies are left untouched — the metadata spread below preserves them.
+   */
   notificationSettings?: {
-    pushNotifications: boolean;
     emailNotifications: boolean;
-    eventReminders: boolean;
-    newMessages: boolean;
   };
 };
 
@@ -213,6 +218,18 @@ export async function updateProfileAction(
         ? (current.metadata as Record<string, unknown>)
         : {};
 
+    // Notification preferences are merged, never replaced: the settings form now
+    // submits only the key this app actually reads (`emailNotifications`), and a
+    // partial submission must not clobber whatever else an older build stored.
+    // When the caller omits the field entirely, the stored value is preserved
+    // verbatim and only a brand-new user falls back to the opt-in default.
+    const existingNotificationSettings =
+      existingMetadata.notificationSettings &&
+      typeof existingMetadata.notificationSettings === "object" &&
+      !Array.isArray(existingMetadata.notificationSettings)
+        ? (existingMetadata.notificationSettings as Record<string, unknown>)
+        : { emailNotifications: DEFAULT_EMAIL_NOTIFICATIONS_ENABLED };
+
     const nextMetadata: Record<string, unknown> = {
       ...existingMetadata,
       username,
@@ -229,18 +246,14 @@ export async function updateProfileAction(
       enneagram: input.enneagram !== undefined ? input.enneagram.trim() : (existingMetadata.enneagram as string | undefined) || "",
       homeLocale: input.homeLocale?.trim() || existingMetadata.homeLocale || undefined,
       murmurationsPublishing: input.murmurationsPublishing === true,
-      privacySettings: input.privacySettings
-        ? { ...(existingMetadata.privacySettings && typeof existingMetadata.privacySettings === "object" ? existingMetadata.privacySettings as Record<string, unknown> : {}), ...input.privacySettings }
-        : (existingMetadata.privacySettings as Record<string, unknown> | undefined) ?? {
-          profileVisibility: "public",
-          friendRequests: "everyone",
-          locationSharing: "events",
-        },
-      notificationSettings: input.notificationSettings ?? (existingMetadata.notificationSettings as Record<string, unknown> | undefined) ?? {
-        pushNotifications: false,
-        emailNotifications: true,
-        eventReminders: true,
-        newMessages: true,
+      // `privacySettings` is deliberately NOT written here any more. The ~20-key
+      // visibility matrix that used to author it had no enforcement anywhere in
+      // this app (2026-07-22 audit #8) and its UI was removed; the `...existingMetadata`
+      // spread above still carries any previously stored copy through untouched
+      // so the federation manifest keeps exporting historical consent entries.
+      notificationSettings: {
+        ...existingNotificationSettings,
+        ...(input.notificationSettings ?? {}),
       },
       socialLinks: validatedSocialLinks ?? (existingMetadata.socialLinks as Record<string, string> | undefined) ?? {},
       profilePhotos: Array.isArray(input.profilePhotos)

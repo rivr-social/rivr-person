@@ -60,41 +60,30 @@ type GpuStatus =
 // ---------------------------------------------------------------------------
 
 type ProviderBalanceStatus = "ok" | "empty" | "unknown" | "unavailable";
-type WalletBalanceStatus = "ok" | "empty" | "unknown";
 
-function getProviderLabel(provider: GpuProvider): string {
-  switch (provider) {
-    case "vast":
-      return "Vast.ai";
-    case "local":
-      return "Local GPU";
-    case "custom":
-      return "Custom provider";
-    default:
-      return "GPU provider";
-  }
-}
+const PROVIDER_VAST: GpuProvider = "vast";
+const PROVIDER_VAST_LABEL = "Vast.ai";
+const PROVIDER_VAST_CONSOLE_URL = "https://cloud.vast.ai/billing";
+type WalletBalanceStatus = "ok" | "empty" | "unknown";
 
 async function getProviderBalanceSummary(
   settings: Awaited<ReturnType<typeof getAutobotUserSettings>> | null,
 ) {
-  const provider = settings?.gpuProvider ?? "vast";
+  // Vast.ai is the only provider this lane can drive; the retired
+  // local/custom options never had a code path (2026-07-22 audit #12).
+  const provider: GpuProvider = settings?.gpuProvider ?? PROVIDER_VAST;
   const providerApiKey = settings?.gpuProviderApiKey?.trim() ?? "";
-  const providerLabel = getProviderLabel(provider);
-  const providerConsoleUrl =
-    provider === "vast" ? "https://cloud.vast.ai/billing" : null;
+  const providerLabel = PROVIDER_VAST_LABEL;
+  const providerConsoleUrl = PROVIDER_VAST_CONSOLE_URL;
 
-  if (provider !== "vast" || !providerApiKey) {
+  if (!providerApiKey) {
     return {
       provider,
       providerLabel,
       providerConsoleUrl,
       providerBalance: null,
-      providerBalanceStatus: (providerApiKey
-        ? "unknown"
-        : "unavailable") as ProviderBalanceStatus,
-      providerApiKeyConfigured: providerApiKey.length > 0,
-      providerEndpoint: settings?.gpuProviderEndpoint?.trim() ?? "",
+      providerBalanceStatus: "unavailable" as ProviderBalanceStatus,
+      providerApiKeyConfigured: false,
     };
   }
 
@@ -109,7 +98,6 @@ async function getProviderBalanceSummary(
         ? "empty"
         : "ok") as ProviderBalanceStatus,
       providerApiKeyConfigured: true,
-      providerEndpoint: settings?.gpuProviderEndpoint?.trim() ?? "",
     };
   } catch {
     return {
@@ -119,7 +107,6 @@ async function getProviderBalanceSummary(
       providerBalance: null,
       providerBalanceStatus: "unknown" as ProviderBalanceStatus,
       providerApiKeyConfigured: true,
-      providerEndpoint: settings?.gpuProviderEndpoint?.trim() ?? "",
     };
   }
 }

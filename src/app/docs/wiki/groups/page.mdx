@@ -3,41 +3,47 @@
 ## What it is
 
 Groups are agent-owned communities/orgs with their own feed, members, tabs, and
-resources. Groups can nest (subgroups) with a lineage breadcrumb, and
-org-descendant subgroups get the full org tab set. A group that is an
-**affiliate/partner** of an org-grade group (a ledger `relationshipType` edge,
-not a `parentId` subgroup edge) inherits that same org tab set — so partner-group
-members see the Jobs board and other org tabs, not just subgroups. Rings and
-families are related group-like containers.
+resources. Groups can nest (subgroups), and rings and families are related
+group-like containers.
+
+**On a person instance, groups are something you belong to — not something this
+app hosts.** A sovereign group lives on its own instance (the `rivr-group` app)
+or on global, and that home instance serves its page, tabs, settings, treasury,
+governance, and job board. This app shows you the groups you are a member of and
+links out to each group's canonical home.
+
+Historically this repo carried a transplanted copy of the group-page surface
+(a root group renderer plus the full group tab set). It was unreachable — the
+root page always resolves to the person profile — so it was removed on
+2026-07-22 along with the routes documented here that never existed in this app.
 
 ## Where it lives
 
-- `/groups` — directory · `src/app/(main)/groups/page.tsx`
-- `/groups/[id]` — group home + tabs · `src/app/groups/[id]/page.tsx` (`group-tabs-client.tsx`)
-- `/groups/[id]/settings` — group settings · `src/app/groups/[id]/settings/page.tsx`
-- `/groups/[id]/docs` — group docs/filesystem · `src/app/groups/[id]/docs/page.tsx`
-- `/rings`, `/rings/[id]`, `/families`, `/families/[id]` — related containers
+- **Groups tab on a profile** — the list of a person's groups, each linking to
+  its home instance · `src/components/profile-group-feed.tsx`, rendered by
+  `src/app/(main)/profile/profile-client.tsx` and
+  `src/components/public-profile-page-client.tsx`
+- `/api/groups/access` — group access checks · `src/app/api/groups/access`
+- Group membership arrives over federation and is projected onto the member's
+  home instance (see [Federation & SSO identity](/docs/wiki/federation-identity)).
 
 ## Every interaction
 
-- **Join / leave** — toggle membership on a group or ring.
-- **Request to join / approve** — request-gated groups; admins approve or deny.
-- **Browse tabs** — feed, members, events, projects, docs, and org tabs for
-  org-typed groups and their descendant subgroups.
-- **Lineage breadcrumb** — navigate up the subgroup → parent → org chain.
-- **Post as the group** — admins author group-owned posts (see [Feeds & posts](/docs/wiki/feeds-posts)).
-- **Manage settings** — name, description, visibility, membership policy, member
-  capability toggles _(TODO(verify): enumerate the exact toggle set live)_.
+- **See your groups** — the Groups tab on your profile lists every group you are
+  a member of, including groups homed on other instances.
+- **Open a group** — links resolve to the group's canonical home URL, so you land
+  on the instance that actually owns it.
+- **Join / leave, manage settings, browse group tabs** — these happen on the
+  group's home instance, not here.
 
 ## Permissions / gating
 
-- **Public** group pages are readable by guests (`/groups` is a public prefix).
-- **Members** see member-only content and can post/participate per capability.
-- **Group admins** manage membership, settings, subgroups, and group authorship.
-- Group-agent ownership: the group is itself an agent that can own resources.
+- Which of your groups a visitor sees is controlled by your public-profile tab
+  visibility (see [Account & settings](/docs/wiki/account-settings)).
+- Hidden groups are not projected to a public profile.
 
 ## Cross-links
 
-- API/MCP: [Groups tools](/docs/api) · [Group lifecycle tools](/docs/api) · [`rivr.groups.join`](/docs/api) · [`/api/groups` REST](/docs/api) · [`/api/billing/group-subscribe`](/docs/api)
-- Wiki: [Docs, filesystem & vault](/docs/wiki/docs-vault) · [Badges & stake](/docs/wiki/badges-stake)
-- Federation: sovereign group instances federate to global; membership lifecycle emits signed events.
+- API/MCP: [Groups tools](/docs/api) · [`rivr.groups.join`](/docs/api) · [`/api/groups` REST](/docs/api)
+- Wiki: [Account & settings](/docs/wiki/account-settings) · [Federation & SSO identity](/docs/wiki/federation-identity) · [Docs, filesystem & vault](/docs/wiki/docs-vault)
+- Federation: sovereign group instances federate to global; membership lifecycle emits signed events, and membership is back-projected to each member's home instance.

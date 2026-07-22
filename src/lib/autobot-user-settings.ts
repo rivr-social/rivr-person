@@ -9,7 +9,11 @@ import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { signPackedPayload } from "@/lib/federation-remote-session";
 
 export type VoiceMode = "browser" | "clone";
-export type GpuProvider = "vast" | "local" | "custom";
+/**
+ * Vast.ai is the only provider the GPU lane can drive. Accounts that stored the
+ * retired "local" / "custom" options are normalized back to "vast" on read.
+ */
+export type GpuProvider = "vast";
 export type VoiceSample = {
   fileName: string;
   size: number;
@@ -25,13 +29,6 @@ export type DigitalTwinAssetKind =
   | "idle-video"
   | "background-plate";
 
-export type DigitalTwinPipeline = "retalk" | "portrait";
-export type DigitalTwinModel = "edityourself" | "liveportrait" | "skyreels";
-export type HostFraming = "tight-medium" | "medium" | "wide";
-export type BackgroundMode = "captured" | "clean" | "generated";
-export type DigitalTwinJobMode = "host-update" | "event-recap" | "marketplace-promo";
-export type DigitalTwinJobStatus = "draft" | "queued" | "processing" | "completed" | "failed";
-
 export type DigitalTwinAsset = {
   id: string;
   kind: DigitalTwinAssetKind;
@@ -44,28 +41,17 @@ export type DigitalTwinAsset = {
   uploadedAt: string;
 };
 
-export type DigitalTwinJob = {
-  id: string;
-  mode: DigitalTwinJobMode;
-  sourceType: "script" | "transcript";
-  sourceText: string;
-  status: DigitalTwinJobStatus;
-  workerJobId?: string;
-  videoUrl?: string;
-  outputPath?: string;
-  errorDetail?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
+/**
+ * Reference media for the live avatar.
+ *
+ * This used to also carry a generative VIDEO pipeline (pipeline/model/
+ * hostFraming/backgroundMode/notes plus a `jobs` queue) aimed at a worker that
+ * has never existed in this repo. That surface was removed on 2026-07-22; only
+ * `assets` was ever load-bearing — the live-avatar bake and session routes read
+ * the `reference-portrait` asset out of it.
+ */
 export type DigitalTwinProfile = {
-  pipeline: DigitalTwinPipeline;
-  model: DigitalTwinModel;
-  hostFraming: HostFraming;
-  backgroundMode: BackgroundMode;
-  notes: string;
   assets: DigitalTwinAsset[];
-  jobs: DigitalTwinJob[];
   updatedAt?: string;
 };
 
@@ -116,7 +102,6 @@ export type AutobotUserSettings = {
   voiceMode: VoiceMode;
   gpuProvider: GpuProvider;
   gpuProviderApiKey: string;
-  gpuProviderEndpoint: string;
   voiceSample: VoiceSample | null;
   digitalTwin: DigitalTwinProfile;
   chatterboxGpu: ChatterboxGpuState | null;
@@ -138,7 +123,6 @@ const DEFAULT_SETTINGS: AutobotUserSettings = {
   voiceMode: "browser",
   gpuProvider: "vast",
   gpuProviderApiKey: "",
-  gpuProviderEndpoint: "",
   voiceSample: null,
   chatterboxGpu: null,
   visemePack: null,
@@ -147,13 +131,7 @@ const DEFAULT_SETTINGS: AutobotUserSettings = {
   customSoulMd: "",
   includedPersonaKgIds: [],
   digitalTwin: {
-    pipeline: "retalk",
-    model: "edityourself",
-    hostFraming: "medium",
-    backgroundMode: "captured",
-    notes: "",
     assets: [],
-    jobs: [],
   },
 };
 
@@ -229,80 +207,16 @@ function sanitizeDigitalTwinAsset(input: unknown): DigitalTwinAsset | null {
   return { id, kind, fileName, key, url, bucket, size, mimeType, uploadedAt };
 }
 
-function sanitizeDigitalTwinJob(input: unknown): DigitalTwinJob | null {
-  if (!isRecord(input)) return null;
-  const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
-  const mode =
-    input.mode === "host-update" ||
-    input.mode === "event-recap" ||
-    input.mode === "marketplace-promo"
-      ? input.mode
-      : null;
-  const sourceType = input.sourceType === "transcript" ? "transcript" : input.sourceType === "script" ? "script" : null;
-  const sourceText =
-    typeof input.sourceText === "string" && input.sourceText.trim()
-      ? input.sourceText.trim()
-      : null;
-  const status =
-    input.status === "draft" ||
-    input.status === "queued" ||
-    input.status === "processing" ||
-    input.status === "completed" ||
-    input.status === "failed"
-      ? input.status
-      : null;
-  const createdAt =
-    typeof input.createdAt === "string" && input.createdAt.trim()
-      ? input.createdAt.trim()
-      : null;
-  const updatedAt =
-    typeof input.updatedAt === "string" && input.updatedAt.trim()
-      ? input.updatedAt.trim()
-      : null;
-  if (!id || !mode || !sourceType || !sourceText || !status || !createdAt || !updatedAt) {
-    return null;
-  }
-  const workerJobId =
-    typeof input.workerJobId === "string" && input.workerJobId.trim()
-      ? input.workerJobId.trim()
-      : undefined;
-  const videoUrl =
-    typeof input.videoUrl === "string" && input.videoUrl.trim()
-      ? input.videoUrl.trim()
-      : undefined;
-  const outputPath =
-    typeof input.outputPath === "string" && input.outputPath.trim()
-      ? input.outputPath.trim()
-      : undefined;
-  const errorDetail =
-    typeof input.errorDetail === "string" && input.errorDetail.trim()
-      ? input.errorDetail.trim()
-      : undefined;
-  return { id, mode, sourceType, sourceText, status, createdAt, updatedAt, workerJobId, videoUrl, outputPath, errorDetail };
-}
-
+/**
+ * Reads the avatar-asset profile out of stored metadata. Rows written by older
+ * builds still carry the retired video-pipeline keys; they are simply dropped
+ * on read rather than migrated, because nothing consumes them.
+ */
 function sanitizeDigitalTwinProfile(input: unknown): DigitalTwinProfile {
   const record = isRecord(input) ? input : {};
   return {
-    pipeline: record.pipeline === "portrait" ? "portrait" : "retalk",
-    model:
-      record.model === "liveportrait" || record.model === "skyreels"
-        ? record.model
-        : "edityourself",
-    hostFraming:
-      record.hostFraming === "tight-medium" || record.hostFraming === "wide"
-        ? record.hostFraming
-        : "medium",
-    backgroundMode:
-      record.backgroundMode === "clean" || record.backgroundMode === "generated"
-        ? record.backgroundMode
-        : "captured",
-    notes: typeof record.notes === "string" ? record.notes.trim() : "",
     assets: Array.isArray(record.assets)
       ? record.assets.map(sanitizeDigitalTwinAsset).filter(Boolean) as DigitalTwinAsset[]
-      : [],
-    jobs: Array.isArray(record.jobs)
-      ? record.jobs.map(sanitizeDigitalTwinJob).filter(Boolean) as DigitalTwinJob[]
       : [],
     updatedAt:
       typeof record.updatedAt === "string" && record.updatedAt.trim()
@@ -385,17 +299,12 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
   const ttsEnabled = record.ttsEnabled === true;
   const voiceMode: VoiceMode =
     record.voiceMode === "clone" ? "clone" : DEFAULT_SETTINGS.voiceMode;
-  const gpuProvider: GpuProvider =
-    record.gpuProvider === "local" || record.gpuProvider === "custom"
-      ? record.gpuProvider
-      : DEFAULT_SETTINGS.gpuProvider;
+  // Parsing stays tolerant of the retired "local" / "custom" values: whatever is
+  // stored, the one provider this app can drive is Vast.
+  const gpuProvider: GpuProvider = DEFAULT_SETTINGS.gpuProvider;
   const gpuProviderApiKey =
     typeof record.gpuProviderApiKey === "string"
       ? record.gpuProviderApiKey.trim()
-      : "";
-  const gpuProviderEndpoint =
-    typeof record.gpuProviderEndpoint === "string"
-      ? record.gpuProviderEndpoint.trim()
       : "";
   const voiceSample = sanitizeVoiceSample(record.voiceSample);
   const connections = sanitizeAutobotConnections(record.connections);
@@ -421,7 +330,6 @@ function sanitizeSettings(input: unknown): AutobotUserSettings {
     voiceMode,
     gpuProvider,
     gpuProviderApiKey,
-    gpuProviderEndpoint,
     voiceSample,
     chatterboxGpu,
     visemePack,

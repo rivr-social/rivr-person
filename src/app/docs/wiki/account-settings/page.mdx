@@ -3,8 +3,16 @@
 ## What it is
 
 Personal account management: profile editing, avatar/cover, notification
-preferences, privacy, billing, outgoing-email configuration, and full data
-export (account sovereignty).
+preferences, public-profile tab visibility, billing, outgoing-email
+configuration, and full data export (account sovereignty).
+
+Every control on this surface is wired to something. As of 2026-07-22 the
+settings form no longer offers preferences this app cannot honour — the
+write-only privacy/ZK matrix, the text-size and colour-theme pickers, and the
+push/event-reminder/new-message toggles were removed rather than left looking
+functional. Privacy is expressed where it is actually enforced: per-tab
+visibility on your public profile, plus the visibility you choose on each post,
+offering, or document as you create it.
 
 ## Where it lives
 
@@ -17,7 +25,15 @@ export (account sovereignty).
 
 - **Edit profile** — name, bio, skills, location; upload avatar and cover.
   (Sparse update: only supplied fields change; explicit `null` clears a field.)
-- **Notification preferences** — configure what triggers notifications.
+- **Notification preferences** — turn email notifications on or off (honoured by
+  every non-essential send) and opt in/out of publishing your public profile to
+  the Murmurations network. The tab saves itself.
+- **Public profile tabs** — choose, per tab, who can see it on your public
+  profile; "Hidden" removes the tab for everyone. This is the enforced privacy
+  control.
+- **Appearance** — dark mode.
+- **Connections** — connected accounts are managed in one place, the Assistant
+  tab; the Connectors tab links there.
 - **Manage billing** — open the Stripe portal, manage memberships (see [Wallet & treasury](/docs/wiki/wallet-treasury)).
 - **Configure outgoing email** — set/test SMTP for the account/instance.
 - **Export your data** — request a full JSON export (profile, personas,

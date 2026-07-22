@@ -27,7 +27,6 @@ import { agents } from "@/db/schema";
 import type { SettingsInitialData } from "./settings-form";
 import { SettingsFormLazy } from "./settings-form-lazy";
 import { buildFederationIdentityStatus, type FederationIdentityStatus } from "@/lib/federation-identities";
-import { buildPersonInstanceSetupState, type PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { buildAppReleaseStatus, type AppReleaseStatus } from "@/lib/app-release";
 import { resolveActiveActorAgentId } from "@/lib/persona";
 import { PersonaCreator } from "@/components/persona-creator";
@@ -173,12 +172,9 @@ export default async function SettingsPage() {
     profilePhotos: Array.isArray(metadata.profilePhotos)
       ? metadata.profilePhotos.filter((value): value is string => typeof value === "string" && value.length > 0)
       : [],
-    privacySettings: metadata.privacySettings && typeof metadata.privacySettings === "object" && !Array.isArray(metadata.privacySettings)
-      ? metadata.privacySettings as SettingsInitialData["privacySettings"]
-      : {},
     notificationSettings: metadata.notificationSettings && typeof metadata.notificationSettings === "object" && !Array.isArray(metadata.notificationSettings)
       ? metadata.notificationSettings as SettingsInitialData["notificationSettings"]
-      : { pushNotifications: false, emailNotifications: true, eventReminders: true, newMessages: true },
+      : { emailNotifications: true },
     // Sparse per-tab overrides for the public profile; absent tabs default-on.
     profileTabVisibility: readProfileTabVisibility(metadata),
   };
@@ -197,18 +193,10 @@ export default async function SettingsPage() {
     }).catch(() => null),
   ]);
 
-  const initialPersonInstanceSetup: PersonInstanceSetupState = buildPersonInstanceSetupState({
-    metadata,
-    fallbackName: currentUser.name,
-    fallbackUsername: initialData.username,
-    agentId: currentUser.id,
-  });
-
   return (
     <SettingsFormLazy
       initialData={initialData}
       initialFederationStatus={initialFederationStatus}
-      initialPersonInstanceSetup={initialPersonInstanceSetup}
       initialAppReleaseStatus={initialAppReleaseStatus}
       activePersona={{
         isPersona,

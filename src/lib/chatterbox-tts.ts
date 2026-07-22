@@ -5,10 +5,14 @@
  *   1. The user's OWN Vast GPU worker (settings.chatterboxGpu — the
  *      first-party lane; see /api/autobot/gpu + lib/vast-gpu).
  *   2. A static worker at env CHATTERBOX_URL (+ CHATTERBOX_API_KEY).
- *   3. The legacy OpenClaw token-server proxy (retired in prod, kept for
- *      compatibility).
- * Any failure falls through; callers treat non-audio results as "use
- * browser TTS", so voice quality degrades gracefully, never errors out.
+ *   3. Browser TTS — signalled by `{ kind: "json", data: { fallback: true } }`.
+ *
+ * A third server lane (the OpenClaw token-server proxy at OPENCLAW_URL) was
+ * removed on 2026-07-22: it had been retired in prod and was the only consumer
+ * of the dead `gpuProviderEndpoint` / non-Vast `gpuProvider` settings, so every
+ * request it handled reached a host this fleet no longer runs. Any failure
+ * still falls through; callers treat non-audio results as "use browser TTS",
+ * so voice quality degrades gracefully and never errors out.
  */
 
 import {
@@ -16,7 +20,6 @@ import {
   saveAutobotUserSettings,
 } from "@/lib/autobot-user-settings";
 
-const OPENCLAW_URL = process.env.OPENCLAW_URL || "https://ai.camalot.me";
 const CHATTERBOX_URL = (process.env.CHATTERBOX_URL || "").replace(/\/+$/, "");
 const CHATTERBOX_API_KEY = process.env.CHATTERBOX_API_KEY || "";
 
@@ -80,9 +83,16 @@ async function tryWorkerLane(
 
 export async function requestChatterboxTts(
   userId: string,
+  /**
+   * Retained for call-site compatibility (the live-avatar speak route and the
+   * /api/autobot/tts route both pass it). It was only ever forwarded to the
+   * removed OpenClaw lane; the remaining worker lanes identify the caller by
+   * their own stored credentials.
+   */
   username: string,
   text: string,
 ): Promise<ChatterboxTtsResult> {
+  void username;
   const settings = await getAutobotUserSettings(userId).catch(() => null);
   const speechText = text.slice(0, TTS_MAX_TEXT_LENGTH);
 
@@ -112,49 +122,8 @@ export async function requestChatterboxTts(
     if (result) return result;
   }
 
-  // Lane 3: legacy OpenClaw proxy (retired in prod; kept for compatibility).
-  let response: Response;
-  try {
-    response = await fetch(`${OPENCLAW_URL}/api/tts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: speechText,
-        provider: settings?.gpuProvider,
-        providerApiKey: settings?.gpuProviderApiKey || undefined,
-        providerEndpoint: settings?.gpuProviderEndpoint || undefined,
-        voice: settings?.voiceSample?.voiceId || undefined,
-        voiceSampleStoredFileName:
-          settings?.voiceSample?.storedFileName || undefined,
-        username,
-      }),
-    });
-  } catch (error) {
-    return {
-      kind: "unreachable",
-      detail:
-        error instanceof Error ? error.message : "Failed to reach TTS server",
-    };
-  }
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    return {
-      kind: "error",
-      status: response.status,
-      detail: detail.slice(0, 1000),
-    };
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.startsWith("audio/")) {
-    return {
-      kind: "audio",
-      audio: await response.arrayBuffer(),
-      contentType,
-    };
-  }
-
-  const data = await response.json().catch(() => ({ fallback: true }));
-  return { kind: "json", data };
+  // Lane 3: browser TTS. No server lane produced audio, so hand the caller the
+  // documented fallback signal rather than an error — every consumer treats a
+  // non-audio result as "speak this with the Web Speech API instead".
+  return { kind: "json", data: { fallback: true } };
 }

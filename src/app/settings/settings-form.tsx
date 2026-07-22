@@ -1,12 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronLeft, Globe, MapPin, Moon, Plus, Shield, Sun, User, Store, CheckCircle2, AlertCircle, ExternalLink, Loader2, X, Sparkles, Brain, Eye, Wallet, Activity, UserCheck, Fingerprint, Upload, Trash2 } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ChevronLeft, Globe, MapPin, Moon, Shield, Sun, Store, CheckCircle2, AlertCircle, ExternalLink, Loader2, X, Sparkles, Brain } from "lucide-react";
 import { updateProfileAction, updateProfileImageAction } from "@/app/actions/settings";
 import { updateMyProfileTabVisibility } from "@/app/actions/interactions/profile";
-import { saveMyPersonInstanceSetupAction, verifyMyPersonInstanceSetupAction } from "@/app/actions/person-instance";
 import {
   linkAtprotoIdentityAction,
   linkPeermeshIdentityAction,
@@ -22,9 +20,6 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsTrigger } from "@/components/ui/tabs";
 import { ResponsiveTabsList } from "@/components/responsive-tabs-list";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { useTheme } from "next-themes";
 import { invalidateGraphCache, useLocalesAndBasins } from "@/lib/hooks/use-graph-data";
@@ -37,12 +32,9 @@ import { ProfileTabVisibilityEditor } from "@/components/profile-tab-visibility-
 import type { ProfileTabVisibilitySettings } from "@/lib/types";
 import type { FederationIdentityStatus } from "@/lib/federation-identities";
 import type { AppReleaseStatus } from "@/lib/app-release";
-import type { PersonInstanceSetupState } from "@/lib/person-instance-setup";
 import { DomainSettings } from "@/components/domain-settings";
 import { RecoverySeedPanel } from "@/components/recovery-seed-panel";
-import { AutobotConnectionsPanel } from "@/components/autobot-connections-panel";
 import { AssistantSettingsPanel } from "@/components/assistant-settings-panel";
-import { USER_CONNECTABLE_PROVIDERS } from "@/lib/autobot-connectors";
 
 export type SettingsInitialData = {
   name: string;
@@ -64,7 +56,6 @@ export type SettingsInitialData = {
   murmurationsPublishing: boolean;
   socialLinks: Record<string, string>;
   profilePhotos: string[];
-  privacySettings: Partial<PrivacySettings>;
   notificationSettings: Omit<NotificationSettings, "murmurationsPublishing">;
   profileTabVisibility: ProfileTabVisibilitySettings;
 };
@@ -92,125 +83,28 @@ const SETTINGS_TAB_VALUES: SettingsTab[] = [
   "security",
 ];
 
-/** Visibility scope for individual privacy controls. */
-type VisibilityScope = "public" | "locale" | "connections" | "self";
-
-/** Comprehensive granular privacy settings grouped by domain. */
-type PrivacySettings = {
-  /** Legacy compat fields — kept for backward compatibility with existing data. */
-  profileVisibility: "public" | "friends" | "private";
-  friendRequests: "everyone" | "friends-of-friends" | "nobody";
-  locationSharing: "always" | "events" | "never";
-
-  /** Transaction Visibility */
-  transactionPurchases: VisibilityScope;
-  transactionSales: VisibilityScope;
-  transactionGiftsReceived: VisibilityScope;
-  transactionTransfers: VisibilityScope;
-  transactionWalletBalance: "self" | "connections";
-
-  /** Activity Visibility */
-  activityGroupMemberships: VisibilityScope;
-  activityEventAttendance: VisibilityScope;
-  activityPosts: VisibilityScope;
-  activityOfferings: VisibilityScope;
-  activityJobApplications: "self";
-
-  /** Profile Attribute Visibility */
-  attributeFullName: VisibilityScope;
-  attributeEmail: "connections" | "self";
-  attributeLocation: VisibilityScope;
-  attributeSkills: VisibilityScope;
-  attributeBio: VisibilityScope;
-  attributeSocialLinks: VisibilityScope;
-  attributeAvatar: VisibilityScope;
-
-  /** ZK Identity Settings */
-  zkEnabled: boolean;
-  zkExposedAttributes: string[];
-  zkConditionalRules: ZkConditionalRule[];
-
-  /** Universal Manifest */
-  manifestLastSynced: string | null;
-};
-
-type ZkConditionalRule = {
-  id: string;
-  attribute: string;
-  operator: "equals" | "greater_than" | "less_than" | "between" | "contains";
-  value: string;
-};
-
-const ZK_ATTRIBUTE_OPTIONS = [
-  { value: "age_range", label: "Age range" },
-  { value: "height_range", label: "Height range" },
-  { value: "income_range", label: "Income range" },
-  { value: "location_city", label: "Location (city-level)" },
-] as const;
-
-const ZK_RULE_ATTRIBUTE_OPTIONS = [
-  { value: "age", label: "Age" },
-  { value: "height", label: "Height" },
-  { value: "income", label: "Income" },
-  { value: "location", label: "Location" },
-  { value: "skills_count", label: "Number of skills" },
-  { value: "membership_tier", label: "Membership tier" },
-] as const;
-
-const ZK_OPERATOR_OPTIONS = [
-  { value: "equals", label: "equals" },
-  { value: "greater_than", label: "greater than" },
-  { value: "less_than", label: "less than" },
-  { value: "between", label: "between" },
-  { value: "contains", label: "contains" },
-] as const;
-
-/** Default privacy settings for new users or missing fields. */
-const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
-  profileVisibility: "public",
-  friendRequests: "everyone",
-  locationSharing: "events",
-  transactionPurchases: "self",
-  transactionSales: "connections",
-  transactionGiftsReceived: "connections",
-  transactionTransfers: "self",
-  transactionWalletBalance: "self",
-  activityGroupMemberships: "public",
-  activityEventAttendance: "public",
-  activityPosts: "public",
-  activityOfferings: "public",
-  activityJobApplications: "self",
-  attributeFullName: "public",
-  attributeEmail: "self",
-  attributeLocation: "locale",
-  attributeSkills: "public",
-  attributeBio: "public",
-  attributeSocialLinks: "connections",
-  attributeAvatar: "public",
-  zkEnabled: false,
-  zkExposedAttributes: [],
-  zkConditionalRules: [],
-  manifestLastSynced: null,
-};
-
-/** Merges partial/legacy privacy data with full defaults. */
-function mergePrivacySettings(partial: Partial<PrivacySettings> | undefined): PrivacySettings {
-  if (!partial) return { ...DEFAULT_PRIVACY_SETTINGS };
-  return { ...DEFAULT_PRIVACY_SETTINGS, ...partial };
-}
-
+/**
+ * Notification preferences that are actually consumed by this app.
+ *
+ * `emailNotifications` is read by `isEmailEnabled` (`@/app/actions/email`)
+ * before any transactional/broadcast send; `murmurationsPublishing` drives
+ * `syncMurmurationsProfilesForActor`. The former push/eventReminders/
+ * newMessages toggles were removed in the 2026-07-22 truth-in-UI wave —
+ * this app has no push infrastructure and no reader ever existed for them.
+ */
 type NotificationSettings = {
-  pushNotifications: boolean;
   emailNotifications: boolean;
-  eventReminders: boolean;
-  newMessages: boolean;
   murmurationsPublishing: boolean;
 };
 
+/**
+ * Appearance preferences. Only dark mode is real — it is applied through
+ * `next-themes`. The former text-size slider and colour-theme swatches were
+ * removed in the 2026-07-22 truth-in-UI wave (state was never persisted and
+ * nothing consumed it).
+ */
 type AppearanceSettings = {
   darkMode: boolean;
-  textSize: number;
-  colorTheme: "primary" | "blue" | "green" | "purple" | "pink";
 };
 
 type FederationSettingsState =
@@ -227,80 +121,14 @@ function normalizeLocaleToken(value: string): string {
   return value.trim().toLowerCase();
 }
 
-/** Reusable row for custom option sets (e.g. general privacy, wallet balance). */
-function VisibilityRow({
-  label,
-  description,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-[160px] shrink-0">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((opt) => (
-            <SelectItem key={opt.value} value={opt.value}>
-              {opt.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
-
-/** Standard 4-option visibility scope row (Public / Locale / Connections / Only Me). */
-function VisibilityScopeRow({
-  label,
-  description,
-  value,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  value: VisibilityScope;
-  onChange: (value: VisibilityScope) => void;
-}) {
-  return (
-    <VisibilityRow
-      label={label}
-      description={description}
-      value={value}
-      options={[
-        { value: "public", label: "Public" },
-        { value: "locale", label: "Locale" },
-        { value: "connections", label: "Connections" },
-        { value: "self", label: "Only Me" },
-      ]}
-      onChange={(v) => onChange(v as VisibilityScope)}
-    />
-  );
-}
-
 export function SettingsForm({
   initialData,
   initialFederationStatus,
-  initialPersonInstanceSetup,
   initialAppReleaseStatus,
   activePersona,
 }: {
   initialData: SettingsInitialData;
   initialFederationStatus: FederationIdentityStatus | null;
-  initialPersonInstanceSetup: PersonInstanceSetupState;
   initialAppReleaseStatus: AppReleaseStatus | null;
   /**
    * Persona-context flags forwarded from the server component. When `isPersona`
@@ -338,17 +166,12 @@ export function SettingsForm({
   const [profile, setProfile] = useState<SettingsInitialData>(initialData);
   const [skillInput, setSkillInput] = useState("");
   const { data: localesData } = useLocalesAndBasins();
-  const [privacySettings, setPrivacySettings] = useState<PrivacySettings>(
-    mergePrivacySettings(initialData.privacySettings as Partial<PrivacySettings>)
-  );
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({
-    ...initialData.notificationSettings,
+    emailNotifications: initialData.notificationSettings.emailNotifications,
     murmurationsPublishing: initialData.murmurationsPublishing,
   });
   const [appearanceSettings, setAppearanceSettings] = useState<AppearanceSettings>({
     darkMode: theme === "dark",
-    textSize: 3,
-    colorTheme: "primary",
   });
   // Sparse per-tab visibility overrides for the public profile. Persisted via a
   // dedicated server action (`updateMyProfileTabVisibility`) separate from the
@@ -366,11 +189,6 @@ export function SettingsForm({
   const [blueskyHandle, setBlueskyHandle] = useState("");
   const [blueskyAppPassword, setBlueskyAppPassword] = useState("");
   const [federationSaving, setFederationSaving] = useState<"peermesh" | "atproto" | null>(null);
-  const [personInstanceSetup, setPersonInstanceSetup] = useState<PersonInstanceSetupState>(initialPersonInstanceSetup);
-  const [personInstanceDomain, setPersonInstanceDomain] = useState(initialPersonInstanceSetup.targetDomain);
-  const [personInstanceUsername, setPersonInstanceUsername] = useState(initialPersonInstanceSetup.username || initialData.username);
-  const [personInstanceNotes, setPersonInstanceNotes] = useState(initialPersonInstanceSetup.notes);
-  const [personInstanceSaving, setPersonInstanceSaving] = useState<"save" | "verify" | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const localeOptions = useMemo(
     () =>
@@ -533,57 +351,6 @@ export function SettingsForm({
     }
   }
 
-  async function handleSavePersonInstance() {
-    setPersonInstanceSaving("save");
-    try {
-      const result = await saveMyPersonInstanceSetupAction({
-        targetDomain: personInstanceDomain,
-        username: personInstanceUsername,
-        notes: personInstanceNotes,
-      });
-      if (!result.success || !result.data) {
-        toast({
-          title: "Unable to prepare instance",
-          description: result.error ?? "Could not save the person instance plan.",
-          variant: "destructive",
-        });
-        return;
-      }
-      setPersonInstanceSetup(result.data);
-      setPersonInstanceDomain(result.data.targetDomain);
-      setPersonInstanceUsername(result.data.username);
-      setPersonInstanceNotes(result.data.notes);
-      toast({
-        title: "Instance plan saved",
-        description: "Deployment bundle and cutover commands are ready below.",
-      });
-    } finally {
-      setPersonInstanceSaving(null);
-    }
-  }
-
-  async function handleVerifyPersonInstance() {
-    setPersonInstanceSaving("verify");
-    try {
-      const result = await verifyMyPersonInstanceSetupAction();
-      if (!result.success || !result.data) {
-        toast({
-          title: "Verification failed",
-          description: result.error ?? "Could not verify the target person instance.",
-          variant: "destructive",
-        });
-        return;
-      }
-      setPersonInstanceSetup(result.data);
-      toast({
-        title: "Verification updated",
-        description: "Live target checks were refreshed.",
-      });
-    } finally {
-      setPersonInstanceSaving(null);
-    }
-  }
-
   async function onSaveChanges() {
     setIsSaving(true);
     try {
@@ -606,12 +373,8 @@ export function SettingsForm({
         murmurationsPublishing: notificationSettings.murmurationsPublishing,
         socialLinks: profile.socialLinks,
         profilePhotos: profile.profilePhotos,
-        privacySettings,
         notificationSettings: {
-          pushNotifications: notificationSettings.pushNotifications,
           emailNotifications: notificationSettings.emailNotifications,
-          eventReminders: notificationSettings.eventReminders,
-          newMessages: notificationSettings.newMessages,
         },
       });
 
@@ -1064,8 +827,34 @@ export function SettingsForm({
           </TabsContent>
         )}
 
+        {/*
+          The connector manager itself lives in the Assistant panel, which is the
+          richer mount (it also manages the claude_code connector and the
+          assistant's own settings). This tab used to mount a SECOND, bare copy of
+          the same manager with divergent surrounding UX (2026-07-22 audit #20);
+          it is now a signpost so there is exactly one place to connect accounts.
+        */}
         <TabsContent value="connectors" className="space-y-4">
-          <AutobotConnectionsPanel providers={USER_CONNECTABLE_PROVIDERS} />
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Connections</CardTitle>
+              <CardDescription>
+                Connected accounts are managed in one place: the Assistant tab.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isPersonaActive}
+                onClick={() => setActiveTab("agent-hq")}
+              >
+                {isPersonaActive
+                  ? "Switch back to your own account to manage connections"
+                  : "Go to Assistant → Connections"}
+              </Button>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="privacy" className="space-y-6">
@@ -1073,603 +862,45 @@ export function SettingsForm({
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 <Shield className="h-5 w-5" />
-                Privacy & Visibility Settings
+                Public Profile Tabs
               </CardTitle>
               <CardDescription>
-                Control who can see your profile information, transactions, and activity.
-                Changes are saved when you click &quot;Save Privacy Settings&quot; at the bottom.
+                Choose who can see each tab on your public profile. You always see
+                every tab; &quot;Hidden&quot; removes a tab for everyone. This is the
+                privacy control this instance actually enforces — per-item privacy is
+                set on each post, offering, or document when you create it.
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              <Accordion type="multiple" defaultValue={["general", "transactions", "activity", "attributes"]} className="w-full">
-
-                {/* General Privacy */}
-                <AccordionItem value="general">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <Eye className="h-4 w-4 text-teal-500" />
-                      General Privacy
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-4 pt-2">
-                    <VisibilityRow
-                      label="Profile Visibility"
-                      description="Overall visibility of your profile to others"
-                      value={privacySettings.profileVisibility}
-                      options={[
-                        { value: "public", label: "Public" },
-                        { value: "friends", label: "Friends Only" },
-                        { value: "private", label: "Private" },
-                      ]}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, profileVisibility: v as PrivacySettings["profileVisibility"] }))}
-                    />
-                    <Separator />
-                    <VisibilityRow
-                      label="Friend Requests"
-                      description="Who can send you connection requests"
-                      value={privacySettings.friendRequests}
-                      options={[
-                        { value: "everyone", label: "Everyone" },
-                        { value: "friends-of-friends", label: "Friends of Friends" },
-                        { value: "nobody", label: "Nobody" },
-                      ]}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, friendRequests: v as PrivacySettings["friendRequests"] }))}
-                    />
-                    <Separator />
-                    <VisibilityRow
-                      label="Location Sharing"
-                      description="When your location is shared with others"
-                      value={privacySettings.locationSharing}
-                      options={[
-                        { value: "always", label: "Always" },
-                        { value: "events", label: "During Events Only" },
-                        { value: "never", label: "Never" },
-                      ]}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, locationSharing: v as PrivacySettings["locationSharing"] }))}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
-
-                {/* Transaction Visibility */}
-                <AccordionItem value="transactions">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <Wallet className="h-4 w-4 text-teal-500" />
-                      Transaction Visibility
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-4 pt-2">
-                    <VisibilityScopeRow
-                      label="Who can see my purchases?"
-                      description="Visibility of items and services you have purchased"
-                      value={privacySettings.transactionPurchases}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, transactionPurchases: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my sales?"
-                      description="Visibility of items and services you have sold"
-                      value={privacySettings.transactionSales}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, transactionSales: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see gifts I receive?"
-                      description="Visibility of gifts and thanks tokens you have received"
-                      value={privacySettings.transactionGiftsReceived}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, transactionGiftsReceived: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my transfers?"
-                      description="Visibility of wallet-to-wallet transfers"
-                      value={privacySettings.transactionTransfers}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, transactionTransfers: v }))}
-                    />
-                    <Separator />
-                    <VisibilityRow
-                      label="Who can see my wallet balance?"
-                      description="Your wallet balance is sensitive financial information"
-                      value={privacySettings.transactionWalletBalance}
-                      options={[
-                        { value: "self", label: "Only Me" },
-                        { value: "connections", label: "Connections" },
-                      ]}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, transactionWalletBalance: v as "self" | "connections" }))}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
-
-                {/* Activity Visibility */}
-                <AccordionItem value="activity">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <Activity className="h-4 w-4 text-teal-500" />
-                      Activity Visibility
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-4 pt-2">
-                    <VisibilityScopeRow
-                      label="Who can see my group memberships?"
-                      description="Visibility of groups, rings, and families you belong to"
-                      value={privacySettings.activityGroupMemberships}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, activityGroupMemberships: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my event attendance?"
-                      description="Visibility of events you are attending or have attended"
-                      value={privacySettings.activityEventAttendance}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, activityEventAttendance: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my posts?"
-                      description="Visibility of posts and content you create"
-                      value={privacySettings.activityPosts}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, activityPosts: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my offerings?"
-                      description="Visibility of marketplace offerings you have listed"
-                      value={privacySettings.activityOfferings}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, activityOfferings: v }))}
-                    />
-                    <Separator />
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium">Who can see my job applications?</p>
-                        <p className="text-xs text-muted-foreground">Job applications are always private</p>
-                      </div>
-                      <Badge variant="secondary" className="text-xs">Only Me</Badge>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-
-                {/* Profile Attribute Visibility */}
-                <AccordionItem value="attributes">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <UserCheck className="h-4 w-4 text-teal-500" />
-                      Profile Attribute Visibility
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-4 pt-2">
-                    <VisibilityScopeRow
-                      label="Who can see my full name?"
-                      description="Your display name on your profile"
-                      value={privacySettings.attributeFullName}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeFullName: v }))}
-                    />
-                    <Separator />
-                    <VisibilityRow
-                      label="Who can see my email?"
-                      description="Your email address is restricted for safety"
-                      value={privacySettings.attributeEmail}
-                      options={[
-                        { value: "connections", label: "Connections" },
-                        { value: "self", label: "Only Me" },
-                      ]}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeEmail: v as "connections" | "self" }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my location?"
-                      description="Your home locale and geographic information"
-                      value={privacySettings.attributeLocation}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeLocation: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my skills?"
-                      description="Skills listed on your profile"
-                      value={privacySettings.attributeSkills}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeSkills: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my bio?"
-                      description="Your profile bio and tagline"
-                      value={privacySettings.attributeBio}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeBio: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my social links?"
-                      description="External social media and website links"
-                      value={privacySettings.attributeSocialLinks}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeSocialLinks: v }))}
-                    />
-                    <Separator />
-                    <VisibilityScopeRow
-                      label="Who can see my avatar?"
-                      description="Your profile photo"
-                      value={privacySettings.attributeAvatar}
-                      onChange={(v) => setPrivacySettings((p) => ({ ...p, attributeAvatar: v }))}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
-
-                {/* Public Profile Tabs */}
-                <AccordionItem value="profile-tabs">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <User className="h-4 w-4 text-teal-500" />
-                      Public Profile Tabs
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-4 pt-2">
-                    <p className="text-xs text-muted-foreground">
-                      Choose who can see each tab on your public profile. You always
-                      see every tab; &quot;Hidden&quot; removes a tab for everyone.
-                    </p>
-                    <ProfileTabVisibilityEditor
-                      value={profileTabVisibility}
-                      onChange={setProfileTabVisibility}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={onSaveProfileTabVisibility}
-                      disabled={savingTabVisibility}
-                    >
-                      {savingTabVisibility ? "Saving..." : "Save Tab Visibility"}
-                    </Button>
-                  </AccordionContent>
-                </AccordionItem>
-
-                {/* ZK Identity Settings */}
-                <AccordionItem value="zk-identity">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <Fingerprint className="h-4 w-4 text-teal-500" />
-                      ZK Identity Settings
-                      <Badge variant="outline" className="text-xs ml-2">Preview</Badge>
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-6 pt-2">
-                    <div className="rounded-lg border border-dashed border-teal-500/30 bg-teal-500/5 p-4">
-                      <p className="text-sm text-muted-foreground">
-                        Zero-knowledge proofs allow you to verify attributes about yourself without revealing exact values.
-                        This feature is in preview and the cryptographic implementation is coming soon.
-                      </p>
-                    </div>
-
-                    {/* Enable ZK toggle */}
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium">Enable ZK-verified profile</p>
-                        <p className="text-xs text-muted-foreground">
-                          Allow others to see verified attributes via zero-knowledge proofs
-                        </p>
-                      </div>
-                      <Switch
-                        checked={privacySettings.zkEnabled}
-                        onCheckedChange={(checked) =>
-                          setPrivacySettings((p) => ({ ...p, zkEnabled: checked }))
-                        }
-                      />
-                    </div>
-
-                    {privacySettings.zkEnabled && (
-                      <>
-                        <Separator />
-
-                        {/* Attributes to expose */}
-                        <div className="space-y-3">
-                          <p className="text-sm font-medium">Attributes to expose via ZK proof</p>
-                          <p className="text-xs text-muted-foreground">
-                            Select which attributes can be verified without revealing exact values
-                          </p>
-                          <div className="grid grid-cols-2 gap-3">
-                            {ZK_ATTRIBUTE_OPTIONS.map((attr) => (
-                              <div key={attr.value} className="flex items-center space-x-2">
-                                <Checkbox
-                                  id={`zk-attr-${attr.value}`}
-                                  checked={privacySettings.zkExposedAttributes.includes(attr.value)}
-                                  onCheckedChange={(checked) => {
-                                    setPrivacySettings((p) => ({
-                                      ...p,
-                                      zkExposedAttributes: checked
-                                        ? [...p.zkExposedAttributes, attr.value]
-                                        : p.zkExposedAttributes.filter((a) => a !== attr.value),
-                                    }));
-                                  }}
-                                />
-                                <Label htmlFor={`zk-attr-${attr.value}`} className="text-sm cursor-pointer">
-                                  {attr.label}
-                                </Label>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg bg-muted/50 p-3">
-                          <p className="text-xs text-muted-foreground italic">
-                            Anyone matching these criteria can see your ZK profile and message you.
-                            ZK identities cannot post, comment, or list in scopes where identity is hidden.
-                          </p>
-                        </div>
-
-                        <Separator />
-
-                        {/* Conditional access rules */}
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-sm font-medium">Conditional Access Rules</p>
-                              <p className="text-xs text-muted-foreground">
-                                Define conditions that others must meet to access your ZK profile
-                              </p>
-                            </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                const newRule: ZkConditionalRule = {
-                                  id: crypto.randomUUID(),
-                                  attribute: "age",
-                                  operator: "greater_than",
-                                  value: "",
-                                };
-                                setPrivacySettings((p) => ({
-                                  ...p,
-                                  zkConditionalRules: [...p.zkConditionalRules, newRule],
-                                }));
-                              }}
-                            >
-                              <Plus className="h-3 w-3 mr-1" />
-                              Add Condition
-                            </Button>
-                          </div>
-
-                          {privacySettings.zkConditionalRules.length === 0 && (
-                            <div className="rounded-lg border border-dashed p-4 text-center">
-                              <p className="text-sm text-muted-foreground">
-                                No conditional rules set. Anyone with matching ZK criteria can access your profile.
-                              </p>
-                            </div>
-                          )}
-
-                          {privacySettings.zkConditionalRules.map((rule) => (
-                            <div key={rule.id} className="flex items-center gap-2 p-3 rounded-lg border bg-card">
-                              <Select
-                                value={rule.attribute}
-                                onValueChange={(v) => {
-                                  setPrivacySettings((p) => ({
-                                    ...p,
-                                    zkConditionalRules: p.zkConditionalRules.map((r) =>
-                                      r.id === rule.id ? { ...r, attribute: v } : r
-                                    ),
-                                  }));
-                                }}
-                              >
-                                <SelectTrigger className="w-[140px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {ZK_RULE_ATTRIBUTE_OPTIONS.map((opt) => (
-                                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-
-                              <Select
-                                value={rule.operator}
-                                onValueChange={(v) => {
-                                  setPrivacySettings((p) => ({
-                                    ...p,
-                                    zkConditionalRules: p.zkConditionalRules.map((r) =>
-                                      r.id === rule.id ? { ...r, operator: v as ZkConditionalRule["operator"] } : r
-                                    ),
-                                  }));
-                                }}
-                              >
-                                <SelectTrigger className="w-[140px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {ZK_OPERATOR_OPTIONS.map((opt) => (
-                                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-
-                              <input
-                                type="text"
-                                className="flex-1 p-2 border rounded-md text-sm bg-background"
-                                placeholder="Value..."
-                                value={rule.value}
-                                onChange={(e) => {
-                                  setPrivacySettings((p) => ({
-                                    ...p,
-                                    zkConditionalRules: p.zkConditionalRules.map((r) =>
-                                      r.id === rule.id ? { ...r, value: e.target.value } : r
-                                    ),
-                                  }));
-                                }}
-                              />
-
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="text-destructive hover:text-destructive/80"
-                                onClick={() => {
-                                  setPrivacySettings((p) => ({
-                                    ...p,
-                                    zkConditionalRules: p.zkConditionalRules.filter((r) => r.id !== rule.id),
-                                  }));
-                                }}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </AccordionContent>
-                </AccordionItem>
-
-                {/* Universal Manifest */}
-                <AccordionItem value="manifest">
-                  <AccordionTrigger className="text-base font-semibold">
-                    <div className="flex items-center gap-2">
-                      <Upload className="h-4 w-4 text-teal-500" />
-                      Universal Manifest
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="space-y-4 pt-2">
-                    <div className="rounded-lg border border-dashed border-teal-500/30 bg-teal-500/5 p-4">
-                      <p className="text-sm text-muted-foreground">
-                        Push your privacy settings to the PeerMesh universal manifest so they are enforced across
-                        federated nodes. This syncs your visibility preferences to your portable identity.
-                      </p>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium">Last synced</p>
-                        <p className="text-xs text-muted-foreground">
-                          {privacySettings.manifestLastSynced
-                            ? new Date(privacySettings.manifestLastSynced).toLocaleString()
-                            : "Never synced"}
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setPrivacySettings((p) => ({
-                            ...p,
-                            manifestLastSynced: new Date().toISOString(),
-                          }));
-                          toast({
-                            title: "Manifest sync queued",
-                            description: "Your privacy settings will be pushed to PeerMesh on save.",
-                          });
-                        }}
-                      >
-                        <Upload className="h-3 w-3 mr-1" />
-                        Push to PeerMesh
-                      </Button>
-                    </div>
-
-                    <Separator />
-
-                    {/* Manifest preview */}
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">Manifest Export Preview</p>
-                      <pre className="text-xs bg-muted/50 p-3 rounded-lg overflow-auto max-h-48 font-mono">
-                        {JSON.stringify(
-                          {
-                            version: "1.0",
-                            privacy: {
-                              transactions: {
-                                purchases: privacySettings.transactionPurchases,
-                                sales: privacySettings.transactionSales,
-                                gifts: privacySettings.transactionGiftsReceived,
-                                transfers: privacySettings.transactionTransfers,
-                                walletBalance: privacySettings.transactionWalletBalance,
-                              },
-                              activity: {
-                                groupMemberships: privacySettings.activityGroupMemberships,
-                                eventAttendance: privacySettings.activityEventAttendance,
-                                posts: privacySettings.activityPosts,
-                                offerings: privacySettings.activityOfferings,
-                              },
-                              attributes: {
-                                fullName: privacySettings.attributeFullName,
-                                email: privacySettings.attributeEmail,
-                                location: privacySettings.attributeLocation,
-                                skills: privacySettings.attributeSkills,
-                                bio: privacySettings.attributeBio,
-                                socialLinks: privacySettings.attributeSocialLinks,
-                                avatar: privacySettings.attributeAvatar,
-                              },
-                              zk: {
-                                enabled: privacySettings.zkEnabled,
-                                exposedAttributes: privacySettings.zkExposedAttributes,
-                                conditionalRules: privacySettings.zkConditionalRules.length,
-                              },
-                            },
-                            lastSynced: privacySettings.manifestLastSynced,
-                          },
-                          null,
-                          2
-                        )}
-                      </pre>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-
-              </Accordion>
+            <CardContent className="space-y-4">
+              <ProfileTabVisibilityEditor
+                value={profileTabVisibility}
+                onChange={setProfileTabVisibility}
+              />
+              <Button
+                type="button"
+                onClick={onSaveProfileTabVisibility}
+                disabled={savingTabVisibility}
+              >
+                {savingTabVisibility ? "Saving..." : "Save Tab Visibility"}
+              </Button>
             </CardContent>
           </Card>
-
-          <Button className="w-full" onClick={onSaveChanges} disabled={isSaving}>
-            {isSaving ? "Saving..." : "Save Privacy Settings"}
-          </Button>
         </TabsContent>
 
         <TabsContent value="notifications" className="space-y-4">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium">Push Notifications</p>
-                <p className="text-sm text-muted-foreground">Receive notifications on your device</p>
-              </div>
-              <Switch
-                checked={notificationSettings.pushNotifications}
-                onCheckedChange={(value) =>
-                  setNotificationSettings((prev) => ({ ...prev, pushNotifications: value }))
-                }
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div>
                 <p className="font-medium">Email Notifications</p>
-                <p className="text-sm text-muted-foreground">Receive notifications via email</p>
+                <p className="text-sm text-muted-foreground">
+                  Receive notifications via email. Turning this off suppresses every
+                  non-essential email this instance sends you.
+                </p>
               </div>
               <Switch
                 checked={notificationSettings.emailNotifications}
                 onCheckedChange={(value) =>
                   setNotificationSettings((prev) => ({ ...prev, emailNotifications: value }))
-                }
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Event Reminders</p>
-                <p className="text-sm text-muted-foreground">Get reminded about upcoming events</p>
-              </div>
-              <Switch
-                checked={notificationSettings.eventReminders}
-                onCheckedChange={(value) =>
-                  setNotificationSettings((prev) => ({ ...prev, eventReminders: value }))
-                }
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">New Messages</p>
-                <p className="text-sm text-muted-foreground">Get notified when you receive new messages</p>
-              </div>
-              <Switch
-                checked={notificationSettings.newMessages}
-                onCheckedChange={(value) =>
-                  setNotificationSettings((prev) => ({ ...prev, newMessages: value }))
                 }
               />
             </div>
@@ -1690,6 +921,15 @@ export function SettingsForm({
                 }
               />
             </div>
+
+            {/*
+              This tab previously had NO save control — the toggles only persisted
+              if the user happened to hit Save on another tab (2026-07-22 audit #9).
+              Both switches here are real, so the tab owns its own save.
+            */}
+            <Button className="w-full" onClick={onSaveChanges} disabled={isSaving}>
+              {isSaving ? "Saving..." : "Save Notification Settings"}
+            </Button>
           </div>
         </TabsContent>
 
@@ -1710,83 +950,6 @@ export function SettingsForm({
                   setTheme(value ? "dark" : "light");
                 }}
               />
-            </div>
-
-            <Separator />
-
-            <div>
-              <p className="font-medium mb-2">Text Size</p>
-              <div className="flex items-center gap-4">
-                <span className="text-sm">A</span>
-                <input
-                  type="range"
-                  min="1"
-                  max="5"
-                  value={appearanceSettings.textSize}
-                  onChange={(e) =>
-                    setAppearanceSettings((prev) => ({
-                      ...prev,
-                      textSize: Number(e.target.value),
-                    }))
-                  }
-                  className="flex-1"
-                />
-                <span className="text-lg">A</span>
-              </div>
-            </div>
-
-            <Separator />
-
-            <div>
-              <p className="font-medium mb-2">Color Theme</p>
-              <div className="grid grid-cols-5 gap-2">
-                <button
-                  type="button"
-                  aria-label="Primary color theme"
-                  className={`h-10 w-10 rounded-full bg-primary cursor-pointer ${
-                    appearanceSettings.colorTheme === "primary" ? "ring-2 ring-offset-2 ring-primary" : ""
-                  }`}
-                  onClick={() =>
-                    setAppearanceSettings((prev) => ({ ...prev, colorTheme: "primary" }))
-                  }
-                />
-                <button
-                  type="button"
-                  aria-label="Blue color theme"
-                  className={`h-10 w-10 rounded-full bg-blue-500 cursor-pointer ${
-                    appearanceSettings.colorTheme === "blue" ? "ring-2 ring-offset-2 ring-blue-500" : ""
-                  }`}
-                  onClick={() => setAppearanceSettings((prev) => ({ ...prev, colorTheme: "blue" }))}
-                />
-                <button
-                  type="button"
-                  aria-label="Green color theme"
-                  className={`h-10 w-10 rounded-full bg-green-500 cursor-pointer ${
-                    appearanceSettings.colorTheme === "green" ? "ring-2 ring-offset-2 ring-green-500" : ""
-                  }`}
-                  onClick={() =>
-                    setAppearanceSettings((prev) => ({ ...prev, colorTheme: "green" }))
-                  }
-                />
-                <button
-                  type="button"
-                  aria-label="Purple color theme"
-                  className={`h-10 w-10 rounded-full bg-purple-500 cursor-pointer ${
-                    appearanceSettings.colorTheme === "purple" ? "ring-2 ring-offset-2 ring-purple-500" : ""
-                  }`}
-                  onClick={() =>
-                    setAppearanceSettings((prev) => ({ ...prev, colorTheme: "purple" }))
-                  }
-                />
-                <button
-                  type="button"
-                  aria-label="Pink color theme"
-                  className={`h-10 w-10 rounded-full bg-pink-500 cursor-pointer ${
-                    appearanceSettings.colorTheme === "pink" ? "ring-2 ring-offset-2 ring-pink-500" : ""
-                  }`}
-                  onClick={() => setAppearanceSettings((prev) => ({ ...prev, colorTheme: "pink" }))}
-                />
-              </div>
             </div>
           </div>
         </TabsContent>
@@ -1849,130 +1012,6 @@ export function SettingsForm({
                       <p className="mt-1 break-all text-muted-foreground">{federationSettings.node.baseUrl}</p>
                     </div>
                   ) : null}
-
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base">Create My Instance</CardTitle>
-                      <CardDescription>
-                        Prepare a sovereign person instance plan from your live Rivr profile. Save the target domain, hand the generated bundle to infra, then verify the host from inside the app.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="flex flex-wrap items-center gap-2 text-sm">
-                        <Badge variant={personInstanceSetup.status === "verified" ? "secondary" : "outline"}>
-                          {personInstanceSetup.status === "not_started"
-                            ? "Not Started"
-                            : personInstanceSetup.status === "verified"
-                              ? "Verified"
-                              : "Bundle Ready"}
-                        </Badge>
-                        <span className="text-muted-foreground">
-                          Username <span className="font-medium text-foreground">{personInstanceSetup.username || initialData.username}</span>
-                        </span>
-                      </div>
-
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="grid gap-2">
-                          <Label htmlFor="person-instance-domain">Target domain</Label>
-                          <input
-                            id="person-instance-domain"
-                            type="text"
-                            className="p-2 border rounded-md bg-background text-foreground"
-                            value={personInstanceDomain}
-                            onChange={(e) => setPersonInstanceDomain(e.target.value)}
-                            placeholder="rivr.example.com"
-                          />
-                        </div>
-                        <div className="grid gap-2">
-                          <Label htmlFor="person-instance-username">Public username</Label>
-                          <input
-                            id="person-instance-username"
-                            type="text"
-                            className="p-2 border rounded-md bg-background text-foreground"
-                            value={personInstanceUsername}
-                            onChange={(e) => setPersonInstanceUsername(e.target.value)}
-                            placeholder="your-handle"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid gap-2">
-                        <Label htmlFor="person-instance-notes">Deployment notes</Label>
-                        <Textarea
-                          id="person-instance-notes"
-                          value={personInstanceNotes}
-                          onChange={(e) => setPersonInstanceNotes(e.target.value)}
-                          placeholder="Optional notes for the deploy agent or autobot."
-                          className="min-h-24"
-                        />
-                      </div>
-
-                      {personInstanceSetup.targetBaseUrl ? (
-                        <div className="rounded-lg border p-3 text-sm">
-                          <p className="font-medium">Target base URL</p>
-                          <p className="mt-1 break-all text-muted-foreground">{personInstanceSetup.targetBaseUrl}</p>
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            Target node ID: <span className="font-mono">{personInstanceSetup.targetNodeId}</span>
-                          </p>
-                        </div>
-                      ) : null}
-
-                      <div className="flex flex-wrap gap-3">
-                        <Button onClick={handleSavePersonInstance} disabled={personInstanceSaving !== null}>
-                          {personInstanceSaving === "save" ? "Saving..." : "Save Plan"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={handleVerifyPersonInstance}
-                          disabled={personInstanceSaving !== null || !personInstanceSetup.targetBaseUrl}
-                        >
-                          {personInstanceSaving === "verify" ? "Verifying..." : "Verify Target"}
-                        </Button>
-                      </div>
-
-                      <div className="grid gap-2">
-                        <Label htmlFor="person-instance-bundle">Deploy bundle</Label>
-                        <Textarea
-                          id="person-instance-bundle"
-                          value={personInstanceSetup.deployBundle}
-                          readOnly
-                          className="min-h-72 font-mono text-xs"
-                        />
-                      </div>
-
-                      {personInstanceSetup.verification?.checks?.length ? (
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Live verification
-                            {personInstanceSetup.verification.checkedAt
-                              ? ` · ${new Date(personInstanceSetup.verification.checkedAt).toLocaleString()}`
-                              : ""}
-                          </p>
-                          <div className="space-y-2">
-                            {personInstanceSetup.verification.checks.map((check) => (
-                              <div key={check.id} className="rounded-lg border p-3 text-sm">
-                                <div className="flex items-center gap-2">
-                                  <Badge
-                                    variant={
-                                      check.status === "ok"
-                                        ? "secondary"
-                                        : check.status === "warning"
-                                          ? "outline"
-                                          : "destructive"
-                                    }
-                                  >
-                                    {check.status}
-                                  </Badge>
-                                  <span className="font-medium">{check.label}</span>
-                                </div>
-                                <p className="mt-2 break-all text-muted-foreground">{check.detail}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </CardContent>
-                  </Card>
 
                   <div className="grid gap-4 lg:grid-cols-2">
                     <Card>

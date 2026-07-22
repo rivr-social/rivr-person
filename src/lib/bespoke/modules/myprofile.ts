@@ -57,7 +57,9 @@ export function getMyProfileModuleManifest(): BespokeModuleManifest {
           { id: "homeLocale", label: "Home Locale", type: "string" },
           { id: "socialLinks", label: "Social Links", type: "json" },
           { id: "profilePhotos", label: "Profile Photos", type: "image[]" },
-          { id: "privacySettings", label: "Privacy Settings", type: "json" },
+          // `privacySettings` was dropped on 2026-07-22: `updateProfileAction`
+          // no longer accepts it, so offering it here would let a bespoke form
+          // collect values that are silently discarded.
           { id: "notificationSettings", label: "Notification Settings", type: "json" },
         ],
       },

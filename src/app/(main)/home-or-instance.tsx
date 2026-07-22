@@ -1,17 +1,21 @@
 /**
  * Instance-aware root page.
  *
- * - Global instance: renders the full home feed
- * - Group instance: renders the group page for PRIMARY_AGENT_ID
- * - Locale instance: renders the locale page for PRIMARY_AGENT_ID
+ * - Person instance (INSTANCE_TYPE=person + PRIMARY_AGENT_ID): renders that
+ *   person's public profile as the site root — this is what every deploy of
+ *   this repo actually does.
+ * - Anything else: renders the full home feed.
+ *
+ * A third branch used to render a GROUP page at the root for
+ * `INSTANCE_TYPE` values that were neither "person" nor "global". It was
+ * unreachable in this repo — the person branch always returns first, and no
+ * person deploy sets a group-ish INSTANCE_TYPE — so it and its exclusive
+ * component tree were removed on 2026-07-22. The group root page lives in the
+ * rivr-group repo, which is the app type that serves it.
  */
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
-import Link from "next/link"
-import { getGlobalUrl } from "@/lib/federation/global-url"
-import { MessageSquare, Settings } from "lucide-react"
-import { auth } from "@/auth"
-import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicPostResources, fetchGroupDetail, fetchAgentFeed, fetchPublicAgentById, fetchAgentsByIds } from "@/app/actions/graph"
+import { fetchHomeFeed, fetchBasins, fetchLocales, fetchPublicPostResources, fetchPublicAgentById } from "@/app/actions/graph"
 import {
   agentToUser,
   agentToGroup,
@@ -21,31 +25,22 @@ import {
   agentToLocale,
   resourceToMarketplaceListing,
   resourceToPost,
-  resolveEventWindow,
 } from "@/lib/graph-adapters"
 import type { SerializedResource } from "@/lib/graph-serializers"
-import { readGroupMembershipPlans } from "@/lib/group-memberships"
-import { buildProfileStructuredData, buildGroupStructuredData, serializeJsonLd } from "@/lib/structured-data"
+import { buildProfileStructuredData, serializeJsonLd } from "@/lib/structured-data"
 import HomeClient from "./home-client"
 import MainLoading from "./loading"
-import { AgentPageShell } from "@/components/agent-page-shell"
-import { Button } from "@/components/ui/button"
-import { GroupJoinControl } from "@/components/group-join-control"
-import { GroupActions } from "@/components/group-actions"
-import { GroupTabsClient } from "@/components/group-tabs-client"
-import { GroupProfileHeader } from "@/components/group-profile-header"
 import { PublicProfilePageClient } from "@/components/public-profile-page-client"
 
+const PERSON_INSTANCE_TYPE = 'person';
+const DEFAULT_INSTANCE_TYPE = 'global';
+
 export default async function HomeOrInstance() {
-  const instanceType = process.env.INSTANCE_TYPE || 'global';
+  const instanceType = process.env.INSTANCE_TYPE || DEFAULT_INSTANCE_TYPE;
   const primaryAgentId = process.env.PRIMARY_AGENT_ID;
 
-  if (instanceType === 'person' && primaryAgentId) {
+  if (instanceType === PERSON_INSTANCE_TYPE && primaryAgentId) {
     return renderPersonPage(primaryAgentId);
-  }
-
-  if (instanceType !== 'global' && primaryAgentId) {
-    return renderGroupPage(primaryAgentId);
   }
 
   return renderHomeFeed();
@@ -142,282 +137,4 @@ async function loadHomeFeed() {
     console.error(`[Home] Server-side data fetch failed:`, err)
     return { people: [], groups: [], events: [], places: [], marketplace: [], posts: [], basins: [], locales: [] }
   }
-}
-
-// ── Group instance page ───────────────────────────────────────
-async function renderGroupPage(id: string) {
-  const [detail, activity, session] = await Promise.all([
-    fetchGroupDetail(id),
-    fetchAgentFeed(id, 40).catch(() => []),
-    auth(),
-  ])
-
-  if (!detail) {
-    notFound()
-  }
-
-  const group = agentToGroup(detail.group)
-  const members = detail.members.map(agentToUser)
-  const domainGroups = detail.subgroups.map(agentToGroup)
-  const groupMeta = (detail.group.metadata ?? {}) as Record<string, unknown>
-  const rawGroupType = String(groupMeta.groupType ?? "").toLowerCase()
-  const agentGroupType = String(detail.group.type ?? "").toLowerCase()
-  const fallbackGroupType = ["organization", "ring", "family"].includes(agentGroupType) ? agentGroupType : "basic"
-  const canonicalGroupType = rawGroupType === "org" ? "organization" : (rawGroupType || fallbackGroupType)
-  const ownerId = typeof groupMeta.creatorId === "string" ? groupMeta.creatorId : undefined
-  const currentUserId = session?.user?.id ?? null
-  const isGroupAdmin = !!(currentUserId && (
-    groupMeta.creatorId === currentUserId ||
-    (Array.isArray(groupMeta.adminIds) && (groupMeta.adminIds as unknown[]).includes(currentUserId))
-  ))
-  const isMember = !!(currentUserId && members.some((m) => m.id === currentUserId))
-  const membershipPlans = readGroupMembershipPlans(groupMeta)
-
-  const eventResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return r.type === "event" || meta.resourceKind === "event"
-  })
-  const groupPostResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return r.type === "post" || r.type === "note" || String(meta.entityType ?? "") === "post"
-  })
-  const projectResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return r.type === "project" || meta.resourceKind === "project"
-  })
-  const listingResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return (
-      (r.type === "listing" || r.type === "resource" || r.type === "skill" || r.type === "venue")
-      && (typeof meta.listingType === "string" || String(meta.listingKind ?? "").toLowerCase() === "marketplace-listing")
-    )
-  })
-  // Resolve each event's canonical start/end window server-side (the helper is
-  // runtime-local and only correct on the server/UTC), so the card + calendar
-  // render the same schedule as the event-detail page instead of re-deriving
-  // from raw metadata and dropping the time / shifting the day in the browser.
-  const eventWindows: Record<string, { start: string; end: string }> = {}
-  for (const r of eventResources) {
-    const win = resolveEventWindow((r.metadata ?? {}) as Record<string, unknown>, r.createdAt)
-    if (win.start) {
-      eventWindows[r.id] = {
-        start: win.start.toISOString(),
-        end: (win.end ?? win.start).toISOString(),
-      }
-    }
-  }
-  // Hydrate owner agents for posts/events/listings whose authors are NOT in
-  // the member roster (marketplace-offer owners, federated authors, members
-  // missing from the roster). Without this the feed resolves authors only
-  // against members and falls back to "Unknown User" / /profile/unknown.
-  const memberIdSet = new Set(members.map((m) => m.id))
-  const authorIds = Array.from(
-    new Set(
-      [...groupPostResources, ...eventResources, ...listingResources]
-        .map((r) => r.ownerId)
-        .filter((ownerId): ownerId is string =>
-          typeof ownerId === "string" && ownerId.length > 0 && !memberIdSet.has(ownerId)
-        )
-    )
-  )
-  const authorAgents = authorIds.length > 0 ? await fetchAgentsByIds(authorIds).catch(() => []) : []
-  const authors = authorAgents.map(agentToUser).map((u) => ({
-    id: u.id,
-    name: u.name,
-    username: u.username,
-    image: u.avatar,
-  }))
-  const governanceItems = [
-    ...(((groupMeta.proposals as unknown[]) ?? []) as unknown[]),
-    ...(((groupMeta.polls as unknown[]) ?? []) as unknown[]),
-    ...(((groupMeta.issues as unknown[]) ?? []) as unknown[]),
-  ]
-  const documentResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return r.type === "resource" && (String(meta.resourceSubtype ?? "").toLowerCase() === "document" || typeof r.content === "string")
-  })
-  const jobResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return r.type === "job" || r.type === "task" || meta.resourceKind === "job" || meta.resourceKind === "task"
-  })
-  const jobOnlyResources = jobResources.filter((r) => r.type === "job" || String(((r.metadata ?? {}) as Record<string, unknown>).resourceKind ?? "") === "job")
-  const taskResources = jobResources.filter((r) => r.type === "task" || String(((r.metadata ?? {}) as Record<string, unknown>).resourceKind ?? "") === "task")
-  const badgeResources = detail.resources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    return r.type === "badge" || meta.resourceKind === "badge"
-  })
-  const pressResources = documentResources.filter((r) => {
-    const meta = (r.metadata ?? {}) as Record<string, unknown>
-    const category = String(meta.category ?? "").toLowerCase()
-    return category.includes("press") || category.includes("news") || category.includes("media")
-  })
-
-  const activityEntries = (activity as Array<{ id: string; verb: string; timestamp: string; [key: string]: unknown }>)
-  const stakeActivity = activityEntries.filter((entry) => entry.verb === "fund")
-  const treasuryActivity = activityEntries.filter((entry) => entry.verb === "transfer")
-  const publishActivity = activityEntries.filter((entry) => entry.verb === "publish" || entry.verb === "create")
-
-  const groupTags = Array.isArray(groupMeta.tags) ? groupMeta.tags.filter((tag): tag is string => typeof tag === "string") : []
-  const groupContact = (groupMeta.contactInfo ?? groupMeta.contact ?? {}) as Record<string, unknown>
-  const groupAdmins = members.filter((member) =>
-    member.id === (groupMeta.creatorId as string) ||
-    (Array.isArray(groupMeta.adminIds) && (groupMeta.adminIds as unknown[]).includes(member.id))
-  )
-  const groupCreator = groupAdmins.find((member) => member.id === (groupMeta.creatorId as string))
-  const groupLocationText =
-    typeof group.location === "string"
-      ? group.location
-      : group.location && typeof group.location === "object"
-        ? String((group.location as Record<string, unknown>).address ?? (group.location as Record<string, unknown>).name ?? "Location not provided")
-        : "Location not provided"
-
-  const structuredData = buildGroupStructuredData(group, {
-    path: `/`,
-    visibility: detail.group.visibility ?? null,
-    groupType: String(groupMeta.groupType ?? "organization"),
-    memberCount: members.length || group.memberCount || 0,
-  })
-
-  // Project/job/task trees (simplified — full tree logic in groups/[id]/page.tsx)
-  const projectJobTrees = projectResources.map((project) => {
-    const pMeta = (project.metadata ?? {}) as Record<string, unknown>
-    const jobs = jobOnlyResources.filter((job) => {
-      const jMeta = (job.metadata ?? {}) as Record<string, unknown>
-      return String(jMeta.projectId ?? jMeta.projectDbId ?? "") === project.id
-    })
-    const tasksByJob: Record<string, typeof taskResources> = {}
-    for (const job of jobs) {
-      tasksByJob[job.id] = taskResources.filter((task) => {
-        const tMeta = (task.metadata ?? {}) as Record<string, unknown>
-        return String(tMeta.jobId ?? tMeta.jobDbId ?? "") === job.id
-      })
-    }
-    const projectLevelTasks = taskResources.filter((task) => {
-      const tMeta = (task.metadata ?? {}) as Record<string, unknown>
-      return String(tMeta.projectId ?? tMeta.projectDbId ?? "") === project.id &&
-        !Object.values(tasksByJob).flat().some((t) => t.id === task.id)
-    })
-    return { project, jobs, tasksByJob, projectLevelTasks }
-  })
-  const assignedJobIds = new Set(projectJobTrees.flatMap((tree) => tree.jobs.map((job) => job.id)))
-  const assignedTaskIds = new Set(
-    projectJobTrees.flatMap((tree) => [
-      ...tree.projectLevelTasks.map((task) => task.id),
-      ...Object.values(tree.tasksByJob).flat().map((task) => task.id),
-    ])
-  )
-  const unassignedJobs = jobOnlyResources.filter((job) => !assignedJobIds.has(job.id))
-  const unassignedTasks = taskResources.filter((task) => !assignedTaskIds.has(task.id))
-
-  const header = (
-    <GroupProfileHeader
-      groupId={group.id}
-      name={group.name}
-      description={group.description}
-      avatar={group.image || "/placeholder.svg"}
-      coverImage={
-        typeof groupMeta.coverImage === "string" && groupMeta.coverImage
-          ? groupMeta.coverImage as string
-          : "/vibrant-garden-tending.png"
-      }
-      location={groupLocationText}
-      memberCount={members.length || group.memberCount || 0}
-      tags={group.chapterTags ?? []}
-      isAdmin={isGroupAdmin}
-      groupType={canonicalGroupType}
-      commissionBps={typeof groupMeta.commissionBps === "number" ? groupMeta.commissionBps as number : undefined}
-    >
-      <div className="flex items-center gap-2">
-        {isGroupAdmin && (
-          <Link href={getGlobalUrl(`/groups/${group.id}/settings`)}>
-            <Button variant="outline" size="sm">
-              <Settings className="h-4 w-4 mr-2" />
-              Edit Group
-            </Button>
-          </Link>
-        )}
-        {isMember && (
-          <Link href={`/messages?group=${group.id}`}>
-            <Button variant="outline" size="sm">
-              <MessageSquare className="h-4 w-4 mr-2" />
-              Chat
-            </Button>
-          </Link>
-        )}
-        <GroupActions
-          groupId={group.id}
-          groupName={group.name}
-          groupDescription={group.description}
-          ownerId={ownerId}
-        />
-        <GroupJoinControl
-          groupId={group.id}
-          groupName={group.name}
-          joinSettings={group.joinSettings}
-          initiallyJoined={isMember}
-        />
-      </div>
-    </GroupProfileHeader>
-  )
-
-  return (
-    <AgentPageShell
-      backHref="/"
-      backLabel=""
-      header={header}
-      structuredDataJson={structuredData ? serializeJsonLd(structuredData) : null}
-    >
-      <GroupTabsClient
-        groupId={group.id}
-        groupName={group.name}
-        groupDescription={group.description}
-        groupType={canonicalGroupType}
-        groupLocation={groupLocationText}
-        groupTags={groupTags}
-        groupContact={groupContact}
-        groupAdmins={groupAdmins.map((a) => ({ id: a.id, name: a.name }))}
-        groupCreatorName={groupCreator?.name ?? null}
-        isGroupAdmin={!!isGroupAdmin}
-        currentUserId={currentUserId}
-        membershipPlans={membershipPlans}
-        members={members.map((m) => ({ id: m.id, name: m.name, username: m.username, image: m.avatar }))}
-        authors={authors}
-        groupPostResources={groupPostResources}
-        eventResources={eventResources}
-        eventWindows={eventWindows}
-        domainGroups={domainGroups.map((d) => ({ id: d.id, name: d.name, description: d.description }))}
-        affiliatedGroups={[]}
-        projectJobTrees={projectJobTrees}
-        unassignedJobs={unassignedJobs}
-        unassignedTasks={unassignedTasks}
-        listingResources={listingResources}
-        governanceItems={governanceItems}
-        badgeResources={badgeResources}
-        stakeActivity={stakeActivity}
-        pressResources={pressResources}
-        documentResources={documentResources.map((r) => {
-          const meta = (r.metadata ?? {}) as Record<string, unknown>
-          return {
-            id: r.id,
-            title: r.name,
-            description: r.description || "",
-            content: typeof r.content === "string" ? r.content : "",
-            createdAt: r.createdAt,
-            updatedAt: r.updatedAt ?? r.createdAt,
-            createdBy: r.ownerId,
-            groupId: id,
-            tags: Array.isArray(meta.tags) ? (meta.tags as string[]) : [],
-            category: typeof meta.category === "string" ? meta.category : undefined,
-            showOnAbout: meta.showOnAbout === true,
-          }
-        })}
-        projectResources={projectResources}
-        jobResources={jobOnlyResources}
-        treasuryActivity={treasuryActivity}
-        publishActivity={publishActivity}
-        resourceCount={detail.resources.length}
-        passwordRequired={Boolean(group.joinSettings?.passwordRequired)}
-      />
-    </AgentPageShell>
-  )
 }
