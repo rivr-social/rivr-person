@@ -474,23 +474,30 @@ cd /workspace/cbx
 mkdir -p reference_audio
 curl -fsSL "${options.voiceSampleUrl}" -o /tmp/ref.audio && ffmpeg -y -i /tmp/ref.audio reference_audio/voice.wav
 # --- RIVR sidecar (bake + gpu-live animate): fetch fresh code every boot,
-# --- install deps resume-guarded in ISOLATED venvs, run in background. ---
+# --- start the server as soon as its own small venv exists (so /health is
+# --- honest during installs), then install the heavy engines in the
+# --- background — resume-guarded, ISOLATED venvs, keepalive-protected. ---
 mkdir -p /workspace/sidecar
 curl -fsSL "${options.workerSourceUrl}" -o /tmp/sidecar.py && mv /tmp/sidecar.py /workspace/sidecar/sidecar.py
-cat > /workspace/sidecar/install.sh <<'SIDECARINSTALL'
+cat > /workspace/sidecar/install-engines.sh <<'ENGINES'
 #!/bin/bash
 set -x
 exec >> /workspace/sidecar-install.log 2>&1
-if [ ! -f /workspace/sidecar/.venv-ready ]; then
-  python3 -m venv /workspace/sidecar-venv
-  /workspace/sidecar-venv/bin/pip install --no-cache-dir \
-    fastapi uvicorn pydantic numpy opencv-python-headless mediapipe==0.10.14 && \
-  touch /workspace/sidecar/.venv-ready
-fi
+# Keepalive: a first install must outlive the 35-min idle watchdog. Bounded
+# (12 x 240s = 48 min) so a wedged install can never keep the box alive.
+for i in $(seq 1 12); do date +%s > /workspace/last-used; sleep 240; done &
+KEEPALIVE=$!
+# gcc for source-built wheels (the pytorch runtime image ships no compiler).
+apt-get install -y build-essential
 if [ ! -f /workspace/LivePortrait/.deps-done ]; then
   [ -d /workspace/LivePortrait ] || git clone --depth 1 https://github.com/KwaiVGI/LivePortrait /workspace/LivePortrait
-  python3 -m venv /workspace/lp-venv
-  /workspace/lp-venv/bin/pip install --no-cache-dir -r /workspace/LivePortrait/requirements.txt && \
+  [ -d /workspace/lp-venv ] || python3 -m venv /workspace/lp-venv
+  # albumentations' loose albucore floor resolves to 2026 builds that pull
+  # numkong (source-only, AVX-512 flags this gcc rejects) — pin the last
+  # clean-wheel albucore.
+  echo "albucore==0.2.4" > /workspace/lp-constraints.txt
+  /workspace/lp-venv/bin/pip install --no-cache-dir \
+    -r /workspace/LivePortrait/requirements.txt -c /workspace/lp-constraints.txt && \
   /workspace/sidecar-venv/bin/pip install --no-cache-dir "huggingface_hub[cli]" && \
   /workspace/sidecar-venv/bin/huggingface-cli download KwaiVGI/LivePortrait \
     --local-dir /workspace/LivePortrait/pretrained_weights && \
@@ -498,9 +505,11 @@ if [ ! -f /workspace/LivePortrait/.deps-done ]; then
 fi
 if [ ! -f /workspace/Wav2Lip/.deps-done ]; then
   [ -d /workspace/Wav2Lip ] || git clone --depth 1 https://github.com/Rudrabha/Wav2Lip /workspace/Wav2Lip
-  # Reuses the base image's torch (system site packages); adds only extras.
-  python3 -m venv --system-site-packages /workspace/w2l-venv
-  /workspace/w2l-venv/bin/pip install --no-cache-dir librosa==0.10.2 opencv-python-headless numba tqdm && \
+  # Reuses the base image's torch (system site packages); librosa MUST be
+  # 0.9.x (Wav2Lip's positional filters.mel API) with its numpy 1.26 pairing.
+  [ -d /workspace/w2l-venv ] || python3 -m venv --system-site-packages /workspace/w2l-venv
+  /workspace/w2l-venv/bin/pip install --no-cache-dir \
+    "librosa==0.9.2" "numpy==1.26.4" opencv-python-headless numba tqdm && \
   mkdir -p /workspace/Wav2Lip/checkpoints /workspace/Wav2Lip/face_detection/detection/sfd && \
   curl -fsSL "https://huggingface.co/camenduru/Wav2Lip/resolve/main/checkpoints/wav2lip_gan.pth" \
     -o /workspace/Wav2Lip/checkpoints/wav2lip_gan.pth && \
@@ -508,9 +517,25 @@ if [ ! -f /workspace/Wav2Lip/.deps-done ]; then
     -o /workspace/Wav2Lip/face_detection/detection/sfd/s3fd.pth && \
   touch /workspace/Wav2Lip/.deps-done
 fi
-SIDECARINSTALL
-chmod +x /workspace/sidecar/install.sh
-nohup bash -c 'bash /workspace/sidecar/install.sh; pkill -f "sidecar/sidecar.py" || true; SIDECAR_PORT=8005 /workspace/sidecar-venv/bin/python /workspace/sidecar/sidecar.py' >> /workspace/sidecar.log 2>&1 &
+kill $KEEPALIVE 2>/dev/null
+ENGINES
+chmod +x /workspace/sidecar/install-engines.sh
+cat > /workspace/sidecar/launch.sh <<'LAUNCH'
+#!/bin/bash
+set -x
+exec >> /workspace/sidecar.log 2>&1
+if [ ! -f /workspace/sidecar/.venv-ready ]; then
+  python3 -m venv /workspace/sidecar-venv
+  /workspace/sidecar-venv/bin/pip install --no-cache-dir \
+    fastapi uvicorn pydantic numpy opencv-python-headless mediapipe==0.10.14 && \
+  touch /workspace/sidecar/.venv-ready
+fi
+SIDECAR_PORT=8005 /workspace/sidecar-venv/bin/python /workspace/sidecar/sidecar.py &
+bash /workspace/sidecar/install-engines.sh
+wait
+LAUNCH
+chmod +x /workspace/sidecar/launch.sh
+nohup bash /workspace/sidecar/launch.sh >/dev/null 2>&1 &
 # --- Idle self-stop (35 min without a synthesis touches last-used) ---
 cat > /workspace/idle.sh <<'WATCHDOG'
 #!/bin/bash
