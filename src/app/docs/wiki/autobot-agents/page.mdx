@@ -2,38 +2,214 @@
 
 ## What it is
 
-The agent control plane: personas (delegated actor identities under a controller
-account), connectors to external services, and the MCP surface that lets agents
-act on a user's behalf with full provenance logging. Autobot includes a chat
-surface and voice/TTS/transcription capabilities.
+Autobot is the assistant that lives on your instance — and, more importantly,
+the control plane that decides **what it may do on your behalf.**
 
-## Where it lives
+Four things sit under that heading:
 
-- `/autobot`, `/autobot/chat` — autobot UI · `src/app/(main)/autobot/**`
-- Autobot API · `src/app/api/autobot/**` (chat, status, settings, provenance, tts, voice, gpu)
-- MCP endpoint · `src/app/api/mcp/route.ts`; tool defs `src/lib/federation/mcp-tools/**`
+- **The assistant itself** — a chat you can talk to, which knows your profile,
+  your documents, and whatever knowledge graphs you've folded in.
+- **Personas** — additional named identities you own. A persona has its own
+  face, voice, personality sliders, and its own private knowledge graph.
+- **Connectors** — links to outside services (Google, Slack, Notion, Telegram…)
+  so the assistant can read and act there.
+- **MCP** — the protocol endpoint that lets an external AI agent act as you,
+  with every call written to a provenance log.
 
-## Every interaction
+The talking, animated version of the assistant has its own page:
+**[Live avatar & voice](/docs/wiki/live-avatar)**.
 
-- **Chat with autobot** — `/autobot/chat`; may be augmented with knowledge-graph
-  context (`rivr.kg.chat`).
-- **Manage personas** — list/create personas under the controller; switch the
-  active persona (`rivr.personas.list`).
-- **Connect a service** — add connectors (opaque, encrypted credentials) used by
-  builder DNS-write, feeds/bridges, and agent tools.
-- **Act-as over MCP** — an MCP bearer token authorizes tool calls as a specific
-  actor/controller; every call is written to the provenance log.
-- **Review provenance** — `rivr.audit.recent` / `/api/autobot/provenance`.
+## How to chat with your assistant
 
-## Permissions / gating
+1. Go to `/autobot/chat`, or use the floating assistant bubble that rides on
+   your profile.
+2. Type. The assistant answers with your own context available to it.
+3. Open the settings drawer to change the model, the voice mode, and which
+   persona knowledge graphs are folded into the main assistant's context.
 
-- MCP tools are gated by `enabledFor` (session and/or token); most allow token
-  auth, a few are session-only (e.g. account data export).
-- Personas are owned by their controller; tools resolve ownership against the
-  controller, not the persona.
-- Destructive/irreversible actions (e.g. account deletion) are withheld from MCP.
+> 📸 **Screenshot:** _The autobot chat page with the settings drawer open, showing the voice-mode switch and the persona knowledge-graph selector._ — capture at `/autobot/chat` (open the settings drawer). _(placeholder — remove when image added)_
 
-## Cross-links
+Model providers are configured by the instance, not per-conversation: OpenAI,
+Google, a connected Claude Code credential, or a local Ollama server.
 
-- API: [MCP tools](/docs/api) · [Auth models](/docs/api/auth) · [`/api/autobot` REST](/docs/api) · [`/api/mcp` REST](/docs/api) · [`/api/kg` REST](/docs/api)
-- Wiki: [Federation & SSO identity](/docs/wiki/federation-identity) · [Docs, filesystem & vault](/docs/wiki/docs-vault) · [Builder](/docs/wiki/builder)
+## How to create a persona
+
+A persona is a second identity you own — a character the assistant can speak as,
+with its own knowledge.
+
+1. Go to `/personas/new`.
+2. Fill in the character sheet:
+   - **Name** (required), **Tagline**, **Username**, **Pronouns**, **Bio**
+   - **Voice / speaking style** — *terse*, *warm*, *formal*, *technical*, or
+     *playful*
+   - **Language** and an **avatar image URL**
+   - **Operating mode** — see the gating table below
+   - **Skill sliders** (0–100): federation savvy, technical depth, organizing,
+     public voice, risk tolerance, creative output, conversational warmth, speed
+3. Save. Manage personas from `/profile?tab=personas` — `/personas` simply
+   redirects there.
+4. Edit later at `/personas/[id]/edit`.
+
+> 📸 **Screenshot:** _The persona creator's character sheet with the voice-style select and the skill sliders._ — capture at `/personas/new`. _(placeholder — remove when image added)_
+
+<Callout type="note" title="Switching into a persona changes the app">
+  When a persona is the active actor, `/settings` stops showing the normal
+  settings tabs and becomes that persona's editor instead. The **Assistant** tab
+  is hidden while a persona is active, and the email field is locked with
+  "Email is shared with your main account and can only be changed there."
+</Callout>
+
+### Persona knowledge graphs
+
+Each persona has its own scoped knowledge graph, reachable at
+`/api/personas/[id]/kg/{docs,graph,stats,chat}`. You can list and create docs in
+that scope, query the subgraph, read counts, or chat against it directly. All of
+them refuse politely if the persona isn't yours — a persona you don't own is
+reported as *not found*, so existence isn't leaked.
+
+## How the assistant is allowed to act
+
+Every action the assistant can take is classified by risk, and each persona runs
+in one of three **operating modes**:
+
+| Mode | Behaviour |
+| --- | --- |
+| `direct-only` | Acts without asking, within its allowed set |
+| `approval-required` | Queues an approval before acting |
+| `delegated` | Broadest autonomy |
+
+Risk is mapped per action — reading the knowledge graph is *low*, creating a
+post is *medium*, and anything financial, destructive, or membership-changing is
+*high*.
+
+<Callout type="warning" title="The approvals queue has no screen yet">
+  Approvals are created, stored, and resolvable through
+  `/api/autobot/approvals` and `/api/autobot/approvals/[id]/resolve`, and the
+  decision history is queryable at `/api/autobot/audit-log`. **There is no
+  approvals UI in this app** — nothing renders that queue today. Don't confuse
+  it with *device approvals* (Settings → Assistant → Access), which is a
+  different feature for MCP login codes.
+</Callout>
+
+## How to connect an outside service
+
+1. Go to `/settings` → the **Assistant** tab → **Connectors**.
+2. Pick a service and press connect. You're sent to that provider's consent
+   screen and returned here.
+
+The user-connectable set is: **Google Docs, Google Calendar, Gmail, Notion,
+Telegram, WhatsApp Business, Signal, Slack, Facebook, Instagram, Substack, Luma,
+and X**. A second group — **Cloudflare, Squarespace, Namecheap** — exists for
+DNS writes and is used by the [Builder](/docs/wiki/builder).
+
+> 📸 **Screenshot:** _The Connectors panel under Settings → Assistant, showing connected and unconnected providers._ — capture at `/settings?tab=agent-hq` (open the **Connectors** inner tab). _(placeholder — remove when image added)_
+
+Beyond OAuth, each connector supports three operations:
+
+- **Setup** — supply credentials or configuration by hand (this is how Telegram
+  bot tokens are validated).
+- **Test** — check the stored credential against the live provider.
+- **Sync** — pull data in. Not every connector implements it; those return a
+  clear *"Sync is not implemented for this connector yet."*
+
+<Callout type="warning" title="Not every connector encrypts its config at rest">
+  OAuth tokens live in the accounts table. Connector *config* values are stored
+  in the agent's metadata, and only four providers — **Claude Code, Cloudflare,
+  Squarespace, Namecheap** — currently run their secrets through the encryption
+  envelope. Secrets are always redacted on the way back out to the browser
+  (you'll see `__stored__`, never the value). Instance operators should set
+  `CONNECTOR_ENCRYPTION_KEY` explicitly in production; otherwise the key is
+  derived from `AUTH_SECRET`, and rotating that would make stored secrets
+  undecryptable.
+</Callout>
+
+## How to let an external agent act as you (MCP)
+
+1. Go to `/settings` → **Assistant** → **Access** and mint an MCP token.
+2. Point your agent at `POST /api/mcp` with that token as a bearer credential.
+   Discovery is advertised at `/.well-known/mcp`.
+3. For a device that can't hold a browser session, use the device flow: the
+   device shows a code, you approve it at `/mcp/authorize?user_code=XXXX-XXXX`,
+   and it's issued a token. Pending codes also appear under **Access → Device
+   Approvals**.
+
+> 📸 **Screenshot:** _The MCP device authorization page showing "Authorize MCP Access", the signed-in identity, and the Approve / Deny buttons._ — capture at `/mcp/authorize?user_code=XXXX-XXXX`. _(placeholder — remove when image added)_
+
+Current tools: `get_context`, `list_personas`, `get_my_profile`, `audit.recent`,
+`update_basic`, `create_post`, `create_live_invite`, `join_group`, `rsvp_event`,
+`append_transcript`.
+
+**Every tool call is logged** to the provenance log with a full audit trail —
+that is the point of the design, and no tool is allowed to bypass it.
+
+## Good to know
+
+- **Personas resolve ownership against their controller**, not against
+  themselves — a tool acting as your persona is authorised as you.
+- **Irreversible actions are withheld from MCP.** Account deletion is
+  interactive-UI-only with typed confirmation.
+- **Everything under `/api/autobot`, `/api/personas` and `/api/agent-hq` is
+  owner-only** at the edge. A federated visitor browsing your instance is
+  refused before the handler runs.
+- **Digital-twin uploads still work; the video pipeline does not.** You can
+  upload host video, reference portraits, idle video, and background plates
+  (up to 32 assets). The generative video-render pipeline that used to consume
+  them was removed on 2026-07-22 — it drove a worker that never existed in this
+  repo, and the [live-avatar lane](/docs/wiki/live-avatar) supersedes it.
+
+## Under the hood
+
+**Pages**
+
+- `/autobot/chat` · `src/app/(main)/autobot/chat/page.tsx`
+- `/personas` (redirects to `/profile?tab=personas`), `/personas/new`,
+  `/personas/[id]/edit`
+- `/mcp/authorize` · `src/app/mcp/authorize/page.tsx`
+- `/auth-setup` · the Claude Code terminal-relay login wizard
+- `/session-record` · browser speech-recognition recorder that saves a transcript
+  as a document resource
+
+**API**
+
+- Chat & state: `/api/autobot/{chat,status,settings,context,identity,ollama}`
+- Provenance: `/api/autobot/{provenance,audit-log}`
+- Governance: `/api/autobot/approvals`, `/api/autobot/approvals/[id]/resolve`
+- Knowledge: `/api/autobot/kg/ingest`, `/api/kg/{chat,docs,graph}`,
+  `/api/kg/docs/[id]/push`
+- Personas: `/api/personas/[id]/kg/{chat,docs,graph,stats}`
+- Connectors: `/api/autobot/connections`,
+  `/api/autobot/connections/[provider]/{setup,sync,test}`, plus OAuth
+  `connect`/`callback` pairs for apple, discord, dropbox, facebook, google,
+  instagram, notion, slack, zoom and a generic `oauth2`; `telegram/link`
+- Assets: `/api/autobot/digital-twin/upload`
+- MCP: `/api/mcp`, `/api/mcp/token`, `/api/mcp/device/{code,approve}`,
+  `/api/mcp/device/poll/[deviceCode]`
+
+**Libraries**
+
+- `src/lib/autobot-connectors.ts` · `src/lib/autobot-connector-secrets.ts` ·
+  `src/lib/autobot/policy-engine.ts` · `src/lib/autobot/with-approval-check.ts` ·
+  `src/lib/persona-config.ts` · `src/lib/federation/mcp-tools/**`
+
+### About "Agent HQ"
+
+You'll see the name in URLs (`/settings?tab=agent-hq`) and across
+`/api/agent-hq/**`. It is **not a page** — there is no `/agent-hq` route here.
+What survives of it is split in two:
+
+- Its per-agent tabs were re-homed into **Settings → Assistant** (Identity,
+  Roles, Knowledge, Voice, Access, Connectors).
+- Its filesystem/vault half surfaces as the **Docs tab** on your profile — see
+  [Docs & vault](/docs/wiki/docs-vault).
+
+The remaining routes — tmux-backed agent terminal sessions, teams, launchers,
+session templates — are **API-only host-operator surface** with no page in this
+app, and they refuse entirely unless the instance is sovereign
+(*"Agent terminal control is only available on sovereign instances."*).
+
+**Cross-links**
+
+- [Live avatar & voice](/docs/wiki/live-avatar) ·
+  [Docs & vault](/docs/wiki/docs-vault) · [Builder](/docs/wiki/builder) ·
+  [Account & settings](/docs/wiki/account-settings) ·
+  [Auth models](/docs/api/auth)

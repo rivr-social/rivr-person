@@ -1,42 +1,153 @@
-# Calendar & events
+# Calendar, events & meetings
 
 ## What it is
 
-The scheduling surfaces: a calendar of events, event detail with RSVP and
-ticketing, financials for paid events, and a scheduling/find-time helper. Events
-can be place-scoped and (for groups) tied to meeting/transcript documents.
+Three related things:
 
-## Where it lives
+- **Your calendar** — everything you're doing, on a day/week/month grid.
+- **Events** — things with a date that other people can register for, buy
+  tickets to, and talk about.
+- **Meetings** — live video rooms, with recording and speaker-identified
+  transcripts.
 
-- `/calendar` — calendar · `src/app/(main)/calendar/page.tsx`
-- `/events`, `/events/[id]` — list + detail · `src/app/events/**`
-- `/events/[id]/tickets`, `/registered`, `/financials`, `/edit` — event sub-surfaces
-- `/events/find-time` — scheduling helper · `src/app/events/find-time/page.tsx`
-- `/create` — event composer (event mode)
+## How to use your calendar
 
-## Every interaction
+Open **`/calendar`**. The heading is *My Calendar* and there are four views:
+**Day**, **Week** (the default), **Month**, and **Agenda** — the last showing
+the next seven days as *Upcoming Events*.
 
-- **Browse the calendar** — jobs and events appear on their real dates; filter by
-  kind, group, and member.
-- **Create an event** — title, location, place scope; optional ticketing. A
-  single date-time range selector sets the event's start and end (a range
-  calendar plus start/end times in one popover) on both the create and edit
-  surfaces, replacing the old separate date + time inputs.
-- **RSVP** — set status going / interested / none.
-- **Buy tickets / view registered** — paid events route to tickets and a
-  registered-attendee view; organizers see financials.
-- **Edit** — organizers edit event details.
-- **Append transcript** — group meeting events accrue a linked transcript document.
+The toolbar has **New Event**, a **Filter** popover, and prev / **Today** / next
+navigation.
 
-## Permissions / gating
+<Callout type="note" title="Two calendars, one of them better connected">
+  `/calendar` isn't linked from any menu — the app's own navigation sends you to
+  your profile's **Calendar** tab instead, which is where cross-instance items
+  land. In particular, when you claim a job on another instance, that claim is
+  projected onto your profile calendar as a green entry linking back to the
+  remote job. The Filter popover on `/calendar` currently offers only one
+  checkbox, **Events** — shifts and tasks were removed because there's no data
+  model behind them yet.
+</Callout>
 
-- **Public** event pages (`/events` is a public prefix); `/calendar` is public.
-- **RSVP / ticket purchase** require a session.
-- **Edit / financials** are organizer/admin-scoped.
-- Location detail may be gated per event settings.
+## How to create an event
 
-## Cross-links
+1. Go to `/create` and pick the **Event** tab (or `/create?tab=event`).
+2. Fill in the name and description, and set the date and time with the single
+   range selector — a range calendar plus start and end times in one popover.
+3. Open the collapsed sections you need: **location or meeting link**, **venue
+   booking**, **tickets**, **sessions**. Then hosts, payouts, visibility scope,
+   and an image.
+4. Publish. Your event gets a page at `/events/[id]`.
 
-- API/MCP: [Events tools](/docs/api) · [`rivr.events.rsvp`, `rivr.events.append_transcript`](/docs/api) · [`/api/transcription` REST](/docs/api) · [`/api/live-invitations`](/docs/api)
-- Wiki: [Groups & subgroups](/docs/wiki/groups) · [Feeds & posts](/docs/wiki/feeds-posts) (live invites) · [Wallet & treasury](/docs/wiki/wallet-treasury)
-- Integrations: Google Calendar pull via the `gcal-pull` cron.
+## How to run an event
+
+The event page has tabs — **About**, **Attendees**, **Discussion**,
+**Announcements**, **Financials** — plus a registration block and a toolbar for
+sharing and adding to a calendar.
+
+| You want to… | Go to |
+| --- | --- |
+| See who's coming | the **Attendees** tab |
+| Change details | `/events/[id]/edit` |
+| Check money | `/events/[id]/financials` |
+| Sell or check tickets | `/events/[id]/tickets` |
+| Confirm your own registration | `/events/[id]/registered` |
+
+Attendees who register see a *You're registered!* confirmation page.
+
+<Callout type="note" title="There is no events index">
+  `/events` redirects to the home feed's Events tab (`/?tab=events`). That feed
+  is the listing surface. `/events/find-time` does **not** exist — an earlier
+  version of this page claimed a scheduling helper that was never in this app.
+</Callout>
+
+## How to join a video meeting
+
+Meetings run on LiveKit.
+
+1. Open **`/meetings/[roomName]`**. You get a pre-join screen titled **Join
+   Meeting**.
+2. Press **Join**. The app requests a token for that room and connects you.
+3. Inside you get the video grid, audio and video toggles, screen sharing, a
+   chat sidebar, a recording indicator, and a leave button.
+4. Use the copy button to share the room link with someone else.
+
+> 📸 **Screenshot:** _A meeting room mid-call — video grid, control bar with mic/camera/screen-share toggles, and the chat sidebar open._ — capture at `/meetings/[roomName]` (join a room). _(placeholder — remove when image added)_
+
+<Callout type="warning" title="You cannot create a meeting from this app's UI">
+  The room APIs are complete and working, but **nothing in this app's interface
+  calls them**: no button creates a room, no page links to `/meetings/…`, and
+  the create-event form's "meeting link" field is free text, not a room creator.
+  Today a room name has to come from outside — an API call, or a URL someone
+  sends you — and then you visit `/meetings/<roomName>` directly. If LiveKit
+  isn't configured on the instance, every meeting route returns 503.
+</Callout>
+
+## How transcripts work
+
+Transcription is **not** LiveKit recording. It's a separate loop: your browser
+records audio, uploads it, and a Whisper service transcribes it.
+
+1. On an event page, find the transcript panel. (It only renders for events tied
+   to a group.)
+2. Optionally type a **Speaker label**.
+3. Press **Record transcript**. The button becomes **Stop recording**, then the
+   status walks through *Uploading audio…* → *Transcribing with WhisperX…* →
+   *Transcription complete*.
+4. You get timestamped segments with a detected-language badge.
+5. Press **Push to KG** to feed the transcript into the knowledge graph.
+
+**Speaker identification:** if you didn't supply a label, the server reads the
+diarized segments, counts who spoke most, and attributes the transcript to that
+dominant speaker.
+
+The model is two-level: **each contributor has their own personal transcript
+document**, and the event carries an **aggregate** assembled from all of them,
+with a contributor list.
+
+<Callout type="tip" title="Transcribing something that isn't an event">
+  `POST /api/transcription` does the same job for any audio and files the result
+  as a document in your faceted vault — you can give it a title and a facet
+  path. See [Docs & vault](/docs/wiki/docs-vault).
+</Callout>
+
+## Good to know
+
+- **"Virtual" is guessed, not declared.** An event is treated as virtual when
+  its location text contains *zoom*, *virtual*, or *online*. There's no flag.
+- **Live invitations** are a different thing: a post marked as a live invitation
+  shares your location for one hour and surfaces through
+  `GET /api/live-invitations`. See [Feeds & posts](/docs/wiki/feeds-posts).
+- Event pages are public; registering, buying tickets, and editing are not.
+
+## Under the hood
+
+**Pages**
+
+- `/calendar` · `src/app/(main)/calendar/page.tsx`
+- `/events` (redirect) · `/events/[id]` · `/events/[id]/{edit,financials,registered,tickets}`
+- `/meetings/[roomName]` · `src/app/(main)/meetings/[roomName]/page.tsx`
+  (`@livekit/components-react`)
+- Composer · `/create?tab=event` · `src/lib/create-tabs.ts`
+
+**API**
+
+- `GET`/`POST /api/meetings` — list rooms (`mtg-` prefix), create a room + host token
+- `POST /api/meetings/[roomName]/token` — a join token
+- `GET`/`POST`/`DELETE /api/meetings/[roomName]/livestream` — RTMP egress
+- `GET`/`POST /api/events/[id]/meeting` — create or read the room bound to an event
+- `GET`/`POST /api/events/[id]/transcribe` — personal + aggregate transcripts
+- `POST /api/transcription` — generic audio → vault document
+- `GET /api/live-invitations`
+
+**Configuration**
+
+- `LIVEKIT_URL` / `LIVEKIT_WS_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
+- `WHISPER_TRANSCRIBE_URL` (+ key and model), or `OPENAI_API_KEY` with
+  `OPENAI_TRANSCRIPTION_MODEL`; a local Whisper fallback exists server-side
+- Room prefixes: `mtg-` meetings, `evt-` event rooms, `live-` livestreams
+
+**Cross-links**
+
+- [Feeds & posts](/docs/wiki/feeds-posts) · [Docs & vault](/docs/wiki/docs-vault) ·
+  [Wallet & money](/docs/wiki/wallet-treasury)

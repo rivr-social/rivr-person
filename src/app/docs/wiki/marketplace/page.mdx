@@ -1,39 +1,229 @@
-# Marketplace & gifts
+# Marketplace
 
 ## What it is
 
-The marketplace lets agents list offerings and buyers purchase them via Stripe,
-with receipts and confirmation flows. Alongside paid exchange, RIVR supports
-gift/mutual-aid economy through thanks-tokens. Membership products are also sold
-here.
+The marketplace is where offerings — products, services, bookable time — are
+listed and bought. On this sovereign person instance it plays **two roles at
+once**, and it helps to keep them apart:
 
-## Where it lives
+- **You as buyer.** You open a listing, pick a payment method, see exactly what
+  you will be charged, and pay. Card, wallet balance, and (for crypto-priced
+  listings) one-signature USDC all land here.
+- **You as seller.** Your own offerings live on your profile's **Offerings**
+  tab. Before anyone can pay you by card you must finish Stripe Connect
+  onboarding from Settings — until then card checkout on your listings is
+  refused with a reason.
 
-- `/marketplace`, `/marketplace/[id]` — listings · `src/app/(main)/marketplace/**`
-- `/marketplace/[id]/purchase`, `/confirmed`, `/receipt/[receiptId]` — checkout flow
-- `/products/membership-*` — membership products · `src/app/products/**`
-- `/profile/purchases` — purchase history · `src/app/(main)/profile/purchases/page.tsx`
+There is no marketplace *index* on this instance. A person instance hosts one
+person, so `/marketplace` is a bare redirect to the home feed's Mart tab
+(`/?tab=marketplace`); browsing happens there and on the global aggregator.
+Individual listings render here at `/marketplace/[id]`.
 
-## Every interaction
+## How to buy something
 
-- **Browse / open a listing.**
-- **Save a listing** — add to saved listings.
-- **Purchase** — Stripe checkout. The buyer identity is derived **server-side**
-  from the session (never from client input); on success a receipt resource is
-  created and shown at `/marketplace/[id]/confirmed` → `/receipt/[receiptId]`.
-- **Create an offering/listing** — sellers (with the seller membership) create
-  listings.
-- **Send thanks tokens** — gift one or more thanks tokens to another agent,
-  optionally attaching a message or the resource being thanked.
+1. Open a listing at `/marketplace/[id]`. You'll see the offering, the seller,
+   quantity, and — if the seller published a bookable schedule — a slot picker.
+2. Press the primary action (its label follows the listing type — e.g. *Buy*,
+   *Book*, *Claim Voucher*). You land on `/marketplace/[id]/purchase`.
+3. Choose a **payment method**. The selector shows up to three:
+   - **Card** — always offered. Stripe hosted checkout. If the seller hasn't
+     enabled card payments you get their reason inline instead of a button.
+   - **Rivr Wallet** — shown only when you're signed in **and** your balance is
+     above zero. If the balance is under the total, checkout stays disabled and
+     the error names both numbers.
+   - **Crypto Wallet** — shown only when the seller priced the listing in `USDC`
+     or `ETH`; USDC listings carry the sub-label *"Pay with USDC on Base"*. If
+     you have no crypto address on file the row appears but is disabled.
+4. Read the **Order Summary**. It shows the line item, a single **Platform fee**
+   row, and the **Total**. The fee row changes with your payment method — see
+   [What you actually pay](#what-you-actually-pay) below.
 
-## Permissions / gating
+> 📸 **Screenshot:** _The purchase page's Order Summary with the payment-method selector above it — card selected, showing the Platform fee row and Total._ — capture at `/marketplace/[id]/purchase` (select **Card**). _(placeholder — remove when image added)_
 
-- **Public** listing browse (`/marketplace`, `/products` are public prefixes).
-- **Buying** requires a session; **selling** typically requires the seller
-  membership tier.
-- Checkout buyer metadata is set server-side (security-hardened, issue #101).
+> 📸 **Screenshot:** _The same Order Summary with **Wallet** selected, so the Platform fee row shows the smaller wallet-path figure._ — capture at `/marketplace/[id]/purchase` (click the **Wallet** payment method). _(placeholder — remove when image added)_
 
-## Cross-links
+5. Press checkout. Card sends you to Stripe; wallet settles in-app; crypto asks
+   your wallet for **one** signature.
+6. You land on **Purchase Successful!** at `/marketplace/[id]/confirmed`, with an
+   order number, a **Contact seller** button, **View My Purchases**, and
+   **Back to Mart**.
 
-- API/MCP: [Offerings tools](/docs/api) · [Mutual Economy tools](/docs/api) (thanks, points) · [`rivr.thanks.send`](/docs/api) · [`/api/stripe` REST](/docs/api) · [`/api/billing` REST](/docs/api)
-- Wiki: [Wallet & treasury](/docs/wiki/wallet-treasury) · [Account & settings](/docs/wiki/account-settings)
+> 📸 **Screenshot:** _The "Purchase Successful!" confirmation page with the Order Number row and the Contact seller / View My Purchases buttons._ — capture at `/marketplace/[id]/confirmed`. _(placeholder — remove when image added)_
+
+7. Your itemised receipt lives at `/marketplace/[id]/receipt/[receiptId]` —
+   **Date**, an optional **Booked Window**, then **Subtotal**, **Fees**, and
+   **Total**, plus the payment id and email. If the purchase is completed and
+   has a Stripe payment intent, a **Request Refund** button appears; the state
+   then moves to *Refund Requested* and finally *Refunded*.
+
+<Callout type="warning" title="The confirmation page's order number is cosmetic">
+  It is built as `ORD-` plus the first eight characters of the **listing** id,
+  and the date shown is the moment the page rendered — not the purchase
+  timestamp. Use the receipt page (and its **Payment ID** row) as the
+  authoritative record.
+</Callout>
+
+### Buying without an account
+
+You can start a purchase signed out. At checkout you're offered a choice: sign
+in, or continue as a guest. **Guest always routes to card** — Stripe handles
+guest identity — because wallet and crypto need an account to settle against.
+
+## What you actually pay
+
+RIVR quotes a **seller-net** price: the seller receives the number on the
+listing, and everything else is grossed up onto the buyer total. One unified
+margin applies to every transaction type on the fleet.
+
+| Component | Value | Constant |
+| --- | --- | --- |
+| RIVR margin (%) | **3.30%** of the seller price | `MARKETPLACE_FEE_BPS = 330` |
+| RIVR margin (flat) | **$1.49** | `PLATFORM_MARGIN_FIXED_CENTS = 149` |
+| Card processing | 2.9% + 30¢, grossed up so it lands on the buyer | `STRIPE_CARD_PERCENT_BPS`, `STRIPE_CARD_FIXED_CENTS` |
+| Connect account overhead | 5% of the seller price, **capped at $2.00** | `CONNECT_OVERHEAD_RECOVERY_BPS = 500` |
+
+That overhead **taper** is the part worth understanding: Stripe's ~$2/month
+active-account cost used to be recovered as a flat $2 on every purchase, which
+made small carts absurd (a $6 item carried a $2.86 buyer fee). It now scales at
+5% and caps at $2, so a $6 cart recovers 30¢ while **every cart at or above $40
+is priced exactly as before**.
+
+The paths differ in what the summary shows you:
+
+- **Card** — the full grossed-up difference between the seller's price and your
+  total (`buyerPlatformFeeCents`). Everything in the table above is inside it.
+- **Wallet** — the RIVR margin only (`platformFeeCents`), and **only on
+  `product` listings**; wallet purchases of anything else show no platform fee
+  at all. There's no card network to pay, so there's no processing gross-up.
+- **Crypto** — a different formula again: a flat **3.3% and nothing else**. No
+  $1.49, no Connect overhead, no card gross-up. The relayer's gas is treated as
+  the platform's cost of goods.
+
+<Callout type="note" title="The buyer breakdown is deliberately coarse">
+  You see two money lines — *Platform fee* and *Total* — not five. Stripe
+  processing, Connect overhead, org commission and referral splits all exist in
+  `CheckoutFeeResult` and travel in the Stripe session metadata, but none of
+  them is itemised in the buyer UI. The receipt is similarly coarse: a single
+  **Fees** line.
+</Callout>
+
+<Callout type="warning" title="A per-instance fee override can make the preview differ from the charge">
+  The purchase page computes its preview with the default 3.3% + $1.49. The
+  server route resolves a `marketplaceFeePolicy` first (a per-listing,
+  owner-group or instance-group override, clamped to 0–5000 bps) and charges
+  with that. When a non-default policy applies, the displayed fee and the
+  charged fee can disagree.
+</Callout>
+
+<Callout type="note" title="Cross-border corridors are priced elsewhere">
+  The shared fee engine (`src/lib/checkout-fees.ts`) understands three seller
+  payout corridors — `domestic`, `connect_cross_border` (0.25% + 25¢) and
+  `global_payouts` ($1.50 flat + 1.25% volume + 1% FX) — and grosses them onto
+  the buyer so the seller still nets face value. **On this instance nothing
+  passes a corridor**: the purchase page calls `calculateCheckoutFees` with no
+  `payoutCorridor`, so it defaults to `domestic` and no surcharge is added.
+  Corridor pricing is applied by the instance that knows the seller's payout
+  country — the seller's own home, or global. There is no payout-country picker
+  here, because a person instance is buyer-side for other people's listings.
+</Callout>
+
+## How to pay in USDC
+
+The crypto lane is a **one-signature** checkout — you never send a transaction
+yourself, and you never approve a spender.
+
+1. On a listing priced in `USDC`, pick **Crypto Wallet**.
+2. The app asks `POST /api/crypto/checkout` for a `quote`. The server computes
+   the split — price, platform fee, seller address — entirely from the listing.
+   **The client never authors amounts or recipients.**
+3. You sign the returned EIP-3009 typed data. A salt binds your signature to
+   that exact split. **The quote is valid for 15 minutes.**
+4. The app posts `submit`. The server **recomputes the same split and rejects
+   any drift**, then relays your signed authorization through the RivrSplitter
+   contract. On-chain success writes a receipt and a ledger row.
+
+**Networks:** Base mainnet and Base Sepolia only, chosen server-side from
+`CRYPTO_NETWORK`.
+
+<Callout type="warning" title="USDC only, despite what the selector offers">
+  The payment selector shows the crypto option for listings priced in `USDC`
+  **or** `ETH`, but `/api/crypto/checkout` serves USDC only — an ETH-priced
+  listing is rejected with *"Listing not found, not USDC-priced, or seller has
+  no crypto address."* One-signature mode also requires the splitter to be
+  enabled; otherwise the client falls back to a two-transfer MetaMask flow.
+</Callout>
+
+## How to sell
+
+1. Go to `/settings` → the **Seller** tab. The card is called **Stripe USD
+   Wallet**. Press **Set Up Stripe USD Wallet** and complete Stripe's hosted
+   Express onboarding.
+2. Come back and check the three status rows — **Details submitted**, **Charges
+   enabled**, **Payouts enabled**. The card badges **Active** only when charges
+   *and* payouts are both enabled, otherwise **Limited**. If you left onboarding
+   half-finished the button reads **Complete Setup**.
+3. Create the offering from `/create`. It appears on your profile's
+   **Offerings** tab.
+4. Sales show up under your profile's **Wallet** tab → **Sales** sub-view,
+   alongside your available and pending Stripe balances.
+
+> 📸 **Screenshot:** _The Seller tab's "Stripe USD Wallet" card showing the Details submitted / Charges enabled / Payouts enabled status rows and the Active badge._ — capture at `/settings` (open the **Seller** tab). _(placeholder — remove when image added)_
+
+<Callout type="warning" title="No Connect account, no card checkout">
+  Until Connect onboarding is complete, `listing.cardCheckoutAvailable` is
+  false and buyers see your reason string instead of a card button. Wallet and
+  crypto paths are unaffected.
+</Callout>
+
+## Good to know
+
+- **Buyer identity is always server-derived.** Card, wallet and crypto all key
+  the purchase to the session principal (or, for a federated visitor, the
+  unified-session principal with first-contact projection). Client-supplied
+  buyer metadata is never trusted.
+- **You cannot buy your own listing** — the server refuses it.
+- **Bookable listings block checkout until you pick a valid slot.**
+- **Quantity is capped** by the listing's available stock; when it reaches zero
+  the checkout button disables.
+- Checkout is rate-limited per client IP (marketplace checkout is IP-keyed
+  rather than user-keyed precisely so guests can buy).
+- **Federated listings bounce home.** Opening a mirrored listing redirects you
+  to the instance that actually owns it.
+- Card sales settle into RIVR-managed capital accounts; Stripe Connect is the
+  payout rail, not the ledger.
+- Membership products are sold on their own pages — see
+  [Wallet & money](/docs/wiki/wallet-treasury).
+
+## Under the hood
+
+**Pages**
+
+- `/marketplace/[id]` · `src/app/marketplace/[id]/page.tsx`
+- `/marketplace/[id]/purchase` · `purchase/page.tsx` + `purchase-client.tsx`
+- `/marketplace/[id]/confirmed` · `confirmed/page.tsx`
+- `/marketplace/[id]/receipt/[receiptId]` · `receipt/[receiptId]/page.tsx`
+- Browse entry point: `/?tab=marketplace` (home feed Mart tab)
+
+**Fee engine**
+
+- `src/lib/checkout-fees.ts` — `calculateCheckoutFees`,
+  `estimateStripeProcessingFeeCents`, `grossUpForStripeCents`; corridor
+  constants `CROSS_BORDER_TRANSFER_BPS` (25), `CROSS_BORDER_PAYOUT_FLAT_CENTS`
+  (25), `GLOBAL_PAYOUT_FLAT_CENTS` (150), `GLOBAL_PAYOUT_VOLUME_BPS` (125),
+  `GLOBAL_PAYOUT_FX_BPS` (100)
+- `src/lib/wallet-constants.ts` — `MARKETPLACE_FEE_BPS`, `BPS_DIVISOR`
+- Tests: `src/lib/__tests__/checkout-fees.test.ts`
+
+**API**
+
+- `POST /api/stripe/marketplace-checkout` — Connect-settled listing checkout
+- `POST /api/stripe/checkout` · `POST /api/stripe/payment-intent`
+- `POST /api/stripe/connect` — seller onboarding link
+- `POST /api/stripe/webhook` — settlement, receipts, membership grants
+- `POST /api/crypto/checkout` — `quote` + `submit` (RivrSplitter, EIP-3009)
+- `src/components/payment-method-selector.tsx` —
+  `PaymentMethod = "card" | "wallet" | "crypto"`
+
+**Cross-links**
+
+- [Wallet & money](/docs/wiki/wallet-treasury) · [Account & settings](/docs/wiki/account-settings) · [Feeds & posts](/docs/wiki/feeds-posts)

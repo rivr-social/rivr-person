@@ -22,36 +22,42 @@ export const WIKI_SECTIONS: NavSection[] = [
   {
     title: "Personas & agents",
     links: [
+      { href: "/docs/wiki/live-avatar", label: "Live avatar & voice" },
       { href: "/docs/wiki/autobot-agents", label: "Autobot & agents" },
       { href: "/docs/wiki/builder", label: "Builder" },
-      { href: "/docs/wiki/docs-vault", label: "Docs, filesystem & vault" },
-      { href: "/docs/wiki/badges-stake", label: "Badges & stake" },
     ],
   },
   {
-    title: "Core surfaces",
+    title: "Your content",
     links: [
       { href: "/docs/wiki/feeds-posts", label: "Feeds & posts" },
-      { href: "/docs/wiki/explore-search", label: "Explore & search" },
-      { href: "/docs/wiki/calendar-events", label: "Calendar & events" },
+      { href: "/docs/wiki/docs-vault", label: "Docs & vault" },
+      { href: "/docs/wiki/calendar-events", label: "Calendar, events & meetings" },
       { href: "/docs/wiki/messages", label: "Messages" },
-      { href: "/docs/wiki/marketplace", label: "Marketplace & gifts" },
-      { href: "/docs/wiki/wallet-treasury", label: "Wallet & treasury" },
     ],
   },
   {
-    title: "Community & place",
+    title: "Money",
     links: [
-      { href: "/docs/wiki/groups", label: "Groups & subgroups" },
-      { href: "/docs/wiki/locales-regions", label: "Locales & regions" },
+      { href: "/docs/wiki/marketplace", label: "Marketplace" },
+      { href: "/docs/wiki/wallet-treasury", label: "Wallet & money" },
     ],
   },
   {
-    title: "Identity & account",
+    title: "Identity & instance",
     links: [
-      { href: "/docs/wiki/federation-identity", label: "Federation & SSO identity" },
       { href: "/docs/wiki/account-settings", label: "Account & settings" },
-      { href: "/docs/wiki/admin", label: "Admin" },
+      { href: "/docs/wiki/federation-identity", label: "Federation & identity" },
+      { href: "/docs/wiki/admin", label: "Instance owner" },
+      { href: "/docs/wiki/badges-stake", label: "Badges" },
+    ],
+  },
+  {
+    title: "Hosted elsewhere",
+    links: [
+      { href: "/docs/wiki/groups", label: "Groups" },
+      { href: "/docs/wiki/explore-search", label: "Discovery & search" },
+      { href: "/docs/wiki/locales-regions", label: "Places" },
     ],
   },
 ];

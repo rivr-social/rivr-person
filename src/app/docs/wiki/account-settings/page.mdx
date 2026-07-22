@@ -2,51 +2,196 @@
 
 ## What it is
 
-Personal account management: profile editing, avatar/cover, notification
-preferences, public-profile tab visibility, billing, outgoing-email
-configuration, and full data export (account sovereignty).
+`/settings` is where you configure yourself and your instance: who you are,
+what's public, how you get email, your seller account, your custom domain, and
+your recovery key.
 
-Every control on this surface is wired to something. As of 2026-07-22 the
-settings form no longer offers preferences this app cannot honour — the
-write-only privacy/ZK matrix, the text-size and colour-theme pickers, and the
-push/event-reminder/new-message toggles were removed rather than left looking
-functional. Privacy is expressed where it is actually enforced: per-tab
-visibility on your public profile, plus the visibility you choose on each post,
-offering, or document as you create it.
+Every control on this surface is wired to something real. In a deliberate
+truth-in-UI pass, preferences this app cannot honour were **removed rather than
+left looking functional** — the write-only privacy matrix, the text-size and
+colour-theme pickers, and the push / event-reminder / new-message toggles are
+all gone. What's left does what it says.
 
-## Where it lives
+## The tabs
 
-- `/settings` — settings · `src/app/settings/page.tsx`
-- `/settings/outgoing-email` — SMTP/outgoing email · `src/app/settings/outgoing-email/page.tsx`
-- `/profile` — own profile · `src/app/(main)/profile/page.tsx`
-- `/notifications` — notifications · `src/app/(main)/notifications/page.tsx`
+Nine tabs, in this order:
 
-## Every interaction
+| Tab | What's in it |
+| --- | --- |
+| **Account** | Identity, photos, locale, skills, personal-profile fields |
+| **Privacy** | Per-tab public-profile visibility — the privacy control this app enforces |
+| **Notifications** | Email on/off, Murmurations publishing |
+| **Appearance** | Dark mode |
+| **Assistant** | Your agent: identity, roles, knowledge, voice, access, connectors |
+| **Connectors** | A signpost to the Assistant tab |
+| **Seller** | Stripe Connect status and balances |
+| **Federation** | Custom domain, peer status, PeerMesh and Bluesky links |
+| **Security** | Your recovery seed |
 
-- **Edit profile** — name, bio, skills, location; upload avatar and cover.
-  (Sparse update: only supplied fields change; explicit `null` clears a field.)
-- **Notification preferences** — turn email notifications on or off (honoured by
-  every non-essential send) and opt in/out of publishing your public profile to
-  the Murmurations network. The tab saves itself.
-- **Public profile tabs** — choose, per tab, who can see it on your public
-  profile; "Hidden" removes the tab for everyone. This is the enforced privacy
-  control.
-- **Appearance** — dark mode.
-- **Connections** — connected accounts are managed in one place, the Assistant
-  tab; the Connectors tab links there.
-- **Manage billing** — open the Stripe portal, manage memberships (see [Wallet & treasury](/docs/wiki/wallet-treasury)).
-- **Configure outgoing email** — set/test SMTP for the account/instance.
-- **Export your data** — request a full JSON export (profile, personas,
-  resources, ledger, wallets, subscriptions, memberships). Session-only.
-- **Auth flows** — login, signup, forgot/reset password (public auth pages).
+Deep-link any of them with `?tab=<value>`. Above the tabs sits an **App Version**
+card showing the current and latest release, the channel, and buttons to update
+the instance or read the changelog.
 
-## Permissions / gating
+<Callout type="note" title="Personas take over this page">
+  If a persona is your active actor, `/settings` renders that persona's editor
+  instead of these tabs, and the **Assistant** tab is hidden.
+</Callout>
 
-- All settings require a session; data export and account deletion are strictly
-  session-derived (deletion only via the interactive UI with typed confirmation —
-  never over MCP).
+## How to edit your profile
 
-## Cross-links
+Go to **Account**. You get:
 
-- API/MCP: [Account tools](/docs/api) (`rivr.account.export_data`) · [Settings tools](/docs/api) · [`rivr.profile.update_basic`](/docs/api) · [`/api/auth` REST](/docs/api) · [`/api/recovery`](/docs/api)
-- Wiki: [Federation & SSO identity](/docs/wiki/federation-identity) · [Wallet & treasury](/docs/wiki/wallet-treasury) · [Notifications via Messages](/docs/wiki/messages)
+- **Change Photo** (avatar), plus **Profile Photos** — up to 8 images that
+  appear in your profile's Photos tab even when they're not attached to a post.
+- **Name**, **Username**, **Email**, **Phone**, **Tagline**, **Bio**.
+- **Home Locale** — a searchable select plus a map/chapter picker.
+- **Social Links** and **Skills** (type, press Enter, click × to remove).
+- A **Persona / Personal Info** block: Gene Keys, Human Design, Western and
+  Vedic astrology, Big Five, Myers-Briggs, Enneagram.
+
+Press **Save Changes**. Updates are sparse — only the fields you supplied change.
+
+## How to control who sees what
+
+This is the part worth reading carefully, because privacy here works at **two
+levels**:
+
+1. **Per item.** When you create a post, an offering, or a document, you choose
+   its visibility there. That is the authoritative content boundary, enforced
+   server-side when anyone loads your profile.
+2. **Per tab.** The **Privacy** tab decides which *tabs* appear on your public
+   profile at all.
+
+To set tab visibility:
+
+1. Go to **Privacy** → **Public Profile Tabs**.
+2. For each of **About, Posts, Docs, Media, Events, Groups, Photos, Offerings,
+   Activity**, choose one of:
+   - **Public** — visible to everyone (the default)
+   - **Connections** — visible to your connections only
+   - **Only Me** — visible to you only
+   - **Hidden** — the tab is completely hidden
+3. Press **Save Tab Visibility**. This saves separately from the main form.
+
+> 📸 **Screenshot:** _The Privacy tab's per-tab visibility editor, with a row per profile tab and the Public / Connections / Only Me / Hidden select open._ — capture at `/settings?tab=privacy`. _(placeholder — remove when image added)_
+
+<Callout type="warning" title="Your own view is not a preview">
+  On your *own* public profile you see all nine tabs regardless of these
+  settings — including ones you marked Hidden. To check what a stranger sees,
+  view your profile signed out. Note also that tab visibility hides the **tab**;
+  it is the per-item visibility that actually withholds content.
+</Callout>
+
+## How to set up selling
+
+Go to **Seller**. The card is titled **Stripe USD Wallet**.
+
+Press **Set Up Stripe USD Wallet** (or **Complete Setup** if you left onboarding
+half-done), finish Stripe's hosted flow, and come back. You'll then see three
+status rows — **Details submitted**, **Charges enabled**, **Payouts enabled** —
+a badge reading **Active** or **Limited**, your **Available** and **Pending**
+Stripe balances, and a link into the Stripe dashboard.
+
+Full detail in [Marketplace](/docs/wiki/marketplace).
+
+## How to put this instance on your own domain
+
+Go to **Federation** → **Custom Domain**.
+
+1. Enter your domain and press **Set Domain**.
+2. The page lists the **Required DNS Records**. Add them at your registrar.
+3. Press **Verify DNS** and read the verification results.
+4. Once active, you can **Generate Traefik Config** and copy it for your proxy.
+
+> 📸 **Screenshot:** _The Federation tab showing the Custom Domain card with required DNS records and verification results._ — capture at `/settings?tab=federation`. _(placeholder — remove when image added)_
+
+The same tab shows your federation node state: **Node Active** or **Node Not
+Enabled**, your base URL, and counters for **Trusted Peers**, **Queued Events**,
+and **Exported Events**. Below that you can link a **PeerMesh Spatial** identity
+(paste an export JSON or a manifest URL) and a **Bluesky / AT Protocol** handle
+(handle plus an app password, which is used once and never stored).
+
+<Callout type="note" title="This is a different kind of domain from the builder's">
+  The Federation tab points a domain at **the whole instance**. The
+  [Builder](/docs/wiki/builder) separately binds domains to **published sites**.
+  Two different features, two different settings.
+</Callout>
+
+## How to look after your recovery key
+
+Go to **Security**. This tab shows your **Recovery Seed** — a fingerprint, when
+it was created or last rotated, and two actions.
+
+**To reveal your seed phrase:**
+
+1. Press **Reveal seed phrase**.
+2. Request a code by **email** or **SMS**, then enter it.
+3. Enter your **device passphrase** to decrypt, and copy the phrase.
+
+**To rotate it:**
+
+1. Press **Rotate recovery seed** and pass the same challenge.
+2. Set and confirm a **new device passphrase**.
+3. Write down the new phrase, then press **Complete rotation**.
+
+> 📸 **Screenshot:** _The Security tab's Recovery Seed card showing the fingerprint badge and the Reveal / Rotate buttons._ — capture at `/settings?tab=security`. _(placeholder — remove when image added)_
+
+<Callout type="warning" title="The Security tab can be empty — that's correct">
+  The panel renders nothing at all unless this instance runs in sovereign mode.
+  Hosted-federated deployments never issue seeds, so there is nothing to show.
+  SMS delivery for the challenge is currently stubbed; use email.
+</Callout>
+
+Your seed is generated **in your browser**. The server only ever stores a public
+key and a fingerprint — it never sees the mnemonic or the private key.
+
+## Notifications and appearance
+
+**Notifications** has exactly two switches and a save button:
+
+- **Email Notifications** — turning this off suppresses every non-essential
+  email this instance sends you.
+- **Publish to Murmurations** — publishes your eligible public profile data to
+  the Murmurations network index.
+
+**Appearance** has exactly one control: **Dark Mode**.
+
+## Good to know
+
+- **Connections are managed in one place.** The **Connectors** tab is a signpost
+  that switches you to the Assistant tab, where the real connector panel lives.
+- **Two owner pages aren't in any menu**: `/settings/visitor-access` and
+  `/settings/outgoing-email`. See [Instance owner](/docs/wiki/admin).
+- **Notifications** at `/notifications` is a separate page, with tabs **All,
+  Unread, Following, Reactions, Comments**, per-row read toggles and a
+  mark-all-read button that acts on the current filter.
+
+<Callout type="warning" title="Two things this page used to promise and shouldn't">
+  There is **no Billing tab** — the settings tab list has nine entries and none
+  of them is billing. And there is **no data-export feature anywhere in this
+  app**: no "export your data" button, no account-archive download. Membership
+  billing is handled through the `/products/membership-*` pages and Stripe; see
+  [Wallet & money](/docs/wiki/wallet-treasury).
+</Callout>
+
+## Under the hood
+
+- `/settings` · `src/app/settings/page.tsx` → `settings-form.tsx`
+  (`SETTINGS_TAB_VALUES`)
+- Privacy editor · `src/components/profile-tab-visibility-editor.tsx`;
+  model `src/lib/profile-tab-visibility.ts`; stored sparsely at
+  `agents.metadata.profileTabVisibility`
+- Assistant panel · `src/components/assistant-settings-panel.tsx`
+- Domain · `src/components/domain-settings.tsx`; `/api/settings/domain`,
+  `/api/settings/domain/{deploy,traefik-config}`
+- Recovery · `src/components/recovery-seed-panel.tsx`; `/api/recovery/**`
+- Profile data · `/api/myprofile`, `/api/myprofile/manifest`
+- Signup · one page at `/auth/signup`, then `/auth/signup/verify`, then
+  `/auth/signup/recovery` (the older per-field step routes are redirect stubs)
+
+**Cross-links**
+
+- [Instance owner](/docs/wiki/admin) · [Marketplace](/docs/wiki/marketplace) ·
+  [Wallet & money](/docs/wiki/wallet-treasury) ·
+  [Federation & identity](/docs/wiki/federation-identity) ·
+  [Autobot & agents](/docs/wiki/autobot-agents)

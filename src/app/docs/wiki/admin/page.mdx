@@ -1,36 +1,140 @@
-# Admin
+# Instance owner
 
 ## What it is
 
-Operator surfaces for platform administrators: user management, task/queue
-inspection, the knowledge/graph explorer, badge administration, and integration
-debug tooling. These are gated to platform/admin actors.
+This app hosts **one person**. There is no admin console, no user directory, no
+moderation queue — because there is no one else here to administer.
 
-## Where it lives
+What does exist is a small set of **owner surfaces**: the handful of screens and
+endpoints that configure the instance itself rather than your content.
 
-- `/admin` — admin dashboard · `src/app/admin/page.tsx`
-- `/admin/users` — user management · `src/app/admin/users/page.tsx`
-- `/admin/tasks` — tasks/queues · `src/app/admin/tasks/page.tsx`
-- `/admin/graph` — graph explorer · `src/app/admin/graph/page.tsx`
-- `/admin/badges` — badge administration · `src/app/admin/badges/page.tsx`
-- `/admin/integrations/debug` — integration debug · `src/app/admin/integrations/debug/page.tsx`
+<Callout type="warning" title="There is no /admin route">
+  Earlier versions of this page documented `/admin`, `/admin/users`,
+  `/admin/tasks`, `/admin/graph`, `/admin/badges` and an integrations debugger.
+  **None of those exist in this app.** They were inherited from the group and
+  global codebases. There is no badge-administration UI here at all — see
+  [Badges](/docs/wiki/badges-stake).
+</Callout>
 
-## Every interaction
+## Who counts as the owner
 
-- **Manage users** — inspect/administer accounts. _TODO(verify): enumerate exact admin actions live._
-- **Inspect tasks** — view background/cron task state (federation-sync,
-  gcal-pull, trial-reminders, etc.).
-- **Explore the graph** — browse the agent/resource/ledger graph.
-- **Administer badges** — issue/revoke badges (see [Badges & stake](/docs/wiki/badges-stake)).
-- **Debug integrations** — SMTP config/test and connector diagnostics.
+Slightly awkwardly, there are **two** different owner tests in this codebase and
+they don't always agree:
 
-## Permissions / gating
+| Mechanism | Where it's used |
+| --- | --- |
+| **`PRIMARY_AGENT_ID`** (env) | The edge middleware's owner-only gate, visitor access, all builder ownership |
+| **`siteRole: "admin"`** (a flag on your agent row) | Outgoing email, Matrix reconcile, the credential-sync drain |
 
-- **Admin-gated.** These routes require an operator/admin actor; they are not
-  public and are not part of the ordinary user surface. Admin API routes (e.g.
-  `/api/admin/smtp-config`) enforce their own checks.
+The practical consequence is worth knowing: **being `PRIMARY_AGENT_ID` does not
+automatically get you into `/settings/outgoing-email`.** That page checks
+`siteRole` only. Visitor access accepts either.
 
-## Cross-links
+Apart from these, the only other access tier is a federated **visitor** — a
+signed-in user from another instance, browsing yours under a capability scope
+you control.
 
-- API: [`/api/admin` REST](/docs/api) · [`/api/cron` REST](/docs/api) · [`/api/debug` REST](/docs/api) · [`/api/runtime`](/docs/api)
-- Wiki: [Badges & stake](/docs/wiki/badges-stake) · [Autobot & agents](/docs/wiki/autobot-agents) · [Federation & SSO identity](/docs/wiki/federation-identity)
+## How to control what visitors can do
+
+When someone from another RIVR instance follows a link into your home, they can
+be auto-signed-in as a visitor. You decide what that means.
+
+1. Go to **`/settings/visitor-access`** (it isn't linked from any menu — you
+   need the URL).
+2. Set the policy:
+   - **Auto-sign-in visitors** — on or off. Off means no landing at all.
+   - **Visitor capabilities** — `read` is the fixed baseline; tick any of
+     **react**, **comment**, **rsvp**, **message** to grant more.
+   - **Session length (minutes)** — between 1 and 1440. Default 30.
+   - **Record visits** — whether landings are logged.
+3. Review the **Recent visitor landings** table (last 25): when, who, their home
+   instance, what they landed on, the referrer, and the scope they were granted.
+
+> 📸 **Screenshot:** _The visitor-access page showing the auto-sign-in switch, the capability checkboxes with `read` locked on, and the recent-landings table._ — capture at `/settings/visitor-access`. _(placeholder — remove when image added)_
+
+<Callout type="note" title="You are never constrained by your own policy">
+  The instance owner bypasses visitor scoping entirely. The policy only shapes
+  what *other people* can do while browsing your instance.
+</Callout>
+
+## How to configure outgoing email
+
+1. Go to **`/settings/outgoing-email`** (again, URL-only; requires
+   `siteRole: "admin"`).
+2. Turn on **Enable peer outgoing SMTP** and fill in **Host**, **Port**,
+   **Username**, **From address**, and **Implicit TLS (port 465)** if your
+   provider needs it.
+3. For the password, supply a **secret reference** — the *name* of an
+   environment variable or the path to a mounted secret file.
+4. Use the **Test send** card to prove it works. The result is stored, so you
+   can see when it last succeeded or failed.
+
+> 📸 **Screenshot:** _The Outgoing SMTP form with the secret-reference field and the Test send card below it._ — capture at `/settings/outgoing-email`. _(placeholder — remove when image added)_
+
+<Callout type="danger" title="Never paste a password here">
+  The form takes a *reference*, not a value. A plaintext password is never sent
+  to the server and never stored.
+</Callout>
+
+<Callout type="note" title="Auth email always routes through global">
+  Federated authentication email is pinned to the global instance by the mailer.
+  A peer's SMTP settings cannot override it — that's deliberate, so a
+  misconfigured peer can't break account recovery.
+</Callout>
+
+## Maintenance endpoints
+
+These have no screens. They're called by hand or on a schedule.
+
+| Endpoint | What it does | Auth |
+| --- | --- | --- |
+| `POST /api/admin/matrix/reconcile` | Finds chat rooms that were purged on the Matrix server and soft-deletes the stale local rows. Real errors are surfaced, not swallowed. | `siteRole: "admin"` session |
+| `POST /api/admin/federation/drain-credential-sync-queue` | Retries pending credential-sync events (batches of up to 500) | `siteRole: "admin"` session, or a bearer secret |
+| `GET` / `POST /api/admin/visitor-access` | Reads and writes the visitor policy | Owner |
+| `POST /api/admin/smtp-config` + `/test` | Backs the outgoing-email form | `siteRole: "admin"` |
+
+## Scheduled jobs
+
+| Job | What it does |
+| --- | --- |
+| `POST /api/cron/federation-deliver` | Pushes queued local events out to trusted peers |
+| `GET /api/cron/federation-sync` | Pulls peers' event feeds in and projects them locally |
+| `POST /api/cron/thanks-demurrage` | Decays idle thanks tokens |
+| `POST /api/billing/trial-reminders` | Sends trial-ending reminders |
+| `POST /api/murmurations/sync` | Publishes profiles to the Murmurations index |
+
+Each requires its own bearer secret and **fails closed** when that secret isn't
+configured — an unconfigured cron endpoint refuses rather than running open.
+
+<Callout type="warning" title="Two of these can't actually be reached from outside">
+  `/api/cron/thanks-demurrage` and
+  `/api/admin/federation/drain-credential-sync-queue` are **not** on the public
+  API allowlist, so the edge middleware demands a session cookie before their
+  own bearer-token check ever runs. An external scheduler presenting only the
+  correct bearer token will be rejected with a 401 it can't do anything about.
+  Both are reachable today only from inside an authenticated browser session.
+</Callout>
+
+## Good to know
+
+- **Neither owner page is linked from any menu.** `/settings/visitor-access` and
+  `/settings/outgoing-email` are URL-only.
+- `GET /api/email/dns-check` exists and works, but **nothing in the app calls
+  it** — it is not wired to the outgoing-email page.
+- There is no multi-admin invite flow, no moderator role, and no way to grant
+  another person operator rights through the UI.
+
+## Under the hood
+
+- `/settings/visitor-access` · `src/app/settings/visitor-access/page.tsx`
+- `/settings/outgoing-email` · `src/app/settings/outgoing-email/page.tsx`
+- Policy model · `src/lib/federation/visitor-scope.ts`,
+  `src/lib/federation/visitor-access-policy.ts`,
+  `src/lib/federation/visit-log.ts`
+- Owner gates · `src/middleware.ts` (`OWNER_ONLY_PREFIXES`),
+  `src/lib/route-access.ts`, `src/app/actions/admin.ts`
+
+**Cross-links**
+
+- [Account & settings](/docs/wiki/account-settings) ·
+  [Federation & identity](/docs/wiki/federation-identity)

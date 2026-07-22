@@ -2,43 +2,113 @@
 
 ## What it is
 
-The social core of RIVR: the home feed of posts from people, groups, and places
-the actor follows or is scoped into, the individual post detail view, and the
-composer used to create posts (including group-authored and place-scoped posts).
+The social layer: a feed you browse, posts you write, and reactions and comments
+on both.
 
-## Where it lives
+On a person instance the **root of the site is your public profile**, not a
+feed — visiting `/` shows people who you are. The feed with its tab strip is the
+browse surface underneath that.
 
-- `/` — home feed · `src/app/(main)/page.tsx` (→ `home-or-instance.tsx` / `home-client.tsx`)
-- `/posts/[id]` — post detail · `src/app/posts/[id]/page.tsx`
-- `/create` — composer · `src/app/(main)/create/page.tsx`
+## How to browse
 
-## Every interaction
+The feed carries six tabs, selectable with `?tab=`:
 
-- **Compose a post** — title (optional), body, post type; URLs in the body are
-  auto-extracted into rich link embeds. Result: a `post` resource owned by the
-  actor (or by a group, when posting as a group).
-- **Post as a group** — choose a group the actor administers; the group becomes
-  the owner and the actor is recorded as provenance.
-- **Scope to a place** — attach a locale/chapter and/or region so the post shows
-  in that place's feed as well as the global feed.
-- **React** — toggle a reaction on a post; reaction counts are aggregated per user.
-- **Comment** — add a threaded comment. _TODO(verify): confirm live comment
-  affordances and edit/delete controls._
-- **Open detail / share** — navigate to `/posts/[id]`; share surfaces a link.
-- **Show more** — the feed renders the newest 15 items and grows in steps of 15
-  via the Show more button (windowed rendering keeps the page fast; nothing is
-  hidden, just deferred).
+| Tab | URL |
+| --- | --- |
+| **Posts** (default) | `/?tab=posts` |
+| **Events** | `/?tab=events` |
+| **Groups** | `/?tab=groups` |
+| **People** | `/?tab=people` |
+| **Gigs** | `/?tab=gigs` |
+| **Mart** | `/?tab=marketplace` |
 
-## Permissions / gating
+Several routes are just redirects into these: `/events` → Events, `/marketplace`
+→ Mart. The **Gigs** tab is the only route into a job's detail page at
+`/jobs/[id]` — there is no `/jobs` index.
 
-- **Guests** can read public posts and post detail; composing requires a session.
-- **Hosted users / sovereign persons** can compose their own posts.
-- **Group admins** can author posts as the group.
-- Home feed content is permission-filtered per actor (private/group-scoped posts
-  only appear to eligible viewers).
+Open any post at `/posts/[id]`. The feed's comment button deep-links straight to
+the comments with `?focus=comments`.
 
-## Cross-links
+## How to write a post
 
-- API/MCP: [`rivr.posts.create`, `rivr.posts.create_live_invite`, `rivr.posts.list`](/docs/api) · [Social tools](/docs/api) · [`/api/link-preview` REST](/docs/api)
-- Wiki: [Explore & search](/docs/wiki/explore-search) · [Groups & subgroups](/docs/wiki/groups) · [Calendar & events](/docs/wiki/calendar-events)
-- Federation: posts created on a sovereign instance project to global as signed `post.created` events.
+1. Open the composer — `/create` (the **Post** tab) or the inline composer in
+   the feed.
+2. Choose the post type:
+   - **Social** — an ordinary post
+   - **Offer** — you're offering something
+   - **Request** — you need something
+   - **Gratitude** — thanking someone (you pick who)
+3. Write. **Paste a URL and it becomes a rich link preview automatically.**
+4. Optionally add one image.
+5. Post.
+
+> 📸 **Screenshot:** _The composer showing the four post-type buttons (Social, Offer, Request, Gratitude) with a pasted link rendered as a preview card below the text area._ — capture at `/create`. _(placeholder — remove when image added)_
+
+**Offer and Request** posts can either link an existing offering or build one
+inline — the **Configure Embedded Offering** dialog creates the offering when
+you publish (its submit button reads *Use in Post*).
+
+**Social** posts get one extra switch: **Mark as Live Invitation**, which shares
+your location for **one hour** so people nearby can find you.
+
+The composer's other tabs are **Event**, **Project**, **Group**, and
+**Offering**; `/create?tab=job` is an alias that opens the Project composer.
+
+## How to react and comment
+
+**Reactions** — tap the reaction button to toggle a 👍 Like. Hover on desktop or
+long-press on touch to open the full set: **Like, Love, Haha, Wow, Sad, Angry**.
+Reactions work on posts *and* on comments.
+
+**Comments** — write in the comment box and submit (Cmd/Ctrl+Enter works).
+Comments are **threaded**: each one has a **Reply** affordance.
+
+Both appear inline in the feed and on the post detail page.
+
+## The design studio
+
+There's a full canvas editor at **`/create/design`** — *Design Studio*, for
+graphics, social cards, and flyers. Its **My Photos** panel pulls in your own
+uploaded images.
+
+<Callout type="note" title="Reachable by URL only">
+  Nothing in the app links to `/create/design` today. You have to type the
+  address. The same is true of `/calendar` and `/badges`.
+</Callout>
+
+## Good to know
+
+- **Guests can read** public posts and post detail; composing needs a session.
+- **Your feed is permission-filtered.** An anonymous viewer sees only publicly
+  crawlable content, and that filtering happens *before* the page limit is
+  applied — so private posts never eat an anonymous visitor's page budget.
+- **Federated posts bounce home.** Opening a mirrored copy of a post redirects
+  you to the instance that owns it.
+- **Link previews are guarded.** Internal RIVR links resolve from the local
+  database with no outbound request at all; external ones are fetched with an
+  SSRF guard that refuses private and loopback addresses, plus a timeout, a
+  body-size cap, and a rate limit.
+- Posts created here project to global as signed `post.created` events. The
+  composer's federation toggle is driven by `GET /api/federation/node-status`
+  and tells you how many trusted peers the post would reach.
+
+## Under the hood
+
+- `/` · `src/app/(main)/page.tsx` → `home-or-instance.tsx` (person instances
+  render the public profile as the site root) → `home-client.tsx`
+- `/posts/[id]` · `src/app/posts/[id]/page.tsx`
+- `/create` · `src/app/(main)/create/page.tsx`; tab contract in
+  `src/lib/create-tabs.ts`
+- `/create/design` · `src/app/(main)/create/design/page.tsx`;
+  media from `GET /api/design/media`
+- Components · `create-post.tsx`, `post-feed.tsx`, `post-detail-client.tsx`,
+  `reaction-button.tsx`, `comment-feed.tsx`, `link-preview-card.tsx`
+- `POST /api/link-preview` · `GET /api/live-invitations` ·
+  `POST /api/upload` (10 files per request, 20 uploads per hour)
+- Post types · `PostType` in `src/lib/types.ts` — `social`, `offer`, `request`,
+  `gratitude`
+
+**Cross-links**
+
+- [Marketplace](/docs/wiki/marketplace) · [Calendar & events](/docs/wiki/calendar-events) ·
+  [Discovery & search](/docs/wiki/explore-search) · [Groups](/docs/wiki/groups)

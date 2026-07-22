@@ -1,38 +1,136 @@
-# Federation & SSO identity
+# Federation & identity
 
 ## What it is
 
-How a person is one identity across many instances. Sovereign instances (person,
-group, locale, region) run independently and federate into global; a user's
-**home instance** is authoritative for their identity, and global is the
-credential authority. Profiles render locally and via cross-instance projection.
+You are one person across many instances. This one is your **home** — it is
+authoritative for who you are — and it federates outward to the global
+aggregator and to peer instances so your identity, content and memberships
+travel with you.
 
-## Where it lives
+Three ideas carry most of the weight:
 
-- `/profile`, `/profile/[username]` — profile · `src/app/(main)/profile/**`
-- `/settings` — identity/account settings · `src/app/settings/page.tsx`
-- Federation protocol · `src/app/api/federation/**`; resolution `src/lib/federation/**`
+- **Your home instance owns your identity.** Other instances hold projections of
+  it, not the original.
+- **Nothing is trusted because it says so.** Every cross-instance claim is either
+  a session you hold or a signature this instance can verify against a registered
+  peer's public key. An asserted node id is never enough.
+- **You can visit other instances, and they can visit you** — under a capability
+  scope the host controls.
 
-## Every interaction
+## How signing in across instances works
 
-- **View your / others' profile** — home-authoritative data plus federated
-  projections; a remote viewer cookie tracks cross-instance viewing.
-- **Federated sign-in (SSO)** — start at `/api/federation/sso/start?homeBaseUrl=…`;
-  password verification is delegated to the global authority
-  (`/api/federation/sso/issue`) with local bcrypt fallback.
-- **Register / connect a peer** — instances register in each other's peer registry
-  (`/api/federation/peers`) to exchange signed events.
-- **Sovereign merge** — migrate a hosted user to a sovereign home. _TODO(verify):
-  the merge flow still requires manual fixes for new users (see open issues)._
+1. From another instance, you start at
+   `/api/federation/sso/start?homeBaseUrl=…`.
+2. You're redirected to **your home** instance, where you're already signed in.
+   It mints a signed assertion for you.
+3. You're bounced back and land at `/api/federation/sso/land`, which **verifies
+   the signature locally** against the registered peer's public key — no callback
+   to the issuer — and gives you a browsing session.
 
-## Permissions / gating
+While browsing that way, the app can tell you whose instance you're on and who
+you're signed in as.
 
-- Identity is derived from the session or a verified peer signature — never an
-  asserted node id (the verified-principal rule; see [Auth models](/docs/api/auth)).
-- Cross-instance direct interaction on a domain you lack an account on is limited
-  (cross-instance SSO not yet fully implemented).
+When someone lands on **your** instance this way, what they can do is governed by
+your visitor policy — see [Instance owner](/docs/wiki/admin).
 
-## Cross-links
+## How to look after your recovery key
 
-- API: [Federation protocol](/docs/api/federation) · [Auth models](/docs/api/auth) · [`/api/federation` REST](/docs/api) · [`/api/universal-manifest` REST](/docs/api)
-- Wiki: [Autobot & agents](/docs/wiki/autobot-agents) · [Account & settings](/docs/wiki/account-settings) · [Builder](/docs/wiki/builder)
+Your sovereign identity is backed by a BIP-39 seed phrase.
+
+- **At signup**, the phrase is generated **in your browser**. You confirm you've
+  written it down and type back one of its words. Only a public key and a
+  fingerprint are sent to the server.
+- **Later**, Settings → **Security** lets you reveal or rotate it, each behind an
+  emailed challenge code and your device passphrase.
+
+The server never sees your mnemonic or private key — at signup or ever.
+
+Rotation is transactional: the old key is archived, your credential version is
+bumped, and a signed rotation event is queued for the rest of the federation.
+
+If you're locked out entirely, recovery is driven from the global instance,
+which issues a signed assertion your home instance redeems. That path is
+replay-protected — a re-sent assertion is refused with a conflict rather than
+being applied twice.
+
+## How to move to a sovereign home
+
+If you started on the hosted global app and now run your own instance, the
+sovereign merge connects the two.
+
+1. On global, you enter your sovereign instance's address.
+2. A window opens **on your instance** at `/sovereign-merge-confirm`, showing
+   exactly which global instance is asking.
+3. If you're not signed in here, you're asked to sign in first — with your
+   approval request preserved.
+4. You approve, and you're returned to global.
+
+<Callout type="warning" title="Not production-ready">
+  The connect-to-sovereign flow still needs manual intervention for new users.
+  Treat it as a supported-with-help path, not a self-service one.
+</Callout>
+
+## What is public about your instance
+
+Some federation endpoints are deliberately open, because federation can't
+bootstrap otherwise:
+
+| Endpoint | What it exposes |
+| --- | --- |
+| `GET /api/federation/registry` | Registered instances plus this one's slug, base URL, **public key**, and primary agent — this is how another instance learns the key to verify your signatures |
+| `GET /api/federation/registry/[agentId]` | Which instance is authoritative for an agent |
+| `GET /api/federation/manifest` | This instance's signed Universal Manifest |
+| `GET /api/federation/node-status` | A read-only node probe, used by the composer to show your federation reach |
+| `GET /api/universal-manifest/[kind]/[id]` | A manifest for a person, organization, project, post, event, or offer |
+| `GET /api/murmurations/profiles/[kind]/[id]` | A Murmurations-format profile |
+
+Publishing to the Murmurations network index is **opt-in**, from Settings →
+Notifications.
+
+## Machine-to-machine
+
+These are peer-authenticated and never involve a user click: peer registration
+(`/api/federation/peers`), the event feed peers poll (`/api/federation/events`),
+event import and export, cross-instance mutations
+(`/api/federation/mutations` — where a visitor's action is checked against their
+granted capability), agent assertions, remote assertion verification, and
+delegated password verification.
+
+Delivery and catch-up run on a schedule: one job pushes queued local events out
+to peers, another pulls their feeds in and projects them locally. The pull side
+can catch up on more than a week of downtime, with signature and replay checks
+still applied.
+
+## Good to know
+
+- **Content federates in both directions.** Posts you write project outward as
+  signed events; group memberships you hold elsewhere are projected back onto
+  your profile's Groups tab.
+- **Links to remote things go to their real home.** A group, ring, family or
+  project that lives on another instance links to that instance — this app has
+  no local route for them and won't pretend otherwise.
+- **A federated visitor is not you.** Everything under `/settings`, `/autobot`,
+  `/builder`, `/api/admin`, `/api/personas` and friends is refused to anyone who
+  isn't the instance owner, at the edge.
+- **Anonymous viewers see only your public subset**, filtered server-side before
+  any page limit is applied.
+- Published builder sites are served by hostname *before* the auth gate, so a
+  site on your own domain is public even though the instance behind it isn't.
+
+## Under the hood
+
+- `/profile`, `/profile/[username]` · `src/app/(main)/profile/**`
+- `/sovereign-merge-confirm` · `src/app/sovereign-merge-confirm/page.tsx`
+- SSO · `/api/federation/{sso/start,sso/land,remote-auth,remote-session,remote-assertion/issue,remote-assertion/verify,remote-password/verify}`
+- Peering & events · `/api/federation/{peers,registry,registry/[agentId],events,events/import,events/export,manifest,mutations,node-status,status,agent-assertion}`
+- Recovery · `/api/recovery/{status,register,challenge,verify-challenge,rotate,accept-reset,accept-credential-tempwrite,audit-reveal}`
+- Scheduled · `/api/cron/federation-deliver`, `/api/cron/federation-sync`
+- Libraries · `src/lib/federation/**` — `instance-config`, `visitor-scope`,
+  `entity-link`, `actor-projection`, `mcp-tools`
+- Gating · `src/middleware.ts`, `src/lib/route-access.ts`
+
+**Cross-links**
+
+- [Account & settings](/docs/wiki/account-settings) ·
+  [Instance owner](/docs/wiki/admin) · [Groups](/docs/wiki/groups) ·
+  [Auth models](/docs/api/auth) · [Federation protocol](/docs/api/federation)

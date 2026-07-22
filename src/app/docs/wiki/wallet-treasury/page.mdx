@@ -1,55 +1,203 @@
-# Wallet & treasury
+# Wallet & money
 
 ## What it is
 
-The value surfaces: a wallet with balances and transaction history, a points
-balance (contribution rewards), subscription/membership management, and purchase
-history. Some flows involve EVM wallet integration; thanks-tokens carry a
-demurrage (decay) mechanic.
+Your money lives on **one surface**: the **Wallet** tab of your own profile at
+`/profile`. There is no separate `/wallet` page on a person instance.
 
-## Where it lives
+That one tab holds four different kinds of value, which is worth untangling
+before you use it:
 
-- `/wallet` — wallet · `src/app/(main)/wallet/page.tsx`
-- `/points` — points balance · `src/app/(main)/points/page.tsx`
-- `/subscribe` — memberships · `src/app/(main)/subscribe/page.tsx`
-- `/profile/purchases` — purchase history · `src/app/(main)/profile/purchases/page.tsx`
+- **Rivr USD wallet** — an in-app balance you top up by card and spend at
+  checkout or send to another agent.
+- **Stripe USD wallet** — money you have *earned* as a seller, sitting in your
+  Stripe Connect account (shown with its pending portion). Only appears once
+  you have a Connect account.
+- **Thanks tokens** — the gift/mutual-aid side. Non-currency, and they **decay**
+  if you sit on them (demurrage).
+- **Crypto wallet** — an ETH address on file, used for USDC checkout.
 
-## Every interaction
+Separately, **linked bank accounts** (via Teller) let you move real money in and
+out, and **membership tiers** are bought as ordinary Stripe products.
 
-- **View balances & transactions** — wallet balance and transaction history.
-- **View points** — points balance sums active `earn` ledger rows credited to
-  the actor; balance equals lifetime (no spend surface yet).
-- **Manage subscription** — subscribe/upgrade membership tiers; open the Stripe
-  billing portal.
-- **Send thanks tokens** — gift thanks (see [Marketplace & gifts](/docs/wiki/marketplace)); balances decay via demurrage.
-- **Deposit / transfer** — wallet deposit/transfer flows where enabled. _TODO(verify): confirm live EVM deposit/transfer affordances._
+## How to use your wallet
 
-## Permissions / gating
+1. Go to `/profile` and open the **Wallet** tab.
+2. The top row shows your balances: **Rivr USD Wallet**, **Stripe USD Wallet**
+   (with pending), and your **Wallets** count. If you have a Connect account, a
+   full-width **Total USD Balance** card sits above them summing the two.
+3. Use the action row:
+   - **Add Money** — opens the deposit dialog. It creates a Stripe
+     PaymentIntent (`POST /api/wallet/deposit`) and credits your Rivr wallet.
+     Minimum **$1.00**, maximum **$1,000.00** per deposit.
+   - **Send Money** — transfer to another agent (transfers cap at **$500**).
+   - **Transaction History** — the full history drawer.
+   - **All Purchases** — jumps to `/profile/purchases`.
 
-- All wallet/points/subscription surfaces require a session.
-- Billing actions derive the subject from the session; membership entitlements
-  gate certain create/sell capabilities (seller/host/organizer/steward tiers).
+> 📸 **Screenshot:** _The Wallet tab's balance cards (Total USD Balance, Rivr USD Wallet, Stripe USD Wallet with pending, Wallets) and the Add Money / Send Money / Transaction History / All Purchases action row._ — capture at `/profile` (open the **Wallet** tab). _(placeholder — remove when image added)_
 
-## Group treasury banking (flag-gated, not yet live)
+4. Below the balances are the **Thanks** cards — *Thanks Tokens* (current
+   count), *Burned For Inactivity* (total removed by demurrage), and *Thanks
+   Flow Ratio* (sent ÷ received, shown as ∞ when you've received none).
+5. Then the **Bank Accounts** card and the **Crypto Wallet** card.
+6. At the bottom, three sub-views:
 
-Group admins will find a **Banking** area in the group Treasury tab once the
-platform's Stripe Treasury/Issuing programs are enabled. Built and shipped
-dormant; until the `STRIPE_TREASURY_ENABLED` / `STRIPE_ISSUING_ENABLED` flags
-are on, the tab explains the state instead of showing dead controls.
+| Sub-view | Shows |
+| --- | --- |
+| **Transactions** | Every wallet movement — description, date, type, status, amount |
+| **Purchases** | Receipt cards for what you bought, plus a **Tickets** list badged *Wallet* or *Card* |
+| **Sales** | Your Stripe Connect balance and payout controls, then your sale rows |
 
-- **Group payment account** — a group can hold its own Stripe Connect account
-  (set up from the Treasury tab's payments card by an admin).
-- **Per-subgroup financial accounts** — each subgroup treasury can get its own
-  Stripe Treasury financial account, hosted on the parent group's payment
-  account, with its own balance.
-- **Subgroup cards** — a spending-limited virtual card can be issued per
-  subgroup, funded only by that subgroup's financial account (default cap
-  $500/month; admins set the limit).
-- **Connected bank balances** — a group can link its real-world bank account
-  (Financial Connections) and see its live external balance alongside the
-  Stripe balances in the Treasury tab.
+Each sub-view is deep-linkable: `?tab=wallet&walletTab=purchases`.
 
-## Cross-links
+> 📸 **Screenshot:** _The Wallet tab's three sub-view tabs with **Sales** selected, showing the Connect balance section above the sale rows._ — capture at `/profile` (Wallet tab → click **Sales**). _(placeholder — remove when image added)_
 
-- API/MCP: [Wallet tools](/docs/api) · [Mutual Economy tools](/docs/api) · [`rivr.points.balance`](/docs/api) · [`/api/billing` REST](/docs/api) · [`/api/stripe` REST](/docs/api)
-- Wiki: [Marketplace & gifts](/docs/wiki/marketplace) · [Badges & stake](/docs/wiki/badges-stake) · [Account & settings](/docs/wiki/account-settings)
+<Callout type="note" title="Deposits are rate-limited">
+  `POST /api/wallet/deposit` enforces `RATE_LIMITS.WALLET_DEPOSIT` keyed on
+  `wallet-deposit:{agentId}` and validates the amount against configured
+  deposit bounds before creating the intent.
+</Callout>
+
+## How to connect a bank account
+
+The bank lane is powered by **Teller** (not Stripe Financial Connections), and
+it only lights up if this instance has Teller credentials configured.
+
+1. On the Wallet tab, find the **Bank Accounts** card — *"Link bank accounts
+   through Teller Connect, view balances here, and send supported payments from
+   eligible accounts."*
+2. Press **Connect Bank** (or **Connect Another Bank**). The app fetches a
+   Teller Connect session nonce (`GET /api/wallet/banks/connect`, good for 10
+   minutes) and launches Teller's own hosted widget.
+3. Pick your institution and authenticate there. On success the widget hands
+   back an enrollment, which the app posts to `POST /api/wallet/banks/enroll` —
+   the server **verifies Teller's enrollment signature** before saving it. You
+   get a **Bank connected** toast.
+4. Your linked accounts then list on the card (`GET /api/wallet/banks`). The
+   card also shows which Teller environment this instance is pointed at.
+5. To move money out, initiate a payment (`POST /api/wallet/banks/payments`)
+   with a source account, amount, and payee address — all three are required.
+   Some payments trigger a Teller MFA step, which re-launches the widget.
+
+> 📸 **Screenshot:** _The Bank Accounts card on the Wallet tab, showing a linked institution row._ — capture at `/profile` (Wallet tab, scroll to **Bank Accounts**). _(placeholder — remove when image added)_
+
+<Callout type="warning" title="Not configured? The card stays empty.">
+  If Teller isn't configured on this instance, `/api/wallet/banks` returns an
+  empty account list and `/api/wallet/banks/connect` returns **503** with
+  "Teller Connect is not configured on this instance." Nothing breaks — the
+  card just has nothing to show.
+</Callout>
+
+## How to connect a crypto wallet
+
+On the **Crypto Wallet** card you can either press **Connect MetaMask** (which
+reads the address from the extension) or type an address into the ETH address
+form. Once an address is on file, USDC checkout becomes selectable on
+crypto-priced listings — see [Marketplace](/docs/wiki/marketplace).
+
+## Memberships
+
+Membership tiers are ordinary Stripe products with their own pages. Each page
+offers **monthly** or **yearly** billing, and every displayed price already
+includes a Connect surcharge of **$2/month** or **$24/year**
+(`MEMBERSHIP_CONNECT_SURCHARGE_CENTS`).
+
+These are the figures the pages actually show:
+
+| Tier | Page | Monthly | Yearly (billed) |
+| --- | --- | --- | --- |
+| Basic | `/products/membership-basic` | $9 | $82 |
+| Seller | `/products/membership-seller` | $24 | $207 |
+| Host | `/products/membership-host` | $24 | $222 |
+| Organizer | `/products/membership-organizer` | $46 | $391 |
+| Steward | `/products/membership-steward` | $41 | $413 |
+
+To subscribe: open the tier's page, toggle **monthly / yearly**, and check out.
+The webhook (`POST /api/stripe/webhook`) grants the membership on settlement —
+and mints a Thanks grant with it.
+
+> 📸 **Screenshot:** _The Seller membership product page with the monthly/yearly toggle and the surcharge-inclusive price block._ — capture at `/products/membership-seller`. _(placeholder — remove when image added)_
+
+<Callout type="warning" title="Treat the on-page 'Save $N' figures with suspicion">
+  Each product page carries a hardcoded savings literal that is **not**
+  recomputed against the surcharge, so it does not match the surcharge-inclusive
+  prices above. The per-tier feature bullets are likewise marketing copy in the
+  page files, not a rendering of any entitlement table — a bullet appearing on a
+  tier is not proof that capability is gated to it.
+</Callout>
+
+## How to send thanks, money, or a voucher
+
+Thanks tokens are the gift side of the economy — a way to recognise someone
+without invoicing them.
+
+1. Open the **thank** control where it appears alongside a person or a piece of
+   their content.
+2. Pick what you're sending: **thanks**, **money**, or a **voucher**.
+3. For thanks, choose how many of your tokens to send and add an optional
+   message. You get a **Thanks sent** confirmation.
+
+Tokens you hold **decay if you sit on them**. A scheduled job
+(`/api/cron/thanks-demurrage`) burns tokens for inactivity, which is what the
+*Burned For Inactivity* and *Thanks Flow Ratio* cards are telling you: the
+system is nudging you to circulate them rather than hoard them. Subscribing to
+a membership also mints a Thanks grant.
+
+## Good to know
+
+- **`/profile/purchases` is narrower than it sounds.** It shows a **Purchase
+  History** card containing **ticket purchases only** (`Amount · Fee · Total`,
+  the payment method, and a *View event* link), plus an **All Wallet
+  Transactions** card of your last 30 movements. Your marketplace receipts are
+  *not* here — they're in the Wallet tab's **Purchases** sub-view.
+- **The Stripe USD wallet only appears with a Connect account.** Set one up from
+  `/settings` → **Seller**.
+- **A "Release Test Sales To Wallet" button exists but only in Stripe test
+  mode** — it hard-refuses unless the secret key starts with `sk_test_`.
+- Whether visitors can see your Wallet tab at all is governed by your
+  per-tab profile visibility — see [Account & settings](/docs/wiki/account-settings).
+
+<Callout type="warning" title="What this instance does NOT have">
+  A person instance is one person. There is **no** group treasury, no subgroup
+  financial accounts, no issued spending cards, and no Stripe Treasury/Issuing
+  surface here — those are group-instance capabilities. There is also no
+  `/wallet`, `/points`, or `/subscribe` route: the Wallet tab, the Thanks cards,
+  and the `/products/membership-*` pages are the real surfaces. **Points are not
+  a currency on this instance** — the number beside your name on your profile
+  header is a plain read-only field with no ledger, history, or spend surface.
+
+</Callout>
+
+## Under the hood
+
+**Pages & components**
+
+- `/profile` → Wallet tab · `src/app/(main)/profile/profile-client.tsx`
+  (`PROFILE_TABS` includes `wallet`; `WALLET_VIEW_TABS = ["transactions",
+  "purchases", "sales"]`)
+- `/profile/purchases` · `src/app/(main)/profile/purchases/page.tsx`
+- `/products/membership-{basic,seller,host,organizer,steward}` · `src/app/products/**`
+- `src/components/bank-accounts-card.tsx`, `wallet-deposit-dialog`,
+  `send-money-dialog`, `wallet-history`, `metamask-connect-button`,
+  `eth-address-form`
+
+**API**
+
+- `POST /api/wallet/deposit` — Stripe PaymentIntent top-up
+- `GET /api/wallet/banks` — linked Teller accounts + client config
+- `GET /api/wallet/banks/connect` — Teller Connect session nonce
+- `POST /api/wallet/banks/enroll` — signature-verified enrollment save
+- `POST /api/wallet/banks/payments` — initiate a Teller payment
+- `POST /api/wallet/banks/webhook` — Teller callbacks
+- `POST /api/stripe/webhook` — membership grants and settlement
+- `GET /api/cron/thanks-demurrage` — token decay
+
+**Libraries**
+
+- `src/lib/teller.ts` · `src/lib/wallet-constants.ts` ·
+  `src/lib/membership-pricing.ts` · `src/lib/checkout-fees.ts`
+
+**Cross-links**
+
+- [Marketplace](/docs/wiki/marketplace) — the buyer fee model in full ·
+  [Account & settings](/docs/wiki/account-settings) — the Seller tab

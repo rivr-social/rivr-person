@@ -2,31 +2,76 @@
 
 ## What it is
 
-Direct messages between users and group/room conversations, backed by Matrix
-(Synapse). Includes 1:1 DMs and multi-party rooms.
+Direct messages and group rooms, backed by Matrix. It's a real chat client
+running in your browser — your instance holds Matrix credentials for you and the
+page connects, syncs, and renders conversations live.
 
-## Where it lives
+Everything happens on **one page**. There are no per-conversation routes;
+selecting a conversation swaps the panel beside the list.
 
-- `/messages` — inbox · `src/app/(main)/messages/page.tsx`
-- `/messages/[otherUserId]` — 1:1 DM thread · `src/app/(main)/messages/[otherUserId]/page.tsx`
-- `/messages/room/[roomId]` — group room · `src/app/(main)/messages/room/[roomId]/page.tsx`
+## How to use it
 
-## Every interaction
+1. Go to **`/messages`**. You'll see *"Connecting to Matrix…"* while the client
+   loads and performs its first sync.
+2. The left side (a third of the width on desktop) is your conversation list
+   with unread counts. The right side is the chat panel. On mobile the two swap
+   places as you navigate.
+3. Pick a conversation and type. Until you do, the panel reads *"Select a
+   conversation to start messaging."*
 
-- **Open a conversation** — select a DM or room from the inbox.
-- **Send a message** — compose and send; delivered over Matrix.
-- **Start a DM** — message another user by id.
-- **Participate in a room** — group/room conversations. _TODO(verify): confirm
-  room creation, invites, and read-receipt affordances live._
+> 📸 **Screenshot:** _The messages page with the conversation list on the left showing unread counts and an open DM thread on the right._ — capture at `/messages`. _(placeholder — remove when image added)_
 
-## Permissions / gating
+### Starting a conversation with someone
 
-- All messaging requires a session and a provisioned Matrix identity.
-- Room membership gates room visibility and participation.
-- Matrix discovery is advertised at `/.well-known/matrix/*`.
+Use the query parameter: **`/messages?user=<agentId>`**. The page resolves that
+person's Matrix identity and opens — or creates — your DM room with them.
 
-## Cross-links
+This is how the rest of the app links into messaging. The **Contact seller**
+button on a purchase confirmation, for example, is just a link to
+`/messages?user=<sellerId>`.
 
-- API/MCP: [Notifications tools](/docs/api) · Matrix well-known ([Federation protocol](/docs/api/federation))
-- Wiki: [Groups & subgroups](/docs/wiki/groups) · [Account & settings](/docs/wiki/account-settings)
-- Integration: Matrix homeserver (`matrix.rivr.social`); config via `MATRIX_*` env.
+### Group rooms
+
+A 1:1 DM can be **promoted into a group room** by adding participants; the app
+creates the new room and moves you into it. Group rooms render through a
+different panel from DMs and carry their own chat mode.
+
+Leaving a room is how you delete a conversation.
+
+## Good to know
+
+- **The Matrix SDK is loaded lazily** — it's about 831 KB, so it's deliberately
+  kept out of the app's initial JavaScript. That's the reason for the connecting
+  screen.
+- **Syncing stops when you leave the page**, and starts again when you return.
+- **Sync repair is automatic**, with a bounded number of attempts; if it gives
+  up, the page tells you rather than failing silently.
+- Messaging needs a session and a provisioned Matrix identity.
+- Matrix discovery is advertised at `/.well-known/matrix/client` and
+  `/.well-known/matrix/server`, both derived from the instance's domain.
+- If rooms are purged server-side, the owner can tidy up stale local records
+  with `POST /api/admin/matrix/reconcile` — see
+  [Instance owner](/docs/wiki/admin).
+
+<Callout type="warning" title="There are no message sub-routes">
+  `/messages/[otherUserId]` and `/messages/room/[roomId]` do **not** exist in
+  this app — an earlier version of this page claimed both. The single
+  `/messages` page plus the `?user=` parameter is the whole surface.
+</Callout>
+
+## Under the hood
+
+- `/messages` · `src/app/(main)/messages/page.tsx` (lazy boundary,
+  `ssr: false`) → `messages-page-client.tsx`
+- Panels: `MatrixChatPanel` (DMs), `GroupChatPanel` (rooms)
+- Server actions · `src/app/actions/matrix` — `getMatrixCredentials`,
+  `getDmRoomForUser`, `getDmRoomForListing`, `getMatrixUserIdsForAgents`,
+  `getUserGroupRooms`
+- Configuration · `MATRIX_HOMESERVER_URL`, `MATRIX_SERVER_NAME`,
+  `MATRIX_ADMIN_TOKEN`, `MATRIX_AGENT_IDS`
+
+**Cross-links**
+
+- [Marketplace](/docs/wiki/marketplace) (Contact seller) ·
+  [Account & settings](/docs/wiki/account-settings) ·
+  [Instance owner](/docs/wiki/admin)

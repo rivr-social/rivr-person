@@ -1,72 +1,154 @@
-# Docs, filesystem & vault
+# Docs & vault
 
 ## What it is
 
-The docs module **is a parachute vault**: one integrated surface where a nested
-tag tree is the primary navigation and every document carries editable nested
-tags. Docs are markdown-body Resources whose faceted location is a nested-tag
-array (`metadata.facetedTags`, mirrored to flat `tags`); a doc appears under
-**every** tag path it carries. Tag semantics match Parachute exactly
-(lower-cased slash paths like `work/projects/rivr`), so a Parachute/Obsidian
-vault imports losslessly. Per-resource access control (direct grants + ABAC
-policies), visibility, share-as-post, and history ride on the same rows.
+Your documents live in a **parachute vault**: a nested tag tree on the left, your
+documents on the right, and every document appearing under **every** tag path it
+carries.
+
+That last part is the idea worth grasping. A document isn't *in* one folder. A
+note tagged `work/projects/rivr` and `people/cameron` shows up under both, and
+under `work` and `work/projects` too. Tag paths behave exactly like Parachute and
+Obsidian nested tags — lower-cased, slash-separated — so an existing vault
+imports without losing its structure.
+
+Underneath, documents are ordinary Resources with a markdown body, which means
+they get the same visibility, sharing, permissions and history as everything else
+you own.
 
 ## Where it lives
 
-- `/groups/[id]/docs` — group docs / faceted Tags vault · `src/app/groups/[id]/docs/page.tsx`
-- `/families/[id]/docs`, `/rings/[id]/docs` — container docs
-- Profile docs tab — own-profile filesystem (`documents-tab.tsx`)
-- Agent-HQ filesystem API · `src/app/api/agent-hq/**`; ABAC engine `src/lib/permissions.ts`
+The vault is the **Docs tab on your profile** (`/profile?tab=docs`). There is no
+standalone docs route in this app.
 
-## Every interaction
+> 📸 **Screenshot:** _The Docs tab showing the faceted tag rail on the left — "All docs", collapsible tag folders with counts, and an "Untagged" bucket — beside the document list._ — capture at `/profile` (open the **Docs** tab). _(placeholder — remove when image added)_
 
-- **Navigate the vault** — a persistent left rail shows the nested tag tree
-  ("All docs", collapsible facet folders with per-node doc counts, and an
-  "Untagged" bucket); selecting a path filters to docs under it (exact or
-  subtree). No separate list-vs-Tags toggle — the vault IS the docs module.
-- **Edit a doc's tags inline** — on the doc view, tags render as chips
-  (× to remove); add tags by typing a slash path (`a/b/c`, Enter/comma to
-  commit) with autocomplete from the vault's existing paths. Persists to
-  `metadata.facetedTags` + the flat `tags` mirror in one update.
-- **Import a vault** (sovereign person instances) — Docs toolbar → "Import
-  vault": pick a Parachute/Obsidian folder (or pull a live daemon); notes become
-  faceted-tag doc Resources; unchanged notes skip on re-import (idempotent).
-- **Browse the filesystem** — a virtual DB filesystem over Resources, rooted at
-  the **object whose page you opened**, not at you: on a group's Docs tab it
-  roots at that GROUP, on your profile it roots at YOU. The root has three
-  folders — `agents/` (the object's related agents: a group's members &
-  subgroups, or a person's personas & the groups they belong to/manage),
-  `ledger/` (the object's action history, by verb), and `resources/` (the
-  object's owned content, nested by type). Select a resource folder to manage
-  its permissions. Access is authorized server-side: a **group** filesystem is
-  visible only to that group's admins; a **person** filesystem only to that same
-  person (self or their own personas). An unauthorized viewer gets an empty tree
-  — the scope subject is derived and checked from `auth()`, never trusted from
-  the client.
-- **Open the ACL panel** — for a resource (or a resource-type folder):
-  - set **visibility**;
-  - add **direct grants** (verb + role + locale/global scope) to any agent;
-  - create **ABAC policies** (allow/deny, conditions equals/in/exists/gt…lte, AND/OR, locale scope);
-  - **share as post**; view read-only **history**.
-- **Require payment for access (x402)** — per-record paid access, OFF by
-  default. The record's owner opts in from the doc editor, setting a price and
-  a settlement address (stored under `resources.metadata.x402`). A caller
-  without an explicit grant then gets a 402 challenge at
-  `GET /api/resources/[id]/access` and is served after a verified, settled
-  x402 payment (receipts persist in `x402_receipts`; a unique settlement-tx
-  index gives replay protection, and authenticated payers are re-granted
-  without re-charging). Toggling it off restores plain grant-based access.
+## How to find a document
 
-## Permissions / gating
+1. Open the **Docs** tab.
+2. Use the tag rail: **All docs**, the collapsible facet folders with per-node
+   counts, and an **Untagged** bucket for documents with no tags.
+3. Select a path to filter to the documents under it.
 
-- ACL management is gated by `check(userId, "grant", id, "resource")` — owner or
-  grant-holder only.
-- Folder ACL opens for a `resources/{type}/{id}` directory and its leaves;
-  true subtree/type-folder ABAC is a documented gap (per-resource scope).
-- Tag edits reuse the doc-update action and are gated to the doc's
-  owner/author (same enforcement the viewer already applies).
+The rail is built from your documents' own tags — nothing is hardcoded, and
+parent paths are derived automatically, so tagging one note `a/b/c` creates the
+`a` and `a/b` nodes for you.
 
-## Cross-links
+## How to tag a document
 
-- API/MCP: [Files tools](/docs/api) · [`/api/agent-hq` REST](/docs/api) (db/entries, resources/[id]/access|policies|ledger|share)
-- Wiki: [Groups & subgroups](/docs/wiki/groups) · [Account & settings](/docs/wiki/account-settings) · [Autobot & agents](/docs/wiki/autobot-agents)
+Open a document. Its tags render as chips with an × to remove.
+
+To add one, type a slash path — `work/projects/rivr` — and press Enter or comma.
+Autocomplete offers paths already used in your vault. The change saves
+immediately.
+
+## How to import an existing vault
+
+1. In the Docs toolbar, press **Import vault**.
+2. Choose either:
+   - **Files** — pick a Parachute or Obsidian folder from your computer, or
+   - **Daemon** — point at a running Parachute daemon's URL with its token, and
+     the server pulls the notes itself.
+3. Every note becomes a document with its folder path *and* its inline
+   `#nested/tags` merged into one set of facets.
+
+Re-importing is safe: unchanged notes are **skipped**, so you can run it
+repeatedly without creating duplicates. You'll get a count of imported, updated,
+and skipped notes.
+
+<Callout type="note" title="Owner-only, sovereign-only">
+  Vault import is restricted to the instance owner on a sovereign instance, and
+  the daemon path carries the same SSRF and size caps as the builder's import.
+</Callout>
+
+## How to control who can read a document
+
+Each document has a **visibility** setting, and beyond that an access panel where
+you can:
+
+- **Grant access directly** to a specific agent, by verb and role.
+- **Write ABAC policies** — allow or deny rules with conditions (equals, in,
+  exists, greater-than, and so on) combined with AND/OR.
+- **Share as a post**, optionally with an embedded offering.
+- **Read the history** — a read-only audit trail of who did what.
+
+Managing access is restricted to the document's owner or someone already holding
+a grant on it.
+
+## How to charge for access
+
+Any document can be put behind a payment, using the x402 protocol. **It's off for
+every document by default.**
+
+1. Open the document's editor and enable paid access.
+2. Set a price and a settlement address.
+
+After that, a caller without an explicit grant who requests
+`GET /api/resources/[id]/access` gets a **402** response describing what to pay.
+Once they pay, the payment is verified and settled, a receipt is stored, and the
+content is served. An authenticated payer who comes back later is **re-granted
+from their receipt without being charged again**. Receipts carry a unique
+settlement-transaction constraint, so a payment can't be replayed.
+
+Turn it off and the document goes back to ordinary grant-based access.
+
+<Callout type="note" title="With it off, there is no way to pay your way in">
+  A caller without a grant simply gets a 403. Payment is only ever an option on
+  documents whose owner explicitly opted in.
+</Callout>
+
+## The filesystem view
+
+The Docs tab has a second mode: a virtual filesystem over your Resources, rooted
+at **you**. It has three folders:
+
+- **`agents/`** — your personas, and the groups you belong to or manage
+- **`ledger/`** — your action history, organised by verb
+- **`resources/`** — everything you own, nested by type
+
+Select a resource folder to manage its permissions. Access is resolved
+server-side from your session — an unauthorised viewer gets an empty tree, never
+a leaked listing.
+
+## Good to know
+
+- Document types are **document**, **note**, and **dataset**.
+- **Image, video and audio resources collapse into a single "Media" folder** in
+  the resources view.
+- Tag edits reuse the ordinary document-update path, so they're gated to the
+  document's owner exactly like editing its body.
+- Folder-level ACLs open for a resource-type directory and its leaves; true
+  subtree ABAC is a known gap — policies are per-resource.
+- `POST /api/transcription` files transcripts straight into this vault under a
+  facet path you choose — see [Calendar & events](/docs/wiki/calendar-events).
+
+<Callout type="warning" title="No group, family, or ring document routes">
+  `/groups/[id]/docs`, `/families/[id]/docs` and `/rings/[id]/docs` were
+  documented on this page before and **do not exist here** — this app has no
+  groups, families or rings directories at all. Group documents live on the
+  group's own instance.
+</Callout>
+
+## Under the hood
+
+- Profile Docs tab · `src/components/documents-tab.tsx` (modes: `vault`,
+  `filesystem`), mounted from `src/app/(main)/profile/profile-client.tsx`
+- Tag rail · `src/components/faceted-vault-panel.tsx`,
+  `faceted-tag-editor.tsx`; path helpers in `src/lib/parachute-doc.ts`
+- Import · `src/components/parachute-import-dialog.tsx` →
+  `POST /api/agent-hq/parachute-import`; parser `src/lib/parachute-vault-md.ts`
+- Access · `src/components/resource-acl-panel.tsx`; ABAC engine
+  `src/lib/permissions.ts`
+- API · `GET /api/agent-hq/faceted-fs`, `/api/agent-hq/db/{entries,file}`,
+  `/api/agent-hq/resources`, `/api/agent-hq/resources/upload`,
+  `/api/agent-hq/resources/[id]` and its `{access,policies,ledger,share}`
+  children
+- **x402 lives on a different route**: `GET /api/resources/[id]/access` (not the
+  agent-hq one). Libraries in `src/lib/x402/**`; receipts in `x402_receipts`
+- Knowledge graph · `/api/kg/{docs,graph,chat}`, `/api/kg/docs/[id]/push`
+
+**Cross-links**
+
+- [Autobot & agents](/docs/wiki/autobot-agents) ·
+  [Account & settings](/docs/wiki/account-settings) ·
+  [Calendar & events](/docs/wiki/calendar-events)

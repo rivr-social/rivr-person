@@ -1,0 +1,273 @@
+# Live avatar & voice
+
+## What it is
+
+Your profile photo, animated, listening, and talking back — in your own cloned
+voice if you've set one up.
+
+Open it and you get a big round picture of yourself that hears you through your
+microphone, thinks using the *same* assistant brain as the text chat, and
+answers out loud while its mouth moves. You can interrupt it mid-sentence and it
+stops, like a person would.
+
+Three things stack up behind that, and they're worth separating because each one
+works on its own:
+
+| Layer | What it gives you | What it needs |
+| --- | --- | --- |
+| **Animated face** | A talking portrait | The instance's live-avatar worker |
+| **Your voice** | Replies in *your* cloned voice instead of the browser's robot | A voice sample + your own GPU box |
+| **Real lip-sync** | Photoreal mouth shapes instead of a warp effect | A one-time bake on that GPU box |
+
+Skip any layer and the one below it still works. No GPU means the browser reads
+the reply aloud. No bake means a landmark-warp mouth instead of photoreal
+frames. Nothing hard-fails.
+
+<Callout type="note" title="This is the owner's lane">
+  Live avatar is gated to `isAuthenticated && useAutobotChat` — you, on your own
+  instance. Visitors browsing your profile don't get it.
+</Callout>
+
+## How to start a live conversation
+
+1. Find the floating **assistant chat bubble** (it rides on your profile pages —
+   it is *not* on `/autobot/chat`).
+2. Click either the **header avatar** ("Go live — talk to your avatar") or the
+   green **video icon** ("Live avatar — talk with your voice").
+3. The overlay takes over the screen. It shows a big round portrait whose ring
+   colour tells you the phase:
+
+| Ring | Phase | Caption |
+| --- | --- | --- |
+| Neutral | connecting | "Waking up…" |
+| Sky | listening | "Listening — just talk" |
+| — | muted | "Mic muted" |
+| Amber, pulsing | thinking | "Thinking…" |
+| Emerald, pulsing | speaking | "Speaking…" |
+| — | error | "Something went wrong" |
+
+> 📸 **Screenshot:** _The live-avatar overlay mid-session with the emerald "Speaking…" ring, the persona name, and the last exchange ("You: …" plus the reply) below the portrait._ — capture at `/profile` (click the header avatar in the assistant chat bubble, then speak). _(placeholder — remove when image added)_
+
+4. **Just talk.** There's no push-to-talk. Speech recognition runs continuously,
+   and the app deliberately **stops listening whenever the avatar isn't in the
+   listening phase**, so it can never hear itself and reply to its own voice.
+5. **Interrupt whenever you like.** Talking over the avatar (barge-in) cuts the
+   audio immediately and tells the worker to stop speaking.
+6. If your browser has no speech recognition, or you'd rather type, use the
+   **text input** at the bottom (up to 4000 characters).
+7. Close with the **X**. That ends the session server-side.
+
+> 📸 **Screenshot:** _The overlay's control row — the mic toggle, the "use a different picture" button, and (when eligible) the calibrate and bake buttons._ — capture at `/profile` (open the live avatar overlay and look at the bottom control row). _(placeholder — remove when image added)_
+
+## How to give it your own voice
+
+By default the browser's built-in speech synthesiser reads replies. To hear
+**your** voice you need a voice sample and a GPU box, in that order.
+
+### 1. Record a voice sample
+
+In the assistant chat settings, switch voice mode to **clone** and use the
+record-or-upload widget.
+
+- **Record in the browser** — read the on-screen prompt "in a steady voice for
+  **15–30 seconds**".
+- **Or upload a file** — MP3, WAV, M4A, OGG, or WebM, **max 25MB**.
+
+The sample is stored in this instance's own object storage — it belongs to you,
+not to a third-party voice service.
+
+> 📸 **Screenshot:** _The voice-clone upload widget with the record button and the reading prompt._ — capture at `/autobot/chat` (open settings and switch voice mode to **clone**). _(placeholder — remove when image added)_
+
+### 2. Start your GPU box
+
+Voice cloning runs on a GPU you rent, not on the app server.
+
+1. Put your **Vast.ai API key** into the voice settings.
+2. Press **Start Voice** on the GPU badge (bottom-left of every page).
+3. Wait. The app finds the cheapest suitable offer, creates the box, and the box
+   pulls its own worker code from this instance on every boot.
+
+<Callout type="warning" title="You need a voice sample first">
+  Pressing start without one returns *"Record a voice sample first (Settings →
+  Assistant → Voice)"*. The box downloads your sample at boot — that's how the
+  clone reference gets there.
+</Callout>
+
+### The voice ladder
+
+When a reply needs speaking, the app tries these in order and silently drops to
+the next:
+
+1. **Your own GPU box** — the clone. Using it also stamps the box as recently
+   used, so the idle reaper leaves it alone.
+2. **A shared instance worker**, if the operator configured `CHATTERBOX_URL`.
+3. **Your browser's built-in voice.** Always available, never errors.
+
+Reply text is capped at 2000 characters for synthesis.
+
+## The GPU badge
+
+A small badge sits bottom-left on every page and polls every 15 seconds while
+the tab is visible.
+
+| Badge | Meaning | Button |
+| --- | --- | --- |
+| **GPU Active** (emerald) | Running and actually serving | Stop GPU |
+| **GPU Starting** (amber, pulsing) | Provisioning, or booted but the model is still loading | — |
+| **GPU Idle** (zinc) | Stopped; you're billed for storage only | Restart / Release |
+| **No GPU** (slate) | No box | Start Voice |
+| **Unknown** (slate) | Status not yet fetched | Start Voice |
+
+When it flips from starting to running you get a beep and a **"Personal voice
+ready"** modal.
+
+> 📸 **Screenshot:** _The GPU status badge in each of its states — No GPU, GPU Starting (amber pulse), and GPU Active (emerald)._ — capture at `/autobot/chat` (bottom-left corner, across a start cycle). _(placeholder — remove when image added)_
+
+<Callout type="tip" title="The badge does not lie to you">
+  A box can be "running" at the provider while the speech model is still
+  loading. The app probes the worker before claiming readiness, and reports
+  **GPU Starting** — not Active — until it genuinely answers. The UI never
+  claims a voice it can't deliver.
+</Callout>
+
+### It stops itself
+
+Two independent mechanisms stop an idle box after **~35 minutes**: a watchdog
+running on the box itself, and a server-side check on every status poll. A
+stopped box bills for storage only. **Release GPU** destroys it outright.
+
+## How to bake photoreal mouth shapes
+
+Out of the box the mouth is a *warp* — the portrait's real geometry, stretched.
+Baking replaces it with real frames of your face making real mouth shapes.
+
+1. Open the live-avatar overlay. If you haven't baked yet, a **wand button** is
+   showing: *"Bake real mouth shapes for this picture (one-time, uses your
+   GPU)"*.
+2. Make sure your GPU box is running. If it isn't, the bake returns a "needs
+   GPU" response, the app starts one for you, and tells you: *"Starting your
+   voice GPU — give it a few minutes, then tap the wand again."*
+3. Press the wand. The box renders a pack of mouth-shape frames from your
+   portrait, then classifies them into bins by how open and how rounded the
+   mouth is, plus a stepped openness ladder and eye/brow variants.
+4. Every frame is copied into **this instance's own storage** — the pack
+   outlives the GPU box, so you never bake twice.
+5. You'll see *"Mouth shapes baked — restarting with the new pack."* and the
+   session restarts using them.
+
+This takes a few minutes and times out at about 4½ minutes with *"The bake timed
+out — try again; the box stays warm."*
+
+> 📸 **Screenshot:** _The overlay just after a successful bake, showing the "Mouth shapes baked — restarting with the new pack." message._ — capture at `/profile` (open the overlay and press the wand). _(placeholder — remove when image added)_
+
+Once a pack exists the wand disappears, and playback needs **no GPU at all** —
+the frames are swapped against a phoneme timeline built from the actual audio.
+
+## How to calibrate a stubborn portrait
+
+Some photos defeat automatic face detection — heavy shadow, sunglasses, an
+unusual angle, a stylised illustration.
+
+When that happens (and only when you have no baked pack), a **crosshair button**
+appears. Press it, then tap three times on the picture:
+
+1. **Tap the mouth**
+2. **Tap the LEFT eye** (their left, your right)
+3. **Tap the RIGHT eye**
+
+The session restarts using your taps as the layout. This is the fix for "the
+mouth is moving in the wrong place."
+
+> 📸 **Screenshot:** _The calibration overlay mid-sequence, showing the "Tap the LEFT eye (their left, your right)" prompt over the portrait._ — capture at `/profile` (open the overlay with an undetectable portrait and press the crosshair). _(placeholder — remove when image added)_
+
+## How to use a different picture
+
+The **ImageUp button** ("Use a different picture for the live avatar") uploads a
+replacement portrait. It's stored as a `reference-portrait` asset and takes
+precedence over your normal profile image for the live avatar only.
+
+<Callout type="warning" title="A baked pack belongs to one picture">
+  The pack records which image it came from and is only used with that image.
+  Change the portrait and you're back to the warp engine until you bake again.
+</Callout>
+
+## Good to know
+
+- **Video is MJPEG, proxied.** The stream is piped through this app, so the GPU
+  worker is never exposed to your browser directly.
+- **Audio comes back inside the reply**, base64-encoded, and is played locally —
+  or, in browser mode, spoken by the browser.
+- **Mic language follows your browser's** locale setting, falling back to
+  `en-US`.
+- **Conversation history is capped at 20 messages** per request.
+- **Data-URL profile images are rejected for baking** — the GPU box has to be
+  able to fetch the picture by URL.
+- **If the instance has no live-avatar worker configured**, the session request
+  returns *"Live avatar is not configured on this instance."* and the overlay
+  explains it. Nothing else breaks.
+- **Adopted GPU boxes can go stale.** If the app reuses an orphaned box whose
+  boot token no longer matches, authentication fails — destroy it (**Release
+  GPU**) and provision fresh.
+
+## Under the hood
+
+**UI**
+
+- `src/components/persona-chat-widget.tsx` — the entry point (header avatar +
+  video button); gated on `canGoLive = isAuthenticated && useAutobotChat`
+- `src/components/live-avatar-overlay.tsx` — the overlay itself
+- `src/components/voice-clone-upload.tsx` — record/upload widget
+- `src/components/gpu-status-badge.tsx` — mounted globally in
+  `src/app/(main)/layout.tsx`; state shared via `src/lib/gpu-status-bus.ts`
+
+**Routes**
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/autobot/live-avatar/session` | Open a session → `{sessionId, width, height, faceDetected, mode, fps, streamPath, hasVisemePack}` |
+| `DELETE /api/autobot/live-avatar/session` | End it |
+| `GET /api/autobot/live-avatar/stream/[sessionId]` | Auth-gated MJPEG passthrough |
+| `POST /api/autobot/live-avatar/speak` | Returns clone audio (base64) or a browser-mode instruction |
+| `POST /api/autobot/live-avatar/stop` | Barge-in / stop speaking |
+| `POST /api/autobot/live-avatar/bake` | One-time viseme-pack bake (polled, ~280s budget) |
+| `POST` / `DELETE /api/autobot/live-avatar/calibration` | Save / clear the 3-tap layout |
+| `POST /api/autobot/voice/upload` | Voice sample (field `audio`, 25MB cap) |
+| `POST /api/autobot/tts` | Shared TTS entry point |
+| `GET` / `POST /api/autobot/gpu` | Status, and the actions `start`, `stop`, `heartbeat`, `refresh`, `decommission` |
+| `GET /api/autobot/gpu/worker-source` | The box's Python worker source — public by design, no secrets |
+| `POST /api/autobot/digital-twin/upload` | Portrait / asset upload (`reference-portrait`, etc.) |
+
+**Libraries**
+
+- `src/lib/live-avatar-worker.ts` · `src/lib/chatterbox-tts.ts` ·
+  `src/lib/vast-gpu.ts` · `src/lib/chatterbox/worker-source.ts` ·
+  `src/lib/speech-text.ts`
+- Worker: `docs/live-avatar/` (FastAPI; warp engine + frame-swap engine)
+
+**Rendering paths**
+
+- **Warp** (`mode: "warp"`) — facial-landmark portrait puppet, CPU-only,
+  ~1–2ms/frame at 8fps. The universal baseline and the fallback for everything.
+- **Frame-swap** (`mode: "frames"`) — your baked pack, played against a phoneme
+  timeline matched to the real audio duration. **Zero runtime GPU.**
+- **GPU-live** (`source: "gpu"`) — when your own box is running and reachable,
+  the reply audio is rendered against your portrait for true lip-sync, relayed
+  into the same MJPEG stream. Falls back on any failure.
+
+<Callout type="note" title="Provider">
+  GPU provisioning is **Vast.ai only** — the provider type has exactly one
+  value, `"vast"`, and the server forces it regardless of what a client sends.
+  The retired local/custom provider options never had a working code path.
+</Callout>
+
+**Configuration**
+
+- `LIVE_AVATAR_WORKER_URL` (required for the feature) and optional
+  `LIVE_AVATAR_WORKER_API_KEY`
+- `CHATTERBOX_URL` / `CHATTERBOX_API_KEY` — the optional shared voice worker
+- Your Vast.ai API key and voice sample are set **in the app**, not in env
+
+**Cross-links**
+
+- [Autobot & agents](/docs/wiki/autobot-agents) — the assistant brain, personas,
+  connectors · [Account & settings](/docs/wiki/account-settings)

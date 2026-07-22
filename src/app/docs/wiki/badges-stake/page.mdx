@@ -1,32 +1,77 @@
-# Badges & stake
+# Badges
 
 ## What it is
 
-Badges are issued credentials that recognize skills, roles, or contribution and
-can gate actions (e.g. job claims). Points-based stake converts contribution into
-standing/weight within an org. Admins manage badge issuance.
+Badges are credentials that recognise a skill or a qualification, and they gate
+things — most visibly, whether you can claim a particular job. This app shows
+you the badge catalogue, your progress through each badge's training, and which
+badges you hold.
 
-## Where it lives
+## How to use it
 
-- `/badges`, `/badges/[id]` — badge directory + detail · `src/app/badges/**`
-- `/admin/badges` — badge administration · `src/app/admin/badges/page.tsx`
-- `/points` — points/stake · `src/app/(main)/points/page.tsx`
+1. Go to **`/badges`** — *Community Badges*, "Earn badges by completing training
+   and demonstrating skills."
+2. The top of the page summarises where you stand: **Badges Earned**,
+   **Available Badges**, and your completion rate.
+3. Filter with the tabs — **All Badges**, **Earned**, **Available**. Each badge
+   card shows its training duration and how many jobs it unlocks.
+4. Press **Start Training** on a badge you don't hold, or **View Details** on one
+   you do. Either opens `/badges/[id]`.
+5. On the badge page you get a progress bar over the badge's modules and the
+   training content itself, module by module. Earned badges show a green
+   **Earned** marker.
 
-## Every interaction
+> 📸 **Screenshot:** _The badges page with its stat cards and the All / Earned / Available tab strip over the badge grid._ — capture at `/badges`. _(placeholder — remove when image added)_
 
-- **Browse badges / open a badge** — see a badge and its holders.
-- **Issue a badge** — admins award badges to agents (`/admin/badges`).
-- **Earn points** — contribution credits `earn` ledger rows; points accrue to the
-  actor's balance.
-- **Stake** — points-based org stake converts contribution → standing. _TODO(verify): confirm live stake mechanic and where it is set._
+Some badges offer a **live class**, which pre-fills the event composer so you can
+schedule one.
 
-## Permissions / gating
+## Good to know
 
-- **Public** badge pages (`/badges` is a public prefix).
-- **Badge issuance** is admin-gated (`/admin/badges`).
-- Badge holdings gate downstream capabilities (e.g. claiming badge-gated jobs).
+<Callout type="warning" title="Training progress here is not real yet">
+  Completing a module writes to your **browser's local storage only**. Nothing
+  is persisted on the server, and **no badge is ever awarded by this UI** — you
+  will see "Training completed!" and remain unbadged. Badges you actually hold
+  are read from data written elsewhere (typically a group or the global
+  instance, over federation). Clear your browser storage and your training
+  progress is gone.
+</Callout>
 
-## Cross-links
+<Callout type="warning" title="There is no badge administration here">
+  This app has no issue-badge, revoke-badge, or badge-admin surface of any kind,
+  and no `/admin/badges` route. A previous version of this page claimed admins
+  could issue and revoke badges from this instance. They cannot.
+</Callout>
 
-- Wiki: [Wallet & treasury](/docs/wiki/wallet-treasury) · [Admin](/docs/wiki/admin)
-- API/MCP: [`rivr.points.balance`](/docs/api) · [Work Graph tools](/docs/api)
+- **`/badges` isn't linked from any menu** — you need the URL.
+- Badge pages are public, and they resolve a *unified* session, so a visitor who
+  arrived via cross-instance sign-on still sees their own earned state rather
+  than being treated as anonymous.
+- Holding a badge is what unlocks claim and manage affordances on `/jobs/[id]`.
+
+## About stake and points
+
+**Neither is a user surface on this instance.**
+
+There is no `/points` route and no points balance page — the number beside your
+name on your profile header is a plain read-only field with no ledger, no
+history, and nothing to spend. Stake exists in the codebase only as
+group-scoped ledger aggregation with no page rendering it here; stake and
+share-weighting are group and global concepts.
+
+For the value surfaces that *are* real here — your wallet, thanks tokens,
+memberships — see [Wallet & money](/docs/wiki/wallet-treasury).
+
+## Under the hood
+
+- `/badges` · `src/app/badges/page.tsx` → `badges-page.tsx`
+- `/badges/[id]` · `src/app/badges/[id]/page.tsx` → `badge-detail.tsx`
+- `/jobs/[id]` · `src/app/jobs/[id]/page.tsx` → `job-detail.tsx`
+  (tabs: **About**, **Tasks**, **Timer**), reached from the feed's **Gigs** tab
+- Reads · `getBadgeDefinitions()`, `fetchUserBadges()`, `getUserBadgeIds()`
+
+**Cross-links**
+
+- [Wallet & money](/docs/wiki/wallet-treasury) ·
+  [Feeds & posts](/docs/wiki/feeds-posts) ·
+  [Calendar & events](/docs/wiki/calendar-events)

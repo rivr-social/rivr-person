@@ -1,49 +1,62 @@
-# Groups & subgroups
+# Groups
 
 ## What it is
 
-Groups are agent-owned communities/orgs with their own feed, members, tabs, and
-resources. Groups can nest (subgroups), and rings and families are related
-group-like containers.
-
 **On a person instance, groups are something you belong to — not something this
-app hosts.** A sovereign group lives on its own instance (the `rivr-group` app)
-or on global, and that home instance serves its page, tabs, settings, treasury,
-governance, and job board. This app shows you the groups you are a member of and
-links out to each group's canonical home.
+app hosts.**
 
-Historically this repo carried a transplanted copy of the group-page surface
-(a root group renderer plus the full group tab set). It was unreachable — the
-root page always resolves to the person profile — so it was removed on
-2026-07-22 along with the routes documented here that never existed in this app.
+A group lives on its own instance (the `rivr-group` app) or on global, and that
+home instance serves its page, tabs, settings, treasury, governance and job
+board. What this app does is show you the groups you're a member of, and send you
+to each one's real home.
 
-## Where it lives
+## How to see and open your groups
 
-- **Groups tab on a profile** — the list of a person's groups, each linking to
-  its home instance · `src/components/profile-group-feed.tsx`, rendered by
+1. Go to `/profile` and open the **Groups** tab.
+2. Every group you belong to is listed — including groups homed on other
+   instances entirely.
+3. Click one. The link resolves to that group's **canonical home URL**, so you
+   land on the instance that actually owns it, not on a broken local route.
+
+Your groups also appear on the home feed's **Groups** tab (`/?tab=groups`).
+
+Joining, leaving, managing settings and browsing a group's tabs all happen on the
+group's home instance.
+
+## Good to know
+
+- **Membership arrives over federation.** When you join a group elsewhere, that
+  membership is projected back onto your home instance, which is why the tab can
+  show groups this app has never hosted.
+- **Visitors see your groups only if you let them.** The Groups tab is one of the
+  tabs governed by your per-tab profile visibility — see
+  [Account & settings](/docs/wiki/account-settings).
+- **Remote links open as real cross-origin links**, not in-app navigation. That's
+  deliberate: prefetching another origin's page is what used to cause a flash of
+  error on load.
+
+<Callout type="warning" title="This app has no group routes">
+  There is no `/groups`, `/groups/[id]`, or any group tab surface here — no
+  directory for groups, rings, families or projects exists in this codebase at
+  all. This repo once carried a transplanted copy of the group-page surface; it
+  was unreachable, because the root always resolves to the person's profile, and
+  it was removed on 2026-07-22 along with the routes previously documented on
+  this page.
+</Callout>
+
+## Under the hood
+
+- Groups tab · `src/components/profile-group-feed.tsx`, rendered by
   `src/app/(main)/profile/profile-client.tsx` and
   `src/components/public-profile-page-client.tsx`
-- `/api/groups/access` — group access checks · `src/app/api/groups/access`
-- Group membership arrives over federation and is projected onto the member's
-  home instance (see [Federation & SSO identity](/docs/wiki/federation-identity)).
+- Link resolution · `src/lib/federation/entity-link.ts`
+  (`resolveEntityHref` / `resolveRemoteHomeBaseUrl`) rendered through
+  `src/components/canonical-link.tsx`
+- `/api/groups/access` — the REST side of password-protected group membership:
+  challenge, check, revoke, renew
 
-## Every interaction
+**Cross-links**
 
-- **See your groups** — the Groups tab on your profile lists every group you are
-  a member of, including groups homed on other instances.
-- **Open a group** — links resolve to the group's canonical home URL, so you land
-  on the instance that actually owns it.
-- **Join / leave, manage settings, browse group tabs** — these happen on the
-  group's home instance, not here.
-
-## Permissions / gating
-
-- Which of your groups a visitor sees is controlled by your public-profile tab
-  visibility (see [Account & settings](/docs/wiki/account-settings)).
-- Hidden groups are not projected to a public profile.
-
-## Cross-links
-
-- API/MCP: [Groups tools](/docs/api) · [`rivr.groups.join`](/docs/api) · [`/api/groups` REST](/docs/api)
-- Wiki: [Account & settings](/docs/wiki/account-settings) · [Federation & SSO identity](/docs/wiki/federation-identity) · [Docs, filesystem & vault](/docs/wiki/docs-vault)
-- Federation: sovereign group instances federate to global; membership lifecycle emits signed events, and membership is back-projected to each member's home instance.
+- [Account & settings](/docs/wiki/account-settings) ·
+  [Federation & identity](/docs/wiki/federation-identity) ·
+  [Feeds & posts](/docs/wiki/feeds-posts)
