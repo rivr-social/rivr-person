@@ -48,6 +48,9 @@ const PUBLIC_API_PREFIXES = [
   // Own bearer/x-node-admin-key auth (route.ts) — must be reachable so that
   // check runs; its siblings above are already allowlisted (2026-07-22).
   "/api/cron/thanks-demurrage",
+  // Dual auth (admin session OR shared-secret bearer, for sessionless
+  // external drains) — same allowlist reason as the cron above (2026-07-22).
+  "/api/admin/federation/drain-credential-sync-queue",
   "/api/health",
   "/api/federation",
   "/api/mcp",
