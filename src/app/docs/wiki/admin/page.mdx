@@ -106,13 +106,15 @@ These have no screens. They're called by hand or on a schedule.
 Each requires its own bearer secret and **fails closed** when that secret isn't
 configured — an unconfigured cron endpoint refuses rather than running open.
 
-<Callout type="warning" title="Two of these can't actually be reached from outside">
+<Callout type="note" title="All of these are reachable by an external scheduler">
   `/api/cron/thanks-demurrage` and
-  `/api/admin/federation/drain-credential-sync-queue` are **not** on the public
-  API allowlist, so the edge middleware demands a session cookie before their
-  own bearer-token check ever runs. An external scheduler presenting only the
-  correct bearer token will be rejected with a 401 it can't do anything about.
-  Both are reachable today only from inside an authenticated browser session.
+  `/api/admin/federation/drain-credential-sync-queue` were previously missing
+  from the public-API allowlist, so the edge middleware demanded a session
+  cookie before their own bearer check could run and an external scheduler got
+  a 401. Both were added to the allowlist on 2026-07-22. The middleware runs the
+  public-route check before the owner gate, so the endpoint's own bearer /
+  `x-node-admin-key` check is now what decides — which is the point. Schedule
+  them like the other three.
 </Callout>
 
 ## Good to know

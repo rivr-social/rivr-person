@@ -4,17 +4,46 @@ Discovery and search live on the **global aggregator**, not here. This instance
 is one person's home: it federates its public content outward so that people can
 find you from global, but it does not host a directory of everyone else.
 
-Your own content is browsable on your profile, and the home feed's tab strip
-(**Posts · Events · Groups · People · Gigs · Mart**) is the local browse
-surface — `/?tab=posts`, `/?tab=marketplace`, and so on. Search affordances in
-the app route into that feed rather than to a dedicated results page.
+Your own content is browsable on your profile — the site root `/` renders it,
+with tabs for **About · Posts · Docs · Media · Events · Groups · Photos ·
+Offerings · Activity**. That profile is the whole local browse surface. Signed
+in as the owner, `/profile` is the richer version of the same thing and is the
+one page that accepts `?tab=` in the URL.
+
+<Callout type="warning" title="The search box does not produce results">
+  Typing a query and pressing enter pushes `/?tab=posts&q=…`. The site root
+  ignores query parameters entirely, so you land on your profile's About tab
+  and the query is discarded. What *does* work is the dropdown that appears as
+  you type: picking a person, group, or event from it navigates straight to
+  that entity (a group resolves to its canonical home instance). Only the
+  "search everything" submit path is dead.
+</Callout>
 
 <Callout type="warning" title="These routes do not exist here">
   `/explore`, `/search`, `/map`, and `/people` are global-app surfaces. They
   appear in this instance's public-route allowlist as inherited configuration,
   but there are no pages behind them. There are no map tile or style endpoints
-  in this repo either.
+  in this repo either. The six-tab home feed (**Posts · Events · Groups ·
+  People · Gigs · Mart**) that `/?tab=` URLs point at is likewise a global-app
+  surface — its component ships in this repo but a person deploy never renders
+  it.
 </Callout>
+
+To reach the surfaces that aren't on your profile, use the **command palette**:
+press `/` or `Cmd/Ctrl+K`, or tap the ⁄ button above the bottom nav. Its
+**Navigate** group covers Home, Profile, Messages, Notifications, Calendar,
+Settings, Badges, Wallet, Offerings, Personas, Saved, Activity and the global
+Map; **Tools** covers the Builder, assistant settings, and agent chat; **Create**
+covers post/event/project/group; **Explore** has a single Events entry. Two of
+those inherit the dead redirects described above — the **Marketplace** command
+goes to `/?tab=marketplace` and the **Events** command to `/events`, which
+redirects to `/?tab=events`; both land on the profile's About tab.
+
+The palette, the bottom nav, and the GPU badge all live in the `(main)` route
+group's layout, so they are absent on `/settings`, `/marketplace/**`,
+`/events/**`, `/badges`, `/products/**`, `/jobs/[id]`, `/posts/[id]` and
+`/docs`. The palette launcher is also hidden on `/builder`, which has its own
+full-height chrome.
 
 **Cross-links** — [Feeds & posts](/docs/wiki/feeds-posts) ·
 [Federation & identity](/docs/wiki/federation-identity) ·

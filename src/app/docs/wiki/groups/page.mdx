@@ -18,7 +18,10 @@ to each one's real home.
 3. Click one. The link resolves to that group's **canonical home URL**, so you
    land on the instance that actually owns it, not on a broken local route.
 
-Your groups also appear on the home feed's **Groups** tab (`/?tab=groups`).
+Your groups also appear on the **Groups** tab of your public profile at the site
+root `/` — the same list, as a visitor sees it. (The tab is chosen by clicking;
+the root ignores `?tab=` in the URL. Only `/profile` reads it, so
+`/profile?tab=groups` is the one deep link that works.)
 
 Joining, leaving, managing settings and browsing a group's tabs all happen on the
 group's home instance.

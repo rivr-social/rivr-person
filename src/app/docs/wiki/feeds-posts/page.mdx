@@ -6,25 +6,35 @@ The social layer: a feed you browse, posts you write, and reactions and comments
 on both.
 
 On a person instance the **root of the site is your public profile**, not a
-feed — visiting `/` shows people who you are. The feed with its tab strip is the
-browse surface underneath that.
+feed — visiting `/` shows people who you are. There is no separate multi-tab
+feed underneath it: the profile *is* the browse surface.
 
 ## How to browse
 
-The feed carries six tabs, selectable with `?tab=`:
+`/` renders your public profile. It carries up to nine tabs — **About**
+(default) · **Posts** · **Docs** · **Media** · **Events** · **Groups** ·
+**Photos** · **Offerings** · **Activity** — and you switch between them by
+clicking. The **Posts** tab is where the post feed lives for a visitor.
 
-| Tab | URL |
-| --- | --- |
-| **Posts** (default) | `/?tab=posts` |
-| **Events** | `/?tab=events` |
-| **Groups** | `/?tab=groups` |
-| **People** | `/?tab=people` |
-| **Gigs** | `/?tab=gigs` |
-| **Mart** | `/?tab=marketplace` |
+<Callout type="warning" title="The ?tab= parameter does nothing on the site root">
+  The root page ignores query parameters entirely — the tab is client-side
+  state that always starts on **About**. Two redirects in the app still point
+  at it anyway: `/marketplace` sends you to `/?tab=marketplace` and `/events`
+  to `/?tab=events`, and both land you on your profile's About tab. The search
+  box has the same problem: submitting a query pushes `/?tab=posts&q=…`, and
+  the query is dropped. The six-tab **Posts · Events · Groups · People · Gigs ·
+  Mart** feed those URLs were written for is the *global* app's home page; the
+  component ships in this repo but a person deploy never renders it.
+</Callout>
 
-Several routes are just redirects into these: `/events` → Events, `/marketplace`
-→ Mart. The **Gigs** tab is the only route into a job's detail page at
-`/jobs/[id]` — there is no `/jobs` index.
+Signed in as the owner, **`/profile` is the surface that does read `?tab=`** —
+`/profile?tab=wallet`, `/profile?tab=offerings`, `/profile?tab=calendar` and so
+on all work, across its thirteen tabs.
+
+Everything else is reached by direct link, by the **bottom nav** (Home ·
+Assistant · Create · Profile), or by the **command palette** — press `/` or
+`Cmd/Ctrl+K`, or tap the ⁄ button above the nav bar. Job detail pages at
+`/jobs/[id]` have no index and no link at all: you need the URL.
 
 Open any post at `/posts/[id]`. The feed's comment button deep-links straight to
 the comments with `?focus=comments`.
@@ -72,8 +82,10 @@ graphics, social cards, and flyers. Its **My Photos** panel pulls in your own
 uploaded images.
 
 <Callout type="note" title="Reachable by URL only">
-  Nothing in the app links to `/create/design` today. You have to type the
-  address. The same is true of `/calendar` and `/badges`.
+  Nothing in the app links to `/create/design` today — no nav item, no command.
+  You have to type the address. `/calendar` and `/badges` are different: they
+  have no nav item either, but both are entries in the command palette's
+  **Navigate** group, so `/` or `Cmd/Ctrl+K` will get you there.
 </Callout>
 
 ## Good to know
@@ -94,8 +106,15 @@ uploaded images.
 
 ## Under the hood
 
-- `/` · `src/app/(main)/page.tsx` → `home-or-instance.tsx` (person instances
-  render the public profile as the site root) → `home-client.tsx`
+- `/` · `src/app/(main)/page.tsx` → `home-or-instance.tsx`. On a person
+  instance (`INSTANCE_TYPE=person` + `PRIMARY_AGENT_ID`) it returns
+  `renderPersonPage()` → `public-profile-page-client.tsx`; `home-client.tsx`
+  (the six-tab feed) is only reached by the non-person branch and is dead code
+  on every deploy of this repo
+- `/profile` · `src/app/(main)/profile/profile-client.tsx` — the one page that
+  reads `?tab=`
+- Nav + palette · `src/app/(main)/layout.tsx` mounts `bottom-nav.tsx` and
+  `CommandBar.tsx`; both exist only inside the `(main)` route group
 - `/posts/[id]` · `src/app/posts/[id]/page.tsx`
 - `/create` · `src/app/(main)/create/page.tsx`; tab contract in
   `src/lib/create-tabs.ts`

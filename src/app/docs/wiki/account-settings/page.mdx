@@ -34,7 +34,8 @@ the instance or read the changelog.
 
 <Callout type="note" title="Personas take over this page">
   If a persona is your active actor, `/settings` renders that persona's editor
-  instead of these tabs, and the **Assistant** tab is hidden.
+  instead of these tabs — the whole tab strip is replaced, not trimmed. Switch
+  back to your controller identity to reach the settings below.
 </Callout>
 
 ## How to edit your profile
@@ -84,7 +85,17 @@ To set tab visibility:
 
 ## How to set up selling
 
-Go to **Seller**. The card is titled **Stripe USD Wallet**.
+<Callout type="warning" title="First-time setup belongs on the profile Wallet tab">
+  Start at `/profile?tab=wallet` → the **Become a Seller** card → **Set Up
+  Payout Account**. That path asks **"Where is your bank?"** before creating
+  anything, and a Stripe account's country **cannot be changed afterwards**.
+  The Settings → Seller button below does *not* ask, so it creates a
+  United-States account regardless of where you actually bank. Use Settings for
+  checking status and finishing a half-done onboarding, not for the first step.
+  See [Marketplace](/docs/wiki/marketplace#how-to-sell).
+</Callout>
+
+The **Seller** tab's card is titled **Stripe USD Wallet**.
 
 Press **Set Up Stripe USD Wallet** (or **Complete Setup** if you left onboarding
 half-done), finish Stripe's hosted flow, and come back. You'll then see three
@@ -187,7 +198,12 @@ key and a fingerprint — it never sees the mnemonic or the private key.
 - Recovery · `src/components/recovery-seed-panel.tsx`; `/api/recovery/**`
 - Profile data · `/api/myprofile`, `/api/myprofile/manifest`
 - Signup · one page at `/auth/signup`, then `/auth/signup/verify`, then
-  `/auth/signup/recovery` (the older per-field step routes are redirect stubs)
+  `/auth/signup/recovery`. Seven older per-field step routes are bare redirect
+  stubs back to `/auth/signup` — `name`, `email`, `phone`, `birthday`,
+  `login-method`, `save-login`, `confirm`. The eighth,
+  `/auth/signup/terms`, is **still a real page**: it renders the Terms, Privacy
+  Policy and EULA for acceptance and, on agree, routes to
+  `/auth/signup/login-method` (which then redirects to `/auth/signup`)
 
 **Cross-links**
 

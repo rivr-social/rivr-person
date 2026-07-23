@@ -55,9 +55,15 @@ remote id.
 ## Public (auth-optional) <AuthBadge mode="public" />
 
 A subset of routes is intentionally public — discovery, health, manifests,
-federation handshakes, Stripe webhooks, map tiles, and this docs site. These are
-enumerated in `PUBLIC_PAGE_PREFIXES` / `PUBLIC_API_PREFIXES`
-(`src/lib/route-access.ts`).
+federation handshakes, Stripe webhooks, the cron and drain endpoints that carry
+their own bearer check, the GPU worker source a booting box fetches, and this
+docs site. These are enumerated in `PUBLIC_PAGE_PREFIXES` /
+`PUBLIC_API_PREFIXES` (`src/lib/route-access.ts`).
+
+`PUBLIC_API_PREFIXES` also lists `/api/map-style`, `/api/map-style-tiles`,
+`/api/map-tilesets` and `/api/map-diagnostics`, but **no such routes exist in
+this repo** — those entries are inherited configuration from the global app and
+allowlist nothing. See [Discovery & search](/docs/wiki/explore-search).
 
 ## See also
 

@@ -46,9 +46,29 @@ out, and **membership tiers** are bought as ordinary Stripe products.
 | --- | --- |
 | **Transactions** | Every wallet movement — description, date, type, status, amount |
 | **Purchases** | Receipt cards for what you bought, plus a **Tickets** list badged *Wallet* or *Card* |
-| **Sales** | Your Stripe Connect balance and payout controls, then your sale rows |
+| **Sales** | Your Stripe Connect balance and payout controls, then your sale rows — or, before you have an account, the **Become a Seller** card |
 
 Each sub-view is deep-linkable: `?tab=wallet&walletTab=purchases`.
+
+### Becoming a seller from here
+
+Until you have a Connect account, the **Sales** sub-view leads with a **Become a
+Seller** card and a **Set Up Payout Account** button. Pressing it opens a dialog
+titled **"Where is your bank?"** — pick the country of the bank account you want
+to be paid into (a 22-country shortlist, US first), read the one-line note under
+the picker telling you which payout rail that country uses, and press
+**Continue**. You go into Stripe's hosted onboarding and come back to
+`/profile?tab=wallet&walletTab=sales`.
+
+<Callout type="warning" title="The country question is asked once and only here">
+  A Stripe account's country is **immutable** — it cannot be changed after the
+  account exists. This is the one entry point that asks. The `/settings` →
+  **Seller** tab's *Set Up Stripe USD Wallet* button creates the account
+  without asking, which silently means the United States. If you bank anywhere
+  else, do first-time setup from this card. Once the account exists the
+  question is deliberately not asked again, and either surface can finish a
+  half-done onboarding.
+</Callout>
 
 > 📸 **Screenshot:** _The Wallet tab's three sub-view tabs with **Sales** selected, showing the Connect balance section above the sale rows._ — capture at `/profile` (Wallet tab → click **Sales**). _(placeholder — remove when image added)_
 

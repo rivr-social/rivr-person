@@ -87,9 +87,21 @@ The person app exposes an MCP server for AI agent access:
   - `/mcp/authorize?user_code=XXXX-XXXX` — browser approval page
   - Pending codes also surface in the autobot dashboard Activity tab
 
-Current tools: `get_context`, `list_personas`, `get_my_profile`, `audit.recent`,
-`update_basic`, `create_post`, `create_live_invite`, `join_group`, `rsvp_event`,
-`append_transcript`.
+Current tools — **28**, all namespaced `rivr.<area>.` and registered in
+`src/lib/federation/mcp-tools/index.ts` (that file is the source of truth; keep
+this list in sync): `rivr.instance.get_context`, `rivr.places.list`,
+`rivr.personas.list`, `rivr.profile.get_my_profile`, `rivr.profile.update_basic`,
+`rivr.posts.create`, `rivr.posts.delete`, `rivr.posts.create_live_invite`,
+`rivr.resources.update`, `rivr.events.create`, `rivr.events.rsvp`,
+`rivr.events.append_transcript`, `rivr.groups.join`, `rivr.offerings.create`,
+`rivr.thanks.send`, `rivr.kg.list_docs`, `rivr.kg.push_doc`, `rivr.kg.query`,
+`rivr.kg.chat`, `rivr.audit.recent`, `rivr.deploy.get_capability`,
+`rivr.deploy.self_deploy`, `rivr.deploy.restart_autobot`,
+`rivr.deploy.docker_rebuild`, `rivr.sandbox.status`,
+`rivr.sandbox.check_operation`, `rivr.dispatch.send_message`,
+`rivr.connectors.sync`. Note the destructive/valuable ones —
+`posts.delete`, `thanks.send`, and the four `deploy.*` — an MCP token is not a
+read-only key.
 
 Every tool call is logged to `mcp_provenance_log` with full audit trail.
 
@@ -111,8 +123,18 @@ as a record of what was fixed and how.
 | `src/components/search-bar.tsx`, `search-header.tsx` | `/explore` | [#28](https://github.com/rivr-social/rivr-person/issues/28) | Fixed — "search/see all" now routes to `/?tab=posts&q=…` (home feed is the canonical browse surface); eliminates the 404 + retry loop. |
 | `src/components/location-autocomplete-input.tsx` | `/api/locations/suggest` (global only) | [#29](https://github.com/rivr-social/rivr-person/issues/29) | Fixed — added a local `src/app/api/locations/suggest/route.ts` that serves suggestions from local place/locale graph nodes (no global call); degrades to an empty list. |
 
-The home feed (`/`) reads a `tab` query param (`posts`/`events`/`groups`/
-`people`/`gigs`/`marketplace`) so the above deep links land on the right tab.
+**`/` does NOT read a `tab` query param.** On every deploy of this repo
+(`INSTANCE_TYPE=person` + `PRIMARY_AGENT_ID`), `home-or-instance.tsx` returns
+`renderPersonPage()` → `PublicProfilePageClient`, whose tab is client-side
+state initialised to `about` and which never reads `searchParams.tab`. The
+six-tab `HomeClient` feed (`posts`/`events`/`groups`/`people`/`gigs`/
+`marketplace`) is the *global* app's home page and is dead code here. So the
+`/?tab=…` targets above — and `src/app/marketplace/page.tsx`,
+`src/app/events/page.tsx`, `search-bar.tsx`'s submit, `post-feed.tsx`'s chapter
+chips, `CommandBar.tsx`'s Marketplace entry — all land on the owner's public
+profile, About tab. **`/profile` is the surface that does read `?tab=`**
+(13 tabs incl. `wallet`/`offerings`/`calendar`); prefer it for deep links, and
+do not add new `/?tab=` links.
 
 ### Canonical entity links (federated-projection routing, 2026-07-14)
 
@@ -329,7 +351,9 @@ text chat, and voices the reply (Chatterbox clone audio when available, else
 - **Worker:** `docs/live-avatar/` (FastAPI, same packaging as `docs/whisperx/`)
   — MediaPipe-landmark portrait puppet (jaw/blink/sway warp via `cv2.remap`,
   ~1–2ms/frame on CPU, no model weights). Sessions + `multipart/x-mixed-replace`
-  MJPEG at 8fps. Engine-agnostic API: a LivePortrait-class engine is a drop-in
+  MJPEG at `AVATAR_FPS` (default **12**; speech runs 10-15 phones/s, so lower
+  rates undersample the mouth and read as "flappy"). Engine-agnostic API: a
+  LivePortrait-class engine is a drop-in
   `engine.py` swap. Python tests: `pytest docs/live-avatar/test_worker.py`.
 - **Routes:** `/api/autobot/live-avatar/{session,speak,stop,stream/[sessionId]}`
   — all `auth()`-gated; the stream route pipes the worker's MJPEG body through

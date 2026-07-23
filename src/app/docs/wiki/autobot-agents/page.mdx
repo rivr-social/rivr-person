@@ -54,9 +54,10 @@ with its own knowledge.
 
 <Callout type="note" title="Switching into a persona changes the app">
   When a persona is the active actor, `/settings` stops showing the normal
-  settings tabs and becomes that persona's editor instead. The **Assistant** tab
-  is hidden while a persona is active, and the email field is locked with
-  "Email is shared with your main account and can only be changed there."
+  settings tabs entirely and becomes that persona's editor instead — the same
+  character sheet as `/personas/[id]/edit`. There is no persona-flavoured
+  variant of the settings form to see: the page returns the persona editor
+  before it ever reaches the settings tabs.
 </Callout>
 
 ### Persona knowledge graphs
@@ -74,13 +75,21 @@ in one of three **operating modes**:
 
 | Mode | Behaviour |
 | --- | --- |
-| `direct-only` | Acts without asking, within its allowed set |
-| `approval-required` | Queues an approval before acting |
-| `delegated` | Broadest autonomy |
+| `direct-only` | **Most restrictive.** Every action needs approval, whatever its risk — the persona only acts when you explicitly say so |
+| `approval-required` | Low-risk actions run straight through; medium and high risk queue an approval |
+| `delegated` | **Broadest autonomy.** Low and medium risk run straight through; only high-risk actions still queue an approval |
 
 Risk is mapped per action — reading the knowledge graph is *low*, creating a
 post is *medium*, and anything financial, destructive, or membership-changing is
 *high*.
+
+<Callout type="note" title="direct-only is the strictest setting, not the loosest">
+  The name reads like "acts directly", but it means the opposite: *direct*
+  instruction is required for everything. If you want a persona that mostly
+  runs on its own but pauses on money and deletions, you want
+  `approval-required`, not `direct-only`. A per-persona override list can
+  auto-allow specific action types ahead of the mode check.
+</Callout>
 
 <Callout type="warning" title="The approvals queue has no screen yet">
   Approvals are created, stored, and resolvable through
@@ -97,10 +106,13 @@ post is *medium*, and anything financial, destructive, or membership-changing is
 2. Pick a service and press connect. You're sent to that provider's consent
    screen and returned here.
 
-The user-connectable set is: **Google Docs, Google Calendar, Gmail, Notion,
-Telegram, WhatsApp Business, Signal, Slack, Facebook, Instagram, Substack, Luma,
-and X**. A second group — **Cloudflare, Squarespace, Namecheap** — exists for
-DNS writes and is used by the [Builder](/docs/wiki/builder).
+The user-connectable set is thirteen providers: **Google Drive, Google Calendar,
+Gmail, Notion, Telegram, WhatsApp Business, Signal, Slack, Facebook, Instagram,
+Substack, Luma, and X**. The first is labelled *Google Drive* in the UI and
+covers Drive files as well as Google Docs — its internal provider id is
+`google_docs`, which is the name you'll see in API payloads. A second group —
+**Cloudflare, Squarespace, Namecheap** — exists for DNS writes and is used by
+the [Builder](/docs/wiki/builder).
 
 > 📸 **Screenshot:** _The Connectors panel under Settings → Assistant, showing connected and unconnected providers._ — capture at `/settings?tab=agent-hq` (open the **Connectors** inner tab). _(placeholder — remove when image added)_
 
@@ -135,9 +147,30 @@ Beyond OAuth, each connector supports three operations:
 
 > 📸 **Screenshot:** _The MCP device authorization page showing "Authorize MCP Access", the signed-in identity, and the Approve / Deny buttons._ — capture at `/mcp/authorize?user_code=XXXX-XXXX`. _(placeholder — remove when image added)_
 
-Current tools: `get_context`, `list_personas`, `get_my_profile`, `audit.recent`,
-`update_basic`, `create_post`, `create_live_invite`, `join_group`, `rsvp_event`,
-`append_transcript`.
+**Twenty-eight tools** are registered. All of them are namespaced `rivr.<area>.`:
+
+| Area | Tools |
+| --- | --- |
+| Instance & places | `rivr.instance.get_context` · `rivr.places.list` |
+| Profile & personas | `rivr.profile.get_my_profile` · `rivr.profile.update_basic` · `rivr.personas.list` |
+| Posts & resources | `rivr.posts.create` · `rivr.posts.create_live_invite` · **`rivr.posts.delete`** · `rivr.resources.update` |
+| Events & groups | `rivr.events.create` · `rivr.events.rsvp` · `rivr.events.append_transcript` · `rivr.groups.join` |
+| Offerings & money | `rivr.offerings.create` · **`rivr.thanks.send`** |
+| Knowledge graph | `rivr.kg.list_docs` · `rivr.kg.push_doc` · `rivr.kg.query` · `rivr.kg.chat` |
+| Audit | `rivr.audit.recent` |
+| Deploy | `rivr.deploy.get_capability` · **`rivr.deploy.self_deploy`** · **`rivr.deploy.restart_autobot`** · **`rivr.deploy.docker_rebuild`** |
+| Sandbox | `rivr.sandbox.status` · `rivr.sandbox.check_operation` |
+| Dispatch & connectors | `rivr.dispatch.send_message` · `rivr.connectors.sync` |
+
+<Callout type="warning" title="Some of these are powerful — read the bold ones twice">
+  An MCP token is not a read-only key. `rivr.posts.delete` removes content,
+  `rivr.thanks.send` moves value to another agent, and the four `rivr.deploy.*`
+  tools can pull-and-rebuild this instance, restart the autobot sidecar, or
+  trigger a Docker rebuild. The deploy tools are gated by the instance's deploy
+  capability and refuse on shared instances, but on your own sovereign box they
+  are live. Scope tokens deliberately, and review `rivr.audit.recent` after
+  handing one out.
+</Callout>
 
 **Every tool call is logged** to the provenance log with a full audit trail —
 that is the point of the design, and no tool is allowed to bypass it.
@@ -146,11 +179,17 @@ that is the point of the design, and no tool is allowed to bypass it.
 
 - **Personas resolve ownership against their controller**, not against
   themselves — a tool acting as your persona is authorised as you.
-- **Irreversible actions are withheld from MCP.** Account deletion is
-  interactive-UI-only with typed confirmation.
-- **Everything under `/api/autobot`, `/api/personas` and `/api/agent-hq` is
-  owner-only** at the edge. A federated visitor browsing your instance is
-  refused before the handler runs.
+- **Account deletion is interactive-UI-only** with typed confirmation — there
+  is no MCP tool for it. That is not a general rule about destructive actions,
+  though: post deletion, thanks transfers, and instance rebuilds all have tools
+  (see the table above).
+- **`/api/autobot`, `/api/personas` and `/api/agent-hq` are owner-only** at the
+  edge. A federated visitor browsing your instance is refused before the
+  handler runs. The one deliberate exception is
+  `/api/autobot/gpu/worker-source`, which is on the public-route allowlist so
+  that a booting GPU box can fetch the plain worker source anonymously; the
+  public-route check runs before the owner gate, so that prefix is genuinely
+  open. It serves source code only — no secrets, no state.
 - **Digital-twin uploads still work; the video pipeline does not.** You can
   upload host video, reference portraits, idle video, and background plates
   (up to 32 assets). The generative video-render pipeline that used to consume

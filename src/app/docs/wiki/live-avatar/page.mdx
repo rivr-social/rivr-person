@@ -83,7 +83,9 @@ not to a third-party voice service.
 Voice cloning runs on a GPU you rent, not on the app server.
 
 1. Put your **Vast.ai API key** into the voice settings.
-2. Press **Start Voice** on the GPU badge (bottom-left of every page).
+2. Press **Start Voice** on the GPU badge (bottom-left — see
+   [The GPU badge](#the-gpu-badge) for which pages carry it; the assistant
+   surfaces at `/`, `/autobot/chat` and `/profile` all do).
 3. Wait. The app finds the cheapest suitable offer, creates the box, and the box
    pulls its own worker code from this instance on every boot.
 
@@ -107,8 +109,16 @@ Reply text is capped at 2000 characters for synthesis.
 
 ## The GPU badge
 
-A small badge sits bottom-left on every page and polls every 15 seconds while
-the tab is visible.
+A small badge sits bottom-left and polls every 15 seconds while the tab is
+visible.
+
+It is mounted in the main app layout, so it appears on the site root `/` and on
+`/autobot/chat`, `/builder`, `/calendar`, `/create`, `/meetings/[roomName]`,
+`/messages`, `/notifications`, `/personas`, and `/profile`. It is **not** on
+`/settings`, `/marketplace/**`, `/events/**`, `/badges`, `/products/**`,
+`/jobs/[id]`, `/posts/[id]`, `/mcp/authorize`, `/session-record`, `/auth-setup`
+or `/docs` — if you're on one of those and looking for it, go to `/` or
+`/autobot/chat`.
 
 | Badge | Meaning | Button |
 | --- | --- | --- |
@@ -247,7 +257,9 @@ precedence over your normal profile image for the live avatar only.
 **Rendering paths**
 
 - **Warp** (`mode: "warp"`) — facial-landmark portrait puppet, CPU-only,
-  ~1–2ms/frame at 8fps. The universal baseline and the fallback for everything.
+  ~1–2ms/frame, streamed at 12fps by default (`AVATAR_FPS`; speech runs 10–15
+  phones per second, so lower rates undersample the mouth and read as
+  "flappy"). The universal baseline and the fallback for everything.
 - **Frame-swap** (`mode: "frames"`) — your baked pack, played against a phoneme
   timeline matched to the real audio duration. **Zero runtime GPU.**
 - **GPU-live** (`source: "gpu"`) — when your own box is running and reachable,

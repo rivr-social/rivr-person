@@ -20,8 +20,10 @@ The toolbar has **New Event**, a **Filter** popover, and prev / **Today** / next
 navigation.
 
 <Callout type="note" title="Two calendars, one of them better connected">
-  `/calendar` isn't linked from any menu — the app's own navigation sends you to
-  your profile's **Calendar** tab instead, which is where cross-instance items
+  `/calendar` has no nav item — it's reachable from the command palette
+  (`/` or `Cmd/Ctrl+K` → **Navigate** → *Calendar*) or by typing the address.
+  The app's own navigation sends you to your profile's **Calendar** tab
+  instead, which is where cross-instance items
   land. In particular, when you claim a job on another instance, that claim is
   projected onto your profile calendar as a green entry linking back to the
   remote job. The Filter popover on `/calendar` currently offers only one
@@ -56,9 +58,13 @@ sharing and adding to a calendar.
 Attendees who register see a *You're registered!* confirmation page.
 
 <Callout type="note" title="There is no events index">
-  `/events` redirects to the home feed's Events tab (`/?tab=events`). That feed
-  is the listing surface. `/events/find-time` does **not** exist — an earlier
-  version of this page claimed a scheduling helper that was never in this app.
+  `/events` redirects to `/?tab=events`, and the site root ignores `?tab=` — so
+  it drops you on the owner's public profile, About tab. That redirect was
+  written for the global app's home feed, which a person deploy never renders.
+  The listing surfaces that do work here are the **Events** tab on the public
+  profile at `/`, `/profile?tab=events` when you're signed in as the owner, and
+  `/calendar`. `/events/find-time` does **not** exist — an earlier version of
+  this page claimed a scheduling helper that was never in this app.
 </Callout>
 
 ## How to join a video meeting
@@ -114,7 +120,9 @@ with a contributor list.
 ## Good to know
 
 - **"Virtual" is guessed, not declared.** An event is treated as virtual when
-  its location text contains *zoom*, *virtual*, or *online*. There's no flag.
+  its location text contains *zoom*, *virtual*, or *online* — **or when it has
+  no location at all**. There's no flag, so an event you simply never gave a
+  venue reads as virtual.
 - **Live invitations** are a different thing: a post marked as a live invitation
   shares your location for one hour and surfaces through
   `GET /api/live-invitations`. See [Feeds & posts](/docs/wiki/feeds-posts).

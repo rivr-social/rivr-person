@@ -11,13 +11,27 @@ once**, and it helps to keep them apart:
   listings) one-signature USDC all land here.
 - **You as seller.** Your own offerings live on your profile's **Offerings**
   tab. Before anyone can pay you by card you must finish Stripe Connect
-  onboarding from Settings — until then card checkout on your listings is
-  refused with a reason.
+  onboarding — until then card checkout on your listings is refused with a
+  reason.
 
 There is no marketplace *index* on this instance. A person instance hosts one
-person, so `/marketplace` is a bare redirect to the home feed's Mart tab
-(`/?tab=marketplace`); browsing happens there and on the global aggregator.
-Individual listings render here at `/marketplace/[id]`.
+person, so browsing a catalogue happens on the global aggregator; individual
+listings render here at `/marketplace/[id]`.
+
+<Callout type="warning" title="The /marketplace URL does not take you anywhere useful">
+  It redirects to `/?tab=marketplace`, and the site root ignores `?tab=` — so
+  you land on the owner's public profile, About tab. That redirect was written
+  for the global app's Mart tab, which a person deploy never renders.
+</Callout>
+
+The links that actually reach a listing on this instance are:
+
+- a **post with an embedded offering** — in the profile Posts tab or at
+  `/posts/[id]`, its buy affordance goes to `/marketplace/[id]`
+- your profile's **Wallet → Sales** rows, each with an **Open** button
+- **service entries on the profile Calendar** tab
+- the **relationship graph** on the profile About tab
+- a direct link, or the listing's canonical URL on the global aggregator
 
 ## How to buy something
 
@@ -155,17 +169,33 @@ yourself, and you never approve a spender.
 
 ## How to sell
 
-1. Go to `/settings` → the **Seller** tab. The card is called **Stripe USD
-   Wallet**. Press **Set Up Stripe USD Wallet** and complete Stripe's hosted
-   Express onboarding.
-2. Come back and check the three status rows — **Details submitted**, **Charges
-   enabled**, **Payouts enabled**. The card badges **Active** only when charges
-   *and* payouts are both enabled, otherwise **Limited**. If you left onboarding
+1. Go to `/profile?tab=wallet`. Before you have a payout account the Wallet tab
+   shows a **Become a Seller** card. Press **Set Up Payout Account**.
+2. A dialog asks **"Where is your bank?"** Pick the country of the bank account
+   you want to be paid into, from a 22-country shortlist (United States,
+   Australia, Austria, Belgium, Brazil, Canada, Costa Rica, Denmark, Finland,
+   France, Germany, India, Ireland, Italy, Mexico, Netherlands, Norway,
+   Portugal, Spain, Sweden, Switzerland, United Kingdom). A note under the
+   picker tells you which payout rail that country uses. Press **Continue**.
+3. Complete Stripe's hosted Express onboarding.
+4. Back on the Wallet tab, check the status rows — **Details submitted**,
+   **Charges enabled**, **Payouts enabled**. If you left onboarding
    half-finished the button reads **Complete Setup**.
-3. Create the offering from `/create`. It appears on your profile's
+5. Create the offering from `/create`. It appears on your profile's
    **Offerings** tab.
-4. Sales show up under your profile's **Wallet** tab → **Sales** sub-view,
+6. Sales show up under your profile's **Wallet** tab → **Sales** sub-view,
    alongside your available and pending Stripe balances.
+
+<Callout type="warning" title="Start from the Wallet tab, not Settings">
+  `/settings` has a **Seller** tab with a **Stripe USD Wallet** card and a
+  **Set Up Stripe USD Wallet** button. It creates the same connected account —
+  but it never asks for your bank country, so it defaults to the United
+  States. **The country of a Stripe account cannot be changed afterwards.** If
+  your bank is anywhere other than the US, start from the profile Wallet tab's
+  **Become a Seller** card, which asks. Once an account exists both surfaces
+  show the same status rows and the same Complete Setup button; the country
+  question is only asked for a brand-new account.
+</Callout>
 
 > 📸 **Screenshot:** _The Seller tab's "Stripe USD Wallet" card showing the Details submitted / Charges enabled / Payouts enabled status rows and the Active badge._ — capture at `/settings` (open the **Seller** tab). _(placeholder — remove when image added)_
 
@@ -202,7 +232,13 @@ yourself, and you never approve a spender.
 - `/marketplace/[id]/purchase` · `purchase/page.tsx` + `purchase-client.tsx`
 - `/marketplace/[id]/confirmed` · `confirmed/page.tsx`
 - `/marketplace/[id]/receipt/[receiptId]` · `receipt/[receiptId]/page.tsx`
-- Browse entry point: `/?tab=marketplace` (home feed Mart tab)
+- `/marketplace` · `src/app/marketplace/page.tsx` — a bare
+  `redirect("/?tab=marketplace")`; the root ignores `?tab=`, so there is no
+  local browse index
+- Seller setup · `src/components/payout-country-dialog.tsx` (the "Where is your
+  bank?" dialog) + `src/lib/payout-countries.ts` (`PAYOUT_COUNTRY_OPTIONS`,
+  `railForCountry`, `payoutRailNote`); wired from
+  `src/app/(main)/profile/profile-client.tsx`
 
 **Fee engine**
 
