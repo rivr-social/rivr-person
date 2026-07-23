@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PayoutCountryDialog } from "@/components/payout-country-dialog";
 import Image from "next/image";
 import Link from "next/link";
 import { CanonicalLink } from "@/components/canonical-link";
@@ -147,9 +148,16 @@ function ConnectBalanceSection() {
     return () => { cancelled = true; };
   }, []);
 
-  const handleSetupSeller = async () => {
+  const [payoutCountryOpen, setPayoutCountryOpen] = useState(false);
+
+  // First-time seller setup asks the bank country first (Stripe account
+  // country is immutable — a foreign seller silently defaulting to US is
+  // the payout landmine). Continue runs setup with the chosen country.
+  const handleSetupSeller = () => setPayoutCountryOpen(true);
+
+  const runSellerSetup = async (country: string) => {
     setSetupLoading(true);
-    const result = await setupConnectAccountAction(undefined, "/profile?tab=wallet&walletTab=sales");
+    const result = await setupConnectAccountAction(undefined, "/profile?tab=wallet&walletTab=sales", country);
     setSetupLoading(false);
     if (result.success && result.url) {
       window.location.assign(result.url);
@@ -197,6 +205,12 @@ function ConnectBalanceSection() {
           <Button disabled={setupLoading} onClick={handleSetupSeller}>
             {setupLoading ? "Setting up..." : "Set Up Payout Account"}
           </Button>
+          <PayoutCountryDialog
+            open={payoutCountryOpen}
+            onOpenChange={setPayoutCountryOpen}
+            onConfirm={runSellerSetup}
+            disabled={setupLoading}
+          />
         </CardContent>
       </Card>
     );

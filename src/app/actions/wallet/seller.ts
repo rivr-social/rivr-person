@@ -118,7 +118,9 @@ export async function releaseTestConnectBalanceToWalletInternal(
  */
 export async function setupConnectAccountAction(
   ownerId?: string,
-  returnPath?: string
+  returnPath?: string,
+  /** ISO alpha-2 bank country for a NEW account (immutable). */
+  accountCountry?: string
 ): Promise<{
   success: boolean;
   url?: string;
@@ -134,7 +136,7 @@ export async function setupConnectAccountAction(
       type: 'setupConnectAccountAction',
       actorId: currentUserId,
       targetAgentId: currentUserId,
-      payload: { ownerId, returnPath },
+      payload: { ownerId, returnPath, accountCountry },
     },
     async () => {
       const target = await resolveManagedWalletTarget(currentUserId, ownerId);
@@ -172,7 +174,12 @@ export async function setupConnectAccountAction(
               email: target.email ?? undefined,
               metadata: accountMetadata,
             })
-          : await createConnectAccount(target.ownerId, target.email ?? undefined, accountMetadata);
+          : await createConnectAccount(target.ownerId, target.email ?? undefined, accountMetadata, {
+              country:
+                typeof accountCountry === 'string' && /^[A-Za-z]{2}$/.test(accountCountry.trim())
+                  ? accountCountry.trim().toUpperCase()
+                  : undefined,
+            });
         connectAccountId = account.id;
 
         await db

@@ -30,20 +30,64 @@ import { getStripe } from '@/lib/billing';
  * // account.id => 'acct_...'
  * ```
  */
+/** ISO country the Stripe platform account is registered in. */
+export const PLATFORM_ACCOUNT_COUNTRY = 'US';
+
+/**
+ * Countries whose sellers can hold FULL-agreement connected accounts and
+ * receive classic cross-border payouts (US/UK/EEA/CA/CH). Sellers in any
+ * other country (e.g. Costa Rica) must ride the separate Global Payouts
+ * rail — not yet available on the person app — so they are rejected here
+ * with a clear message instead of silently defaulting to a US account
+ * (Stripe account country is IMMUTABLE — that is the payout landmine).
+ */
+export const CROSS_BORDER_PAYOUT_COUNTRIES = new Set([
+  'US', 'GB', 'CA', 'CH',
+  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR',
+  'HU', 'IS', 'IE', 'IT', 'LV', 'LI', 'LT', 'LU', 'MT', 'NL', 'NO', 'PL',
+  'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
+]);
+
 export async function createConnectAccount(
   agentId: string,
   email?: string,
-  metadata?: Record<string, string>
+  metadata?: Record<string, string>,
+  options?: {
+    /**
+     * ISO alpha-2 country for the seller's connected account. Omitted/US →
+     * standard Express. Other Connect-region country → transfers-only
+     * recipient-agreement account. Non-Connect country → rejected (needs
+     * Global Payouts, not available here).
+     */
+    country?: string;
+  }
 ) {
   const stripe = getStripe();
+  const country = options?.country?.toUpperCase().trim() || PLATFORM_ACCOUNT_COUNTRY;
+  if (!CROSS_BORDER_PAYOUT_COUNTRIES.has(country)) {
+    throw new Error(
+      `Payouts to a bank in ${country} aren't supported here yet — that country ` +
+        `uses Stripe Global Payouts, which this instance doesn't offer. Reach out ` +
+        `for setup.`,
+    );
+  }
+  const crossBorder = country !== PLATFORM_ACCOUNT_COUNTRY;
   const account = await stripe.accounts.create({
     type: 'express',
+    country,
     ...(email ? { email } : {}),
-    metadata: { agentId, ...(metadata ?? {}) },
-    capabilities: {
-      card_payments: { requested: true },
-      transfers: { requested: true },
-    },
+    metadata: { agentId, accountCountry: country, ...(metadata ?? {}) },
+    capabilities: crossBorder
+      ? { transfers: { requested: true } }
+      : {
+          card_payments: { requested: true },
+          transfers: { requested: true },
+        },
+    // Stripe requires the recipient service agreement for a transfers-only
+    // foreign account (verified against the live API 2026-07-22).
+    ...(crossBorder
+      ? { tos_acceptance: { service_agreement: 'recipient' as const } }
+      : {}),
   });
   return account;
 }
