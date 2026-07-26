@@ -266,9 +266,12 @@ describe("refund actions", () => {
         expect(result).toEqual({ success: true });
 
         // Verify Stripe refund was created
-        expect(mockStripeRefundsCreate).toHaveBeenCalledWith({
-          payment_intent: "pi_test_123",
-        });
+        expect(mockStripeRefundsCreate).toHaveBeenCalledWith(
+          { payment_intent: "pi_test_123" },
+          {
+            idempotencyKey: `receipt-refund:${receipt.id}:pi_test_123`,
+          },
+        );
 
         // Verify receipt was updated
         const [updated] = await db

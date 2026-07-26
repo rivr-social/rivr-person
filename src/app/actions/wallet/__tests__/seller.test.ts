@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { withTestTransaction } from "@/test/db";
-import { createTestAgent } from "@/test/fixtures";
+import { eq } from "drizzle-orm";
+import { withTestTransaction, type TestDatabase } from "@/test/db";
+import { createTestAgent, createTestWallet } from "@/test/fixtures";
 import { mockAuthSession, mockUnauthenticated } from "@/test/auth-helpers";
+import { walletTransactions } from "@/db/schema";
 
 // =============================================================================
 // Mocks
@@ -40,7 +42,7 @@ vi.mock("@/lib/stripe-connect", () => ({
 
 vi.mock("@/lib/wallet", () => ({
   getSettlementWalletForAgent: vi.fn().mockResolvedValue({
-    id: "wallet-123",
+    id: "123e4567-e89b-42d3-a456-426614174001",
     type: "personal",
     metadata: { stripeConnectAccountId: "acct_test_123" },
   }),
@@ -50,8 +52,18 @@ vi.mock("@/lib/wallet", () => ({
 import { auth } from "@/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { getConnectBalance, createPayout } from "@/lib/stripe-connect";
+import { getSettlementWalletForAgent } from "@/lib/wallet";
 
 const PAYOUT_REQUEST_ID = "123e4567-e89b-42d3-a456-426614174000";
+
+async function bindSellerWallet(db: TestDatabase, ownerId: string) {
+  const wallet = await createTestWallet(db, ownerId, {
+    metadata: { stripeConnectAccountId: "acct_test_123" },
+  });
+  vi.mocked(getSettlementWalletForAgent).mockResolvedValue(wallet);
+  return wallet;
+}
+
 import {
   setupConnectAccountAction,
   getConnectStatusAction,
@@ -87,6 +99,7 @@ describe("seller actions", () => {
     it("returns onboarding URL on success", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
 
         const result = await setupConnectAccountAction();
@@ -114,6 +127,7 @@ describe("seller actions", () => {
     it("returns account status on success", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
 
         const result = await getConnectStatusAction();
@@ -143,6 +157,7 @@ describe("seller actions", () => {
     it("returns balance on success", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
 
         const result = await getConnectBalanceAction();
@@ -188,6 +203,7 @@ describe("seller actions", () => {
     it("returns error for non-positive amount", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
 
         const result = await requestPayoutAction(0, "standard", undefined, PAYOUT_REQUEST_ID);
@@ -199,6 +215,7 @@ describe("seller actions", () => {
     it("returns error when rate limited", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
         vi.mocked(rateLimit).mockResolvedValueOnce({ success: false, remaining: 0, resetMs: 60000 });
 
@@ -211,6 +228,7 @@ describe("seller actions", () => {
     it("returns error when insufficient available balance", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
         vi.mocked(getConnectBalance).mockResolvedValueOnce({
           availableCents: 100,
@@ -226,6 +244,7 @@ describe("seller actions", () => {
     it("returns payoutId on successful payout", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
 
         const result = await requestPayoutAction(3000, "standard", undefined, PAYOUT_REQUEST_ID);
@@ -241,6 +260,7 @@ describe("seller actions", () => {
     it("passes instant speed to createPayout", () =>
       withTestTransaction(async (db) => {
         const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
         vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
 
         const result = await requestPayoutAction(2000, "instant", undefined, PAYOUT_REQUEST_ID);
@@ -250,6 +270,29 @@ describe("seller actions", () => {
           "acct_test_123", 2000, "instant",
           expect.objectContaining({ idempotencyKey: `connect-bank-payout:${PAYOUT_REQUEST_ID}` }),
         );
+      }));
+
+    it("keeps an ambiguous Stripe submission reconcilable", () =>
+      withTestTransaction(async (db) => {
+        const user = await createTestAgent(db);
+        await bindSellerWallet(db, user.id);
+        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+        vi.mocked(createPayout).mockRejectedValueOnce(new Error("request timed out"));
+
+        const result = await requestPayoutAction(
+          2000,
+          "standard",
+          undefined,
+          PAYOUT_REQUEST_ID,
+        );
+
+        expect(result.success).toBe(false);
+        const [request] = await db
+          .select()
+          .from(walletTransactions)
+          .where(eq(walletTransactions.id, PAYOUT_REQUEST_ID))
+          .limit(1);
+        expect(request.status).toBe("submission_unknown");
       }));
   });
 });

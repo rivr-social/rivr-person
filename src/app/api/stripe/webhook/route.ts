@@ -29,7 +29,7 @@ import type { NextRequest } from 'next/server';
 import Stripe from 'stripe';
 import { db } from '@/db';
 import { agents, capitalEntries, ledger, resources, subscriptions, wallets, walletTransactions, type NewLedgerEntry } from '@/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { getStripe, tierForPriceId } from '@/lib/billing';
 import {
   confirmDeposit,
@@ -41,6 +41,12 @@ import {
 import { STATUS_BAD_REQUEST, STATUS_INTERNAL_ERROR } from '@/lib/http-status';
 import { consumeBookingSlot, isBookingSlotAvailable } from '@/lib/booking-slots';
 import { assertAmountReconciled } from '@/lib/stripe-reconcile';
+import { reconcileCheckoutSettlement } from '@/lib/stripe-checkout-settlement';
+import {
+  clawbackChargeback,
+  clawbackRefund,
+  reverseChargebackClawback,
+} from '@/lib/chargeback';
 
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const MONTHLY_SUBSCRIPTION_THANKS_GRANT = 100;
@@ -213,6 +219,7 @@ export async function POST(request: NextRequest) {
   try {
     switch (event.type) {
       case 'checkout.session.completed':
+      case 'checkout.session.async_payment_succeeded':
         await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
         break;
 
@@ -264,6 +271,12 @@ export async function POST(request: NextRequest) {
             : charge.payment_intent?.id;
 
         if (refundPiId) {
+          await clawbackRefund({
+            paymentIntentId: refundPiId,
+            chargeAmountCents: charge.amount,
+            totalRefundedCents: charge.amount_refunded,
+          });
+
           const [matchedReceipt] = await db
             .select({ id: resources.id, metadata: resources.metadata })
             .from(resources)
@@ -285,6 +298,29 @@ export async function POST(request: NextRequest) {
               .where(eq(resources.id, matchedReceipt.id));
           }
         }
+        break;
+      }
+
+      case 'charge.dispute.created': {
+        const dispute = event.data.object as Stripe.Dispute;
+        const paymentIntentId =
+          typeof dispute.payment_intent === 'string'
+            ? dispute.payment_intent
+            : dispute.payment_intent?.id;
+        if (!paymentIntentId) {
+          throw new Error(`Dispute ${dispute.id} is missing its PaymentIntent`);
+        }
+        await clawbackChargeback({
+          paymentIntentId,
+          disputeId: dispute.id,
+          disputeAmountCents: dispute.amount,
+        });
+        break;
+      }
+
+      case 'charge.dispute.funds_reinstated': {
+        const dispute = event.data.object as Stripe.Dispute;
+        await reverseChargebackClawback({ disputeId: dispute.id });
         break;
       }
 
@@ -352,6 +388,9 @@ export async function POST(request: NextRequest) {
  */
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   if (session.mode === 'payment') {
+    if (session.payment_status !== 'paid') {
+      return;
+    }
     // One-time payment checkouts (event tickets) follow a separate persistence path.
     await handlePaymentCheckoutCompleted(session);
     return;
@@ -418,15 +457,17 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
     return;
   }
 
-  const totalCents = Number(metadata.totalCents ?? 0);
+  const expectedPreTaxCents = Number(metadata.totalCents ?? 0);
   const platformFeeCents = Number(metadata.platformFeeCents ?? 0);
   const salesTaxCents = Number(metadata.salesTaxCents ?? 0);
   const paymentFeeCents = Number(metadata.paymentFeeCents ?? 0);
-  const feeCents = platformFeeCents + salesTaxCents + paymentFeeCents;
-  const sellerNetCents = totalCents - feeCents;
-
-  // Reconcile metadata amounts against Stripe's authoritative charge
-  assertAmountReconciled(session.amount_total ?? 0, totalCents, `event-ticket:${session.id}`);
+  const internalFeeCents = platformFeeCents + salesTaxCents + paymentFeeCents;
+  const settlement = reconcileCheckoutSettlement(
+    session,
+    expectedPreTaxCents,
+    `event-ticket:${session.id}`,
+  );
+  const sellerNetCents = settlement.preTaxCents - internalFeeCents;
 
   // Idempotency guard: check once before opening a transaction to short-circuit duplicates.
   const [existingTx] = await db
@@ -441,7 +482,7 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
 
   const payoutEligibleAt = await getPaymentIntentPayoutEligibleAt(paymentIntentId);
   const organizerWallet = await getSettlementWalletForAgent(organizerAgentId);
-  const platformWallet = feeCents > 0 ? await getPlatformWallet() : null;
+  const platformWallet = internalFeeCents > 0 ? await getPlatformWallet() : null;
   const ticketSelections = parsedSelections.length > 0
     ? parsedSelections
         .map((selection) => ({
@@ -453,7 +494,7 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
     : [{
         ticketProductId,
         quantity: 1,
-        subtotalCents: Number(metadata.subtotalCents ?? totalCents),
+        subtotalCents: Number(metadata.subtotalCents ?? settlement.preTaxCents),
       }];
 
   await db.transaction(async (tx) => {
@@ -491,15 +532,16 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
           platformFeeCents,
           salesTaxCents,
           paymentFeeCents,
-          totalCents,
+          totalCents: settlement.totalCents,
+          stripeTaxCents: settlement.taxCents,
         },
       } as NewLedgerEntry)
       .returning({ id: ledger.id });
 
     await tx.insert(walletTransactions).values({
       type: 'marketplace_purchase',
-      amountCents: totalCents,
-      feeCents,
+      amountCents: settlement.totalCents,
+      feeCents: internalFeeCents + settlement.taxCents,
       currency: session.currency ?? 'usd',
       // Business traceability: description helps with back-office reconciliation.
       description: `Event ticket purchase for event ${eventId}`,
@@ -514,15 +556,19 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
         ticketProductId,
         buyerAgentId,
         organizerAgentId,
+        stripeTaxCents: settlement.taxCents,
       },
     });
 
-    let remainingFeeCents = feeCents;
+    let remainingFeeCents = internalFeeCents;
     for (const [index, selection] of ticketSelections.entries()) {
       const lineFeeCents =
         index === ticketSelections.length - 1
           ? remainingFeeCents
-          : Math.floor((feeCents * selection.subtotalCents) / Math.max(1, Number(metadata.subtotalCents ?? totalCents)));
+          : Math.floor(
+              (internalFeeCents * selection.subtotalCents) /
+                Math.max(1, Number(metadata.subtotalCents ?? settlement.preTaxCents)),
+            );
       remainingFeeCents -= lineFeeCents;
 
       await tx.insert(walletTransactions).values({
@@ -576,7 +622,7 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
       }).returning({ id: walletTransactions.id });
 
       await creditWalletCapital(tx, organizerWallet.id, sellerNetCents, {
-        settlementStatus: payoutEligibleAt ? 'pending' : 'cleared',
+        settlementStatus: 'pending',
         availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
         sourceType: 'stripe_event_ticket',
         sourceTransactionId: sellerPayoutTx.id,
@@ -587,11 +633,11 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
       });
     }
 
-    if (feeCents > 0 && platformWallet) {
+    if (internalFeeCents > 0 && platformWallet) {
       await tx
         .update(wallets)
         .set({
-          balanceCents: sql`${wallets.balanceCents} + ${feeCents}`,
+          balanceCents: sql`${wallets.balanceCents} + ${internalFeeCents}`,
           updatedAt: new Date(),
         })
         .where(eq(wallets.id, platformWallet.id));
@@ -599,7 +645,7 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
       const [platformFeeTx] = await tx.insert(walletTransactions).values({
         type: 'service_fee',
         toWalletId: platformWallet.id,
-        amountCents: feeCents,
+        amountCents: internalFeeCents,
         feeCents: 0,
         currency: session.currency ?? 'usd',
         description: `Service fee for event ticket ${eventId}`,
@@ -616,8 +662,8 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
         },
       }).returning({ id: walletTransactions.id });
 
-      await creditWalletCapital(tx, platformWallet.id, feeCents, {
-        settlementStatus: payoutEligibleAt ? 'pending' : 'cleared',
+      await creditWalletCapital(tx, platformWallet.id, internalFeeCents, {
+        settlementStatus: 'pending',
         availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
         sourceType: 'stripe_event_ticket_fee',
         sourceTransactionId: platformFeeTx.id,
@@ -657,8 +703,11 @@ async function handleMarketplacePurchaseCompleted(session: Stripe.Checkout.Sessi
 
   let buyerAgentId = metadata.buyerAgentId || null;
 
-  // Reconcile metadata amounts against Stripe's authoritative charge
-  assertAmountReconciled(session.amount_total ?? 0, buyerTotalCents, `marketplace:${session.id}`);
+  const settlement = reconcileCheckoutSettlement(
+    session,
+    buyerTotalCents,
+    `marketplace:${session.id}`,
+  );
 
   if (!listingId || !sellerAgentId) {
     console.warn('Marketplace purchase checkout missing required metadata:', session.id);
@@ -774,8 +823,8 @@ async function handleMarketplacePurchaseCompleted(session: Stripe.Checkout.Sessi
     // Record wallet transaction
     await tx.insert(walletTransactions).values({
       type: 'marketplace_purchase',
-      amountCents: buyerTotalCents,
-      feeCents: buyerTotalCents - sellerCreditCents,
+      amountCents: settlement.totalCents,
+      feeCents: settlement.totalCents - sellerCreditCents,
       currency: session.currency ?? 'usd',
       description: `Marketplace purchase: ${listingId}`,
       stripePaymentIntentId: paymentIntentId,
@@ -793,6 +842,7 @@ async function handleMarketplacePurchaseCompleted(session: Stripe.Checkout.Sessi
         bookingSlot: bookingSelection?.slot ?? null,
         orgId,
         purchaseType: 'marketplace_purchase',
+        stripeTaxCents: settlement.taxCents,
       },
     });
 
@@ -958,7 +1008,8 @@ async function handleMarketplacePurchaseCompleted(session: Stripe.Checkout.Sessi
           platformFeeCents: buyerPlatformFeeCents,
           platformMarginCents: platformFeeCents,
           orgCommissionCents,
-          totalCents: buyerTotalCents,
+          totalCents: settlement.totalCents,
+          stripeTaxCents: settlement.taxCents,
           feeCents: buyerPlatformFeeCents,
           quantity: requestedQuantity,
           bookingDate: bookingSelection?.date ?? null,
@@ -1059,6 +1110,12 @@ async function mintSubscriptionThanksGrant(
   }
 
   const cycleKey = `${stripeSub.id}:${currentPeriodStart}`;
+
+  // Serialize deliveries for the same subscription cycle. The subsequent
+  // existence check then observes the first transaction's committed grant.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${'subscription-thanks:' + cycleKey}, 0))`,
+  );
 
   const [existingGrant] = await tx
     .select({ id: ledger.id })
@@ -1453,20 +1510,25 @@ async function handlePayoutStatusUpdate(
   payout: Stripe.Payout,
   newStatus: 'completed' | 'failed'
 ) {
-  try {
-    await db
-      .update(walletTransactions)
-      .set({
-        status: newStatus,
-      })
-      .where(
-        and(
-          eq(walletTransactions.type, 'connect_payout'),
-          eq(walletTransactions.status, 'pending'),
-          sql`${walletTransactions.metadata}->>'stripePayoutId' = ${payout.id}`
-        )
-      );
-  } catch (err) {
-    console.error('handlePayoutStatusUpdate failed for payout:', payout.id, err);
-  }
+  const payoutRequestId = payout.metadata?.payoutRequestId;
+  await db
+    .update(walletTransactions)
+    .set({
+      status: newStatus,
+      metadata: sql`coalesce(${walletTransactions.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        stripePayoutId: payout.id,
+      })}::jsonb`,
+    })
+    .where(
+      and(
+        eq(walletTransactions.type, 'connect_payout'),
+        sql`${walletTransactions.status} IN ('submitting', 'submission_unknown', 'pending')`,
+        or(
+          sql`${walletTransactions.metadata}->>'stripePayoutId' = ${payout.id}`,
+          payoutRequestId
+            ? sql`${walletTransactions.metadata}->>'payoutRequestId' = ${payoutRequestId}`
+            : sql`false`,
+        ),
+      ),
+    );
 }

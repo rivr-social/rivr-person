@@ -182,9 +182,11 @@ export async function setupConnectAccountAction(
               email: target.email ?? undefined,
               country: normalizedCountry,
               metadata: accountMetadata,
+              idempotencyKey: `connect-account:${wallet.id}:${normalizedCountry}`,
             })
           : await createConnectAccount(target.ownerId, target.email ?? undefined, accountMetadata, {
               country: normalizedCountry,
+              idempotencyKey: `connect-account:${wallet.id}:${normalizedCountry}`,
             });
         connectAccountId = account.id;
 
@@ -436,6 +438,20 @@ export async function requestPayoutAction(
         throw new Error('No payment account found. Set up payments first.');
       }
 
+      // A negative balance is recovery debt from a refund or chargeback (see
+      // lib/chargeback.ts). Cash-out stays blocked until future sales net it
+      // back to zero, otherwise the debt could be walked away from.
+      const [debtCheck] = await db
+        .select({ balanceCents: wallets.balanceCents })
+        .from(wallets)
+        .where(eq(wallets.id, wallet.id))
+        .limit(1);
+      if (debtCheck && debtCheck.balanceCents < 0) {
+        throw new Error(
+          'Your balance is negative after a refund or chargeback. Payouts resume once it returns to zero.',
+        );
+      }
+
       const payout = await executeConnectBankPayout({
         requestId, walletId: wallet.id, ownerId: target.ownerId,
         connectAccountId, amountCents, speed,
@@ -449,7 +465,7 @@ export async function requestPayoutAction(
     return { success: false, error: result.error ?? 'Payout failed' };
   }
 
-  emitDomainEvent({
+  await emitDomainEvent({
     eventType: EVENT_TYPES.WALLET_PAYOUT,
     entityType: 'wallet',
     entityId: currentUserId,

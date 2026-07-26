@@ -108,7 +108,10 @@ export async function executeConnectBankPayout(
     return { payoutId: payout.id, replayed: false };
   } catch (error) {
     await db.update(walletTransactions).set({
-      status: "failed",
+      // A timeout or transport error can occur after Stripe accepted the
+      // idempotent request. Keep the request reconcilable and retry it with the
+      // same key; never declare a definitive failure from an ambiguous outcome.
+      status: "submission_unknown",
       metadata: { ...metadata, error: error instanceof Error ? error.message : String(error) },
     }).where(eq(walletTransactions.id, input.requestId));
     throw error;

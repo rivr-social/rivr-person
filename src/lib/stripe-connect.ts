@@ -60,6 +60,8 @@ export async function createConnectAccount(
      * Global Payouts, not available here).
      */
     country: string;
+    /** Stable per-wallet key supplied by the Global-platform caller. */
+    idempotencyKey?: string;
   }
 ) {
   const stripe = getStripe();
@@ -72,23 +74,26 @@ export async function createConnectAccount(
     );
   }
   const crossBorder = country !== PLATFORM_ACCOUNT_COUNTRY;
-  const account = await stripe.accounts.create({
-    type: 'express',
-    country,
-    ...(email ? { email } : {}),
-    metadata: { agentId, accountCountry: country, ...(metadata ?? {}) },
-    capabilities: crossBorder
-      ? { transfers: { requested: true } }
-      : {
-          card_payments: { requested: true },
-          transfers: { requested: true },
-        },
-    // Stripe requires the recipient service agreement for a transfers-only
-    // foreign account (verified against the live API 2026-07-22).
-    ...(crossBorder
-      ? { tos_acceptance: { service_agreement: 'recipient' as const } }
-      : {}),
-  });
+  const account = await stripe.accounts.create(
+    {
+      type: 'express',
+      country,
+      ...(email ? { email } : {}),
+      metadata: { agentId, accountCountry: country, ...(metadata ?? {}) },
+      capabilities: crossBorder
+        ? { transfers: { requested: true } }
+        : {
+            card_payments: { requested: true },
+            transfers: { requested: true },
+          },
+      // Stripe requires the recipient service agreement for a transfers-only
+      // foreign account (verified against the live API 2026-07-22).
+      ...(crossBorder
+        ? { tos_acceptance: { service_agreement: 'recipient' as const } }
+        : {}),
+    },
+    options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : undefined,
+  );
   return account;
 }
 

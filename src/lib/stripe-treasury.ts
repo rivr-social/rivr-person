@@ -53,6 +53,7 @@ export interface CreateCustomConnectAccountInput {
   email?: string;
   country?: string;
   metadata?: Record<string, string>;
+  idempotencyKey?: string;
 }
 
 /**
@@ -79,18 +80,21 @@ export async function createCustomConnectAccount(
       : {}),
   };
 
-  return stripe.accounts.create({
-    country: input.country ?? "US",
-    email: input.email,
-    capabilities,
-    controller: {
-      stripe_dashboard: { type: "none" },
-      requirement_collection: "application",
-      fees: { payer: "application" },
-      losses: { payments: "application" },
+  return stripe.accounts.create(
+    {
+      country: input.country ?? "US",
+      email: input.email,
+      capabilities,
+      controller: {
+        stripe_dashboard: { type: "none" },
+        requirement_collection: "application",
+        fees: { payer: "application" },
+        losses: { payments: "application" },
+      },
+      metadata: { agentId: input.agentId, ...(input.metadata ?? {}) },
     },
-    metadata: { agentId: input.agentId, ...(input.metadata ?? {}) },
-  });
+    input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : undefined,
+  );
 }
 
 // ---------------------------------------------------------------------------

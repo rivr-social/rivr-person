@@ -87,9 +87,13 @@ export async function setup() {
       "src/db/migrations"
     );
 
-    const migrationDb = drizzle(migrationClient);
-    await migrate(migrationDb, { migrationsFolder: migrationsPath });
-    console.log("[test-setup] Migrations applied successfully");
+    if (process.env.TEST_SCHEMA_PRELOADED === "true") {
+      console.log("[test-setup] Using preloaded disposable schema");
+    } else {
+      const migrationDb = drizzle(migrationClient);
+      await migrate(migrationDb, { migrationsFolder: migrationsPath });
+      console.log("[test-setup] Migrations applied successfully");
+    }
 
     // Verify PostGIS + pgvector extensions
     const extensions = await migrationClient`

@@ -18,6 +18,7 @@
     "test:unit": "vitest run --config vitest.config.ts",
     "test:ci": "vitest run --config vitest.ci.config.ts",
     "test:db": "vitest run --config vitest.db.config.ts",
+    "test:money": "vitest run --config vitest.money.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",

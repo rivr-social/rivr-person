@@ -246,6 +246,20 @@
       "when": 1782604800000,
       "tag": "0054_builder_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1782604900000,
+      "tag": "0059_payment_invariants_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1782604900001,
+      "tag": "0060_wallet_recovery_debt",
+      "breakpoints": true
     }
   ]
 }

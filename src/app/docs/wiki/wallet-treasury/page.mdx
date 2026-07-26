@@ -163,6 +163,19 @@ Tokens you hold **decay if you sit on them**. A scheduled job
 system is nudging you to circulate them rather than hoard them. Subscribing to
 a membership also mints a Thanks grant.
 
+## Refunds and chargebacks
+
+When a buyer is refunded or wins a dispute, the money is recovered from the
+wallets that the original sale credited, in proportion to what each was paid. A
+dispute also recovers **Stripe's $15 dispute fee**; a refund also recovers the
+processing fee Stripe keeps on refunds.
+
+If you already spent or cashed out those proceeds, your balance goes **negative**
+and stands as a debt that nets against your future sales. **Cash-out is blocked
+while your balance is negative.** Partial refunds recover only the new portion,
+so a sale refunded in stages is never over-recovered, and a reversed dispute puts
+every recovered amount back.
+
 ## Good to know
 
 - **`/profile/purchases` is narrower than it sounds.** It shows a **Purchase

@@ -10,7 +10,7 @@ SET "entered_account_at" = COALESCE(
   NULLIF(("metadata"->>'mintedAt')::timestamptz, NULL),
   "created_at"
 )
-WHERE "type" = 'thanks_token'
+WHERE "type"::text = 'thanks_token'
   AND "entered_account_at" IS NULL;
 
 CREATE INDEX IF NOT EXISTS "resources_type_owner_entered_account_idx"

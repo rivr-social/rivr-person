@@ -9,13 +9,19 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import {
   STATUS_OK,
   STATUS_BAD_REQUEST,
   STATUS_INTERNAL_ERROR,
 } from "@/lib/http-status";
-import { resources, subscriptions, wallets, walletTransactions } from "@/db/schema";
+import {
+  capitalEntries,
+  resources,
+  subscriptions,
+  wallets,
+  walletTransactions,
+} from "@/db/schema";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted — set env vars before module evaluation
@@ -393,6 +399,36 @@ describe("POST /api/stripe/webhook", () => {
         expect(created.cancelAtPeriodEnd).toBe(false);
         expect(created.currentPeriodStart).toEqual(PERIOD_START);
         expect(created.currentPeriodEnd).toEqual(PERIOD_END);
+      }));
+
+    it("mints one Thanks grant for repeated deliveries of the same cycle", () =>
+      withTestTransaction(async (db) => {
+        const agent = await createTestAgent(db);
+        const stripeSub = makeStripeSubscription({
+          id: "sub_grant_once",
+          metadata: { agentId: agent.id, tier: "host" },
+        });
+        mockConstructEvent.mockReturnValue(
+          makeStripeEvent("customer.subscription.created", stripeSub),
+        );
+        mockTierForPriceId.mockReturnValue("host");
+        const request = () =>
+          makeWebhookRequest("{}", { "stripe-signature": VALID_SIGNATURE });
+
+        expect((await POST(request())).status).toBe(STATUS_OK);
+        expect((await POST(request())).status).toBe(STATUS_OK);
+
+        const tokens = await db
+          .select({ id: resources.id })
+          .from(resources)
+          .where(
+            and(
+              eq(resources.type, "thanks_token"),
+              eq(resources.ownerId, agent.id),
+              sql`${resources.metadata}->>'sourceSubscriptionId' = 'sub_grant_once'`,
+            ),
+          );
+        expect(tokens).toHaveLength(100);
       }));
 
     it("handles customer as an object with id property", () =>
@@ -845,7 +881,7 @@ describe("POST /api/stripe/webhook", () => {
   // -----------------------------------------------------------------------
 
   describe("checkout.session.completed (payment mode — event ticket)", () => {
-    it("creates a wallet transaction and ledger entry for an event ticket", () =>
+    it("settles an async paid ticket with tax while keeping unknown availability pending", () =>
       withTestTransaction(async (db) => {
         const buyer = await createTestAgent(db);
         const organizer = await createTestAgent(db);
@@ -854,6 +890,7 @@ describe("POST /api/stripe/webhook", () => {
         const platformWallet = await createTestWallet(db, platformOrg.id, {
           type: "group",
         });
+        process.env.PLATFORM_AGENT_ID = platformOrg.id;
 
         // Create a resource for the ticket product (FK constraint on ledger.resourceId)
         const { createTestResource } = await import("@/test/fixtures");
@@ -865,8 +902,16 @@ describe("POST /api/stripe/webhook", () => {
         const session = {
           id: "cs_ticket_session",
           mode: "payment",
+          payment_status: "paid",
           payment_intent: "pi_ticket_123",
           currency: "usd",
+          amount_subtotal: 1000,
+          amount_total: 1080,
+          total_details: {
+            amount_discount: 0,
+            amount_shipping: 0,
+            amount_tax: 80,
+          },
           metadata: {
             purchaseType: "event_ticket",
             eventId: "evt_concert_abc",
@@ -882,7 +927,7 @@ describe("POST /api/stripe/webhook", () => {
         };
 
         mockConstructEvent.mockReturnValue(
-          makeStripeEvent("checkout.session.completed", session)
+          makeStripeEvent("checkout.session.async_payment_succeeded", session)
         );
 
         const request = makeWebhookRequest("{}", {
@@ -904,9 +949,9 @@ describe("POST /api/stripe/webhook", () => {
           .limit(1);
 
         expect(tx).toBeDefined();
-        expect(tx.type).toBe("event_ticket");
-        expect(tx.amountCents).toBe(1000);
-        expect(tx.feeCents).toBe(100); // 50 + 30 + 20
+        expect(tx.type).toBe("marketplace_purchase");
+        expect(tx.amountCents).toBe(1080);
+        expect(tx.feeCents).toBe(180); // 100 internal fees + 80 Stripe Tax
         expect(tx.status).toBe("completed");
 
         const [updatedOrganizerWallet] = await db
@@ -922,6 +967,19 @@ describe("POST /api/stripe/webhook", () => {
 
         expect(updatedOrganizerWallet?.balanceCents).toBe(900);
         expect(updatedPlatformWallet?.balanceCents).toBe(100);
+
+        const capital = await db
+          .select()
+          .from(capitalEntries)
+          .where(
+            or(
+              eq(capitalEntries.walletId, organizerWallet.id),
+              eq(capitalEntries.walletId, platformWallet.id),
+            ),
+          );
+        expect(capital).toHaveLength(2);
+        expect(capital.every((entry) => entry.settlementStatus === "pending")).toBe(true);
+        expect(capital.every((entry) => entry.availableOn == null)).toBe(true);
 
         const settlementRows = await db
           .select()
@@ -972,8 +1030,16 @@ describe("POST /api/stripe/webhook", () => {
         const session = {
           id: "cs_ticket_dup",
           mode: "payment",
+          payment_status: "paid",
           payment_intent: "pi_ticket_dup",
           currency: "usd",
+          amount_subtotal: 1000,
+          amount_total: 1000,
+          total_details: {
+            amount_discount: 0,
+            amount_shipping: 0,
+            amount_tax: 0,
+          },
           metadata: {
             purchaseType: "event_ticket",
             eventId: "evt_abc",
@@ -1010,6 +1076,7 @@ describe("POST /api/stripe/webhook", () => {
       const session = {
         id: "cs_generic_payment",
         mode: "payment",
+        payment_status: "paid",
         payment_intent: "pi_generic",
         metadata: { purchaseType: "donation" },
       };
@@ -1025,12 +1092,34 @@ describe("POST /api/stripe/webhook", () => {
 
       expect(response.status).toBe(STATUS_OK);
     });
+
+    it("does not fulfill an unpaid payment-mode checkout", async () => {
+      const session = {
+        id: "cs_unpaid",
+        mode: "payment",
+        payment_status: "unpaid",
+        payment_intent: "pi_unpaid",
+        metadata: { purchaseType: "event_ticket" },
+      };
+      mockConstructEvent.mockReturnValue(
+        makeStripeEvent("checkout.session.completed", session),
+      );
+
+      const response = await POST(
+        makeWebhookRequest("{}", { "stripe-signature": VALID_SIGNATURE }),
+      );
+
+      expect(response.status).toBe(STATUS_OK);
+    });
   });
 
   describe("checkout.session.completed (payment mode — marketplace)", () => {
     it("records a guest marketplace card purchase and creates a receipt", () =>
       withTestTransaction(async (db) => {
         const seller = await createTestAgent(db);
+        const platform = await createTestGroup(db, { name: "RIVR Marketplace Test" });
+        await createTestWallet(db, platform.id, { type: "group" });
+        process.env.PLATFORM_AGENT_ID = platform.id;
         const { createTestResource } = await import("@/test/fixtures");
         const listing = await createTestResource(db, seller.id, {
           name: "Handmade Bowl",
@@ -1040,8 +1129,16 @@ describe("POST /api/stripe/webhook", () => {
         const session = {
           id: "cs_marketplace_guest",
           mode: "payment",
+          payment_status: "paid",
           payment_intent: "pi_marketplace_guest",
           currency: "usd",
+          amount_subtotal: 1575,
+          amount_total: 1701,
+          total_details: {
+            amount_discount: 0,
+            amount_shipping: 0,
+            amount_tax: 126,
+          },
           customer_details: {
             email: "guest-buyer@example.com",
             name: "Guest Buyer",
@@ -1056,6 +1153,7 @@ describe("POST /api/stripe/webhook", () => {
             orgCommissionCents: "0",
             platformFeeCents: "75",
             priceCents: "1500",
+            buyerTotalCents: "1575",
           },
         };
 
@@ -1077,8 +1175,8 @@ describe("POST /api/stripe/webhook", () => {
           .limit(1);
 
         expect(tx?.type).toBe("marketplace_purchase");
-        expect(tx?.amountCents).toBe(1500);
-        expect(tx?.feeCents).toBe(75);
+        expect(tx?.amountCents).toBe(1701);
+        expect(tx?.feeCents).toBe(201);
 
         const [guestReceipt] = await db
           .select()
@@ -1087,7 +1185,10 @@ describe("POST /api/stripe/webhook", () => {
           .limit(1);
 
         expect(guestReceipt).toBeDefined();
-        expect((guestReceipt?.metadata as Record<string, unknown>)?.customerEmail).toBe("guest-buyer@example.com");
+        const receiptMetadata = guestReceipt?.metadata as Record<string, unknown>;
+        expect(receiptMetadata?.customerEmail).toBe("guest-buyer@example.com");
+        expect(receiptMetadata?.totalCents).toBe(1701);
+        expect(receiptMetadata?.stripeTaxCents).toBe(126);
       }));
   });
 
@@ -1096,6 +1197,9 @@ describe("POST /api/stripe/webhook", () => {
       withTestTransaction(async (db) => {
         const buyer = await createTestAgent(db);
         const seller = await createTestAgent(db);
+        const platform = await createTestGroup(db, { name: "RIVR Offering Test" });
+        await createTestWallet(db, platform.id, { type: "group" });
+        process.env.PLATFORM_AGENT_ID = platform.id;
         const { createTestResource } = await import("@/test/fixtures");
         const offering = await createTestResource(db, seller.id, {
           name: "Consulting Session",
@@ -1144,6 +1248,199 @@ describe("POST /api/stripe/webhook", () => {
           .limit(1);
 
         expect(receipt?.ownerId).toBe(buyer.id);
+      }));
+  });
+
+  describe("refund and dispute accounting", () => {
+    it("reverses every local split once for a full refund", () =>
+      withTestTransaction(async (db) => {
+        const seller = await createTestAgent(db);
+        const org = await createTestGroup(db);
+        const platform = await createTestGroup(db, { name: "RIVR Loss Test" });
+        const sellerWallet = await createTestWallet(db, seller.id, { balanceCents: 1000 });
+        const orgWallet = await createTestWallet(db, org.id, { type: "group", balanceCents: 200 });
+        const platformWallet = await createTestWallet(db, platform.id, {
+          type: "group",
+          balanceCents: 100,
+        });
+
+        await db.insert(walletTransactions).values({
+          type: "marketplace_purchase",
+          amountCents: 1380,
+          feeCents: 380,
+          stripePaymentIntentId: "pi_refund_split",
+          status: "completed",
+          metadata: {},
+        });
+        const [sellerCredit, orgCredit, platformCredit] = await db
+          .insert(walletTransactions)
+          .values([
+            {
+              type: "marketplace_payout",
+              toWalletId: sellerWallet.id,
+              amountCents: 1000,
+              status: "completed",
+              metadata: {
+                paymentIntentId: "pi_refund_split",
+                sellerAgentId: seller.id,
+              },
+            },
+            {
+              type: "marketplace_payout",
+              toWalletId: orgWallet.id,
+              amountCents: 200,
+              status: "completed",
+              metadata: { paymentIntentId: "pi_refund_split", orgId: org.id },
+            },
+            {
+              type: "service_fee",
+              toWalletId: platformWallet.id,
+              amountCents: 100,
+              status: "completed",
+              metadata: { paymentIntentId: "pi_refund_split" },
+            },
+          ])
+          .returning();
+        await db.insert(capitalEntries).values([
+          {
+            walletId: sellerWallet.id,
+            amountCents: 1000,
+            remainingCents: 1000,
+            settlementStatus: "cleared",
+            sourceType: "test",
+            sourceTransactionId: sellerCredit.id,
+          },
+          {
+            walletId: orgWallet.id,
+            amountCents: 200,
+            remainingCents: 200,
+            settlementStatus: "cleared",
+            sourceType: "test",
+            sourceTransactionId: orgCredit.id,
+          },
+          {
+            walletId: platformWallet.id,
+            amountCents: 100,
+            remainingCents: 100,
+            settlementStatus: "cleared",
+            sourceType: "test",
+            sourceTransactionId: platformCredit.id,
+          },
+        ]);
+
+        const charge = {
+          id: "ch_refund_split",
+          amount: 1380,
+          amount_refunded: 1380,
+          payment_intent: "pi_refund_split",
+        };
+        mockConstructEvent.mockReturnValue(makeStripeEvent("charge.refunded", charge));
+        const request = () =>
+          makeWebhookRequest("{}", { "stripe-signature": VALID_SIGNATURE });
+
+        expect((await POST(request())).status).toBe(STATUS_OK);
+        expect((await POST(request())).status).toBe(STATUS_OK);
+
+        const balances = await db
+          .select({ id: wallets.id, balanceCents: wallets.balanceCents })
+          .from(wallets)
+          .where(
+            or(
+              eq(wallets.id, sellerWallet.id),
+              eq(wallets.id, orgWallet.id),
+              eq(wallets.id, platformWallet.id),
+            ),
+          );
+        const byId = new Map(balances.map((wallet) => [wallet.id, wallet.balanceCents]));
+        expect(byId.get(sellerWallet.id)).toBe(-70);
+        expect(byId.get(orgWallet.id)).toBe(0);
+        expect(byId.get(platformWallet.id)).toBe(0);
+
+        const capital = await db
+          .select()
+          .from(capitalEntries)
+          .where(
+            or(
+              eq(capitalEntries.walletId, sellerWallet.id),
+              eq(capitalEntries.walletId, orgWallet.id),
+              eq(capitalEntries.walletId, platformWallet.id),
+            ),
+          );
+        expect(capital.every((entry) => entry.remainingCents === 0)).toBe(true);
+      }));
+
+    it("reverses all disputed splits and restores them once when funds return", () =>
+      withTestTransaction(async (db) => {
+        const seller = await createTestAgent(db);
+        const org = await createTestGroup(db);
+        const sellerWallet = await createTestWallet(db, seller.id, { balanceCents: 1000 });
+        const orgWallet = await createTestWallet(db, org.id, { type: "group", balanceCents: 200 });
+
+        await db.insert(walletTransactions).values({
+          type: "marketplace_purchase",
+          amountCents: 1200,
+          feeCents: 200,
+          stripePaymentIntentId: "pi_dispute_split",
+          status: "completed",
+          metadata: {},
+        });
+        const credits = await db
+          .insert(walletTransactions)
+          .values([
+            {
+              type: "marketplace_payout",
+              toWalletId: sellerWallet.id,
+              amountCents: 1000,
+              status: "completed",
+              metadata: {
+                paymentIntentId: "pi_dispute_split",
+                sellerAgentId: seller.id,
+              },
+            },
+            {
+              type: "marketplace_payout",
+              toWalletId: orgWallet.id,
+              amountCents: 200,
+              status: "completed",
+              metadata: { paymentIntentId: "pi_dispute_split", orgId: org.id },
+            },
+          ])
+          .returning();
+        await db.insert(capitalEntries).values(
+          credits.map((credit) => ({
+            walletId: credit.toWalletId!,
+            amountCents: credit.amountCents,
+            remainingCents: credit.amountCents,
+            settlementStatus: "cleared" as const,
+            sourceType: "test",
+            sourceTransactionId: credit.id,
+          })),
+        );
+
+        const dispute = {
+          id: "dp_split",
+          amount: 1200,
+          payment_intent: "pi_dispute_split",
+        };
+        const post = async (type: string) => {
+          mockConstructEvent.mockReturnValue(makeStripeEvent(type, dispute));
+          return POST(
+            makeWebhookRequest("{}", { "stripe-signature": VALID_SIGNATURE }),
+          );
+        };
+
+        expect((await post("charge.dispute.created")).status).toBe(STATUS_OK);
+        expect((await post("charge.dispute.created")).status).toBe(STATUS_OK);
+        expect((await post("charge.dispute.funds_reinstated")).status).toBe(STATUS_OK);
+        expect((await post("charge.dispute.funds_reinstated")).status).toBe(STATUS_OK);
+
+        const balances = await db
+          .select({ id: wallets.id, balanceCents: wallets.balanceCents })
+          .from(wallets)
+          .where(or(eq(wallets.id, sellerWallet.id), eq(wallets.id, orgWallet.id)));
+        const byId = new Map(balances.map((wallet) => [wallet.id, wallet.balanceCents]));
+        expect(byId.get(sellerWallet.id)).toBe(1000);
+        expect(byId.get(orgWallet.id)).toBe(200);
       }));
   });
 

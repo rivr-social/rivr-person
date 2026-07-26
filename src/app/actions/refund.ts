@@ -63,7 +63,10 @@ export async function requestRefundAction(receiptId: string): Promise<{ success:
       return { success: false, error: 'Payment is not in a refundable state' };
     }
 
-    await stripe.refunds.create({ payment_intent: paymentIntentId });
+    await stripe.refunds.create(
+      { payment_intent: paymentIntentId },
+      { idempotencyKey: `receipt-refund:${receiptId}:${paymentIntentId}` },
+    );
 
     await db
       .update(resources)
