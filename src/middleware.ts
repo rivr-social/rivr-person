@@ -34,7 +34,7 @@ import {
  * browsing but must be bounced off these sovereign control-plane surfaces:
  * settings, autobot/agent-HQ control plane, persona/instance/recovery
  * management, builder/bespoke authoring, and their backing APIs. The OWNER and
- * any local NextAuth session pass through unaffected.
+ * a local or federated session whose actor id matches `PRIMARY_AGENT_ID` passes.
  */
 const OWNER_ONLY_PREFIXES = [
   "/settings",
@@ -65,15 +65,13 @@ function isOwnerOnlyPath(pathname: string): boolean {
 /**
  * Builds a Content-Security-Policy header string with a per-request nonce.
  *
- * `'unsafe-eval'` and `'wasm-unsafe-eval'` are always included in `script-src`
- * because CesiumJS requires eval for dynamic module loading and WebAssembly
- * compilation for geospatial computations.
- *
  * @param nonce - A Base64-encoded UUID unique to this request.
+ * @param pathname - Request path used to scope Cesium's dynamic-code allowance.
  * @returns The complete CSP header value.
  */
-function buildCspHeader(nonce: string): string {
+function buildCspHeader(nonce: string, pathname: string): string {
   const isDev = process.env.NODE_ENV === "development";
+  const allowsCesium = pathname === "/map" || pathname.startsWith("/map/");
   const matrixUrl = process.env.NEXT_PUBLIC_MATRIX_HOMESERVER_URL;
   const matrixWss = matrixUrl?.replace(/^https:\/\//, "wss://");
   const publicDomain = process.env.NEXT_PUBLIC_DOMAIN?.trim();
@@ -103,7 +101,7 @@ function buildCspHeader(nonce: string): string {
     "'self'",
     "data:",
     "blob:",
-    "http://localhost:9000",
+    ...(isDev ? ["http://localhost:9000"] : []),
     ...(minioPublicUrl ? [minioPublicUrl] : []),
     ...(publicDomain ? [`https://s3.${publicDomain}`] : []),
     federatedAssetSource,
@@ -187,12 +185,14 @@ function buildCspHeader(nonce: string): string {
 
   const connectSources = [
     "'self'",
-    "ws://localhost:*",
-    "wss://localhost:*",
-    "http://localhost:*",
-    "https://localhost:*",
-    "http://127.0.0.1:*",
-    "https://127.0.0.1:*",
+    ...(isDev ? [
+      "ws://localhost:*",
+      "wss://localhost:*",
+      "http://localhost:*",
+      "https://localhost:*",
+      "http://127.0.0.1:*",
+      "https://127.0.0.1:*",
+    ] : []),
     ...(appUrl ? [appUrl] : []),
     ...(appWss ? [appWss] : []),
     globalBaseUrl,
@@ -242,7 +242,7 @@ function buildCspHeader(nonce: string): string {
 
   const scriptSrc = isDev
     ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts}`
-    : `script-src 'self' 'nonce-${nonce}' 'sha256-n46vPwSWuMC0W703pBofImv82Z26xo4LXymv0E9caPk=' 'sha256-4lN0Nms+eLyEuxG3yC9cHcVuEbIxGjeYo4BkqFxl1oE=' 'unsafe-eval' 'wasm-unsafe-eval' https://js.stripe.com ${platformEmbedScripts}`;
+    : `script-src 'self' 'nonce-${nonce}' 'sha256-n46vPwSWuMC0W703pBofImv82Z26xo4LXymv0E9caPk=' 'sha256-4lN0Nms+eLyEuxG3yC9cHcVuEbIxGjeYo4BkqFxl1oE='${allowsCesium ? " 'unsafe-eval' 'wasm-unsafe-eval'" : ""} https://js.stripe.com ${platformEmbedScripts}`;
 
   const frameSrc = [
     "frame-src 'self'",
@@ -384,7 +384,7 @@ export async function middleware(request: NextRequest) {
   }
 
   const nonce = btoa(crypto.randomUUID());
-  const cspHeader = buildCspHeader(nonce);
+  const cspHeader = buildCspHeader(nonce, pathname);
   const method = request.method.toUpperCase();
   // Filter non-API POST requests that are neither Server Actions nor form
   // submissions. This prevents bare POST requests from being processed as
@@ -440,9 +440,30 @@ export async function middleware(request: NextRequest) {
     secureCookie: isSecure,
   });
 
-  // A local NextAuth session is always the sovereign owner — pass through with
-  // full access to every surface, including the owner-only control plane.
+  const { instanceId, primaryAgentId } = getInstanceConfig();
+
   if (token) {
+    const actorId =
+      typeof token.id === "string"
+        ? token.id
+        : typeof token.sub === "string"
+          ? token.sub
+          : null;
+    const isOwner =
+      primaryAgentId !== null && actorId === primaryAgentId;
+
+    if (!isOwner && isOwnerOnlyPath(pathname)) {
+      if (pathname.startsWith("/api/")) {
+        const response = NextResponse.json(
+          { error: "Forbidden: owner-only resource" },
+          { status: 403 },
+        );
+        return applySecurityHeaders(response, cspHeader, nonce);
+      }
+      const response = NextResponse.redirect(new URL("/", request.url));
+      return applySecurityHeaders(response, cspHeader, nonce);
+    }
+
     const response = NextResponse.next({
       request: { headers: requestHeaders },
     });
@@ -458,7 +479,6 @@ export async function middleware(request: NextRequest) {
   const remoteViewerCookie = request.cookies.get(
     REMOTE_VIEWER_COOKIE_NAME,
   )?.value;
-  const { instanceId, primaryAgentId } = getInstanceConfig();
   const remoteViewer = secret
     ? await decodeRemoteViewerSessionEdge(
         remoteViewerCookie,

@@ -9,7 +9,6 @@ import {
   createConnectAccount,
   createAccountLink,
   getAccountStatus,
-  createPayout,
   createLoginLink,
 } from '@/lib/stripe-connect';
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from '@/lib/federation';
@@ -26,6 +25,7 @@ import {
   isTreasuryEnabled,
   retrieveFinancialConnectionsAccount,
 } from '@/lib/stripe-treasury';
+import { executeConnectBankPayout } from '@/lib/connect-bank-payout';
 
 export async function releaseTestConnectBalanceToWalletInternal(
   currentUserId: string,
@@ -153,8 +153,16 @@ export async function setupConnectAccountAction(
       const walletMeta = (wallet.metadata ?? {}) as Record<string, unknown>;
 
       let connectAccountId = walletMeta.stripeConnectAccountId as string | undefined;
+      const rawCountry = accountCountry?.trim();
+      if (rawCountry && !/^[A-Za-z]{2}$/.test(rawCountry)) {
+        throw new Error('Bank country must be a two-letter ISO country code.');
+      }
+      const normalizedCountry = rawCountry?.toUpperCase();
 
       if (!connectAccountId) {
+        if (!normalizedCountry) {
+          throw new Error('Choose the country of the bank account that will receive payouts.');
+        }
         const accountMetadata = {
           walletId: wallet.id,
           ownerId: target.ownerId,
@@ -168,17 +176,15 @@ export async function setupConnectAccountAction(
         // Default account type: Custom (controller-based) when enabled — the only
         // type that can host Treasury/Issuing + platform bank-balance reads.
         // Hosted Account-Links onboarding works for both, so the flow below is shared.
-        const account = isCustomConnectEnabled()
+        const account = isCustomConnectEnabled() && normalizedCountry === 'US'
           ? await createCustomConnectAccount({
               agentId: target.ownerId,
               email: target.email ?? undefined,
+              country: normalizedCountry,
               metadata: accountMetadata,
             })
           : await createConnectAccount(target.ownerId, target.email ?? undefined, accountMetadata, {
-              country:
-                typeof accountCountry === 'string' && /^[A-Za-z]{2}$/.test(accountCountry.trim())
-                  ? accountCountry.trim().toUpperCase()
-                  : undefined,
+              country: normalizedCountry,
             });
         connectAccountId = account.id;
 
@@ -381,7 +387,8 @@ export async function releaseTestConnectBalanceToWalletAction(ownerId?: string):
 export async function requestPayoutAction(
   amountCents: number,
   speed: 'standard' | 'instant' = 'standard',
-  ownerId?: string
+  ownerId?: string,
+  requestId?: string,
 ): Promise<{ success: boolean; payoutId?: string; error?: string }> {
   const currentUserId = await getCurrentUserId();
   if (!currentUserId) {
@@ -391,6 +398,7 @@ export async function requestPayoutAction(
   if (!isPositiveInteger(amountCents)) {
     return { success: false, error: 'Amount must be a positive integer (in cents).' };
   }
+  if (!requestId) return { success: false, error: 'A payout request ID is required.' };
 
   const check = await rateLimit(
     `wallet:${currentUserId}`,
@@ -406,7 +414,8 @@ export async function requestPayoutAction(
       type: 'requestPayoutAction',
       actorId: currentUserId,
       targetAgentId: currentUserId,
-      payload: { amountCents, speed, ownerId },
+      payload: { amountCents, speed, ownerId, requestId },
+      idempotencyKey: requestId,
     },
     async () => {
       const target = await resolveManagedWalletTarget(currentUserId, ownerId);
@@ -427,32 +436,11 @@ export async function requestPayoutAction(
         throw new Error('No payment account found. Set up payments first.');
       }
 
-      // Verify sufficient balance
-      const balance = await getConnectBalance(connectAccountId);
-      if (balance.availableCents < amountCents) {
-        throw new Error('Insufficient available balance for payout.');
-      }
-
-      const payout = await createPayout(connectAccountId, amountCents, speed);
-
-      // Record the payout in wallet transactions for audit
-      await db.insert(walletTransactions).values({
-        type: 'connect_payout',
-        fromWalletId: wallet.id,
-        amountCents,
-        feeCents: 0,
-        currency: 'usd',
-        description: `Payout to bank (${speed})`,
-        status: 'pending',
-        metadata: {
-          stripePayoutId: payout.id,
-          connectAccountId,
-          speed,
-          ownerId: target.ownerId,
-        },
+      const payout = await executeConnectBankPayout({
+        requestId, walletId: wallet.id, ownerId: target.ownerId,
+        connectAccountId, amountCents, speed,
       });
-
-      return { success: true, payoutId: payout.id } as { success: boolean; payoutId?: string; error?: string };
+      return { success: true, payoutId: payout.payoutId } as { success: boolean; payoutId?: string; error?: string };
     },
   );
 

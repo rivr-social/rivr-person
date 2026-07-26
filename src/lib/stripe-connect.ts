@@ -50,20 +50,20 @@ export const CROSS_BORDER_PAYOUT_COUNTRIES = new Set([
 
 export async function createConnectAccount(
   agentId: string,
-  email?: string,
-  metadata?: Record<string, string>,
-  options?: {
+  email: string | undefined,
+  metadata: Record<string, string> | undefined,
+  options: {
     /**
      * ISO alpha-2 country for the seller's connected account. Omitted/US →
      * standard Express. Other Connect-region country → transfers-only
      * recipient-agreement account. Non-Connect country → rejected (needs
      * Global Payouts, not available here).
      */
-    country?: string;
+    country: string;
   }
 ) {
   const stripe = getStripe();
-  const country = options?.country?.toUpperCase().trim() || PLATFORM_ACCOUNT_COUNTRY;
+  const country = options.country.toUpperCase().trim();
   if (!CROSS_BORDER_PAYOUT_COUNTRIES.has(country)) {
     throw new Error(
       `Payouts to a bank in ${country} aren't supported here yet — that country ` +
@@ -209,7 +209,8 @@ export async function getConnectBalance(
 export async function createPayout(
   connectAccountId: string,
   amountCents: number,
-  speed: 'standard' | 'instant'
+  speed: 'standard' | 'instant',
+  opts: { idempotencyKey: string; metadata?: Record<string, string> },
 ) {
   const stripe = getStripe();
   const payout = await stripe.payouts.create(
@@ -217,8 +218,9 @@ export async function createPayout(
       amount: amountCents,
       currency: 'usd',
       method: speed === 'instant' ? 'instant' : 'standard',
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
     },
-    { stripeAccount: connectAccountId }
+    { stripeAccount: connectAccountId, idempotencyKey: opts.idempotencyKey }
   );
   return payout;
 }

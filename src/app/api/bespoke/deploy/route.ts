@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { spawnSync } from "node:child_process";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -7,7 +7,14 @@ import { generateMultiPageSite } from "@/lib/bespoke/site-generator";
 import type { BespokeModuleManifest, MyProfileModuleBundle } from "@/lib/bespoke/types";
 import type { SitePreferences } from "@/lib/bespoke/site-generator";
 import { writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, posix, relative, resolve } from "node:path";
+import { resolveBuilderOwner, isOwnerError } from "@/lib/builder/site-owner";
+import {
+  MAX_FILE_BYTES,
+  MAX_WORKSPACE_BYTES,
+  MAX_WORKSPACE_FILES,
+  validateSitePath,
+} from "@/lib/builder/assistant-tools";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +28,9 @@ const DEFAULT_DEPLOY_DIR = "/opt/camalot";
 const DEPLOY_DIR = process.env.BESPOKE_SITE_DEPLOY_DIR || DEFAULT_DEPLOY_DIR;
 const DEPLOY_HOST = process.env.BESPOKE_SITE_DEPLOY_HOST || "";
 const DEPLOY_USER = process.env.BESPOKE_SITE_DEPLOY_USER || "root";
+const SSH_HOST_RE = /^[a-z0-9.-]+$/i;
+const SSH_USER_RE = /^[a-z_][a-z0-9_-]*$/i;
+const REMOTE_PATH_RE = /^\/[a-z0-9._/-]+$/i;
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -47,21 +57,63 @@ interface DeployErrorResponse {
 
 type DeployResponse = DeploySuccessResponse | DeployErrorResponse;
 
+function validateGeneratedFiles(files: Map<string, string>): void {
+  if (files.size === 0 || files.size > MAX_WORKSPACE_FILES) {
+    throw new Error(`Generated site must contain 1-${MAX_WORKSPACE_FILES} files`);
+  }
+  let totalBytes = 0;
+  for (const [filePath, content] of files) {
+    const pathError = validateSitePath(filePath);
+    if (pathError) throw new Error(`${filePath}: ${pathError}`);
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > MAX_FILE_BYTES) {
+      throw new Error(`${filePath}: File exceeds ${MAX_FILE_BYTES} bytes`);
+    }
+    totalBytes += bytes;
+  }
+  if (totalBytes > MAX_WORKSPACE_BYTES) {
+    throw new Error(`Generated site exceeds ${MAX_WORKSPACE_BYTES} bytes`);
+  }
+}
+
+function validateSshConfig(host: string, user: string, deployDir: string): void {
+  if (!SSH_HOST_RE.test(host)) throw new Error("Invalid SSH deployment host");
+  if (!SSH_USER_RE.test(user)) throw new Error("Invalid SSH deployment user");
+  if (!REMOTE_PATH_RE.test(deployDir) || deployDir.split("/").includes("..")) {
+    throw new Error("Invalid SSH deployment directory");
+  }
+}
+
+function runSsh(host: string, user: string, command: string[], input?: string): void {
+  const result = spawnSync("ssh", ["--", `${user}@${host}`, ...command], {
+    input,
+    timeout: input === undefined ? 10_000 : 30_000,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    maxBuffer: MAX_FILE_BYTES + 64_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `SSH exited with status ${result.status}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Local filesystem deploy
 // ---------------------------------------------------------------------------
 
 async function deployLocal(files: Map<string, string>, deployDir: string): Promise<string[]> {
-  await mkdir(deployDir, { recursive: true });
+  const root = resolve(deployDir);
+  await mkdir(root, { recursive: true });
 
   const deployedFiles: string[] = [];
   for (const [filePath, content] of files) {
-    const fullPath = join(deployDir, filePath);
-    // Ensure subdirectories exist (in case we add nested paths later)
-    const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
-    if (dir !== deployDir) {
-      await mkdir(dir, { recursive: true });
+    const fullPath = resolve(root, filePath);
+    const rel = relative(root, fullPath);
+    if (!rel || rel.startsWith("..") || rel.startsWith("/") || rel.startsWith("\\")) {
+      throw new Error(`Path escapes deployment root: ${filePath}`);
     }
+    await mkdir(dirname(fullPath), { recursive: true });
     await writeFile(fullPath, content, "utf-8");
     deployedFiles.push(filePath);
   }
@@ -79,32 +131,19 @@ async function deploySSH(
   user: string,
   deployDir: string,
 ): Promise<string[]> {
-  const { execSync } = await import("node:child_process");
-
-  // Ensure deploy directory exists
-  execSync(`ssh ${user}@${host} "mkdir -p ${deployDir}"`, {
-    timeout: 10_000,
-    stdio: "pipe",
-  });
+  validateSshConfig(host, user, deployDir);
+  runSsh(host, user, ["mkdir", "-p", "--", deployDir]);
 
   const deployedFiles: string[] = [];
   for (const [filePath, content] of files) {
-    const remotePath = `${deployDir}/${filePath}`;
-    const remoteDir = remotePath.substring(0, remotePath.lastIndexOf("/"));
+    const remotePath = posix.join(deployDir, filePath);
+    const remoteDir = posix.dirname(remotePath);
 
     if (remoteDir !== deployDir) {
-      execSync(`ssh ${user}@${host} "mkdir -p ${remoteDir}"`, {
-        timeout: 10_000,
-        stdio: "pipe",
-      });
+      runSsh(host, user, ["mkdir", "-p", "--", remoteDir]);
     }
 
-    // Write content via stdin to avoid shell escaping issues
-    execSync(`ssh ${user}@${host} "cat > ${remotePath}"`, {
-      input: content,
-      timeout: 30_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    runSsh(host, user, ["tee", "--", remotePath], content);
 
     deployedFiles.push(filePath);
   }
@@ -125,14 +164,9 @@ async function deploySSH(
 // The mode is auto-detected based on whether BESPOKE_SITE_DEPLOY_HOST is set.
 // ---------------------------------------------------------------------------
 
-export async function POST(request: Request): Promise<NextResponse<DeployResponse>> {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json(
-      { success: false, error: "Authentication required" },
-      { status: 401, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-    );
-  }
+export async function POST(request: Request) {
+  const owner = await resolveBuilderOwner();
+  if (isOwnerError(owner)) return owner.error;
 
   try {
     const body = (await request.json()) as DeployRequestBody;
@@ -150,7 +184,7 @@ export async function POST(request: Request): Promise<NextResponse<DeployRespons
     const [agentRow] = await db
       .select({ metadata: agents.metadata })
       .from(agents)
-      .where(eq(agents.id, session.user.id))
+      .where(eq(agents.id, owner.agentId))
       .limit(1);
 
     const agentMeta = (agentRow?.metadata ?? {}) as Record<string, unknown>;
@@ -162,12 +196,19 @@ export async function POST(request: Request): Promise<NextResponse<DeployRespons
 
     // Generate the site
     const site = generateMultiPageSite(body.manifest, body.bundle, mergedPreferences);
+    validateGeneratedFiles(site.files);
 
     // Determine deploy mode
     const mode = body.mode || (DEPLOY_HOST ? "ssh" : "local");
+    if (mode !== "local" && mode !== "ssh") {
+      throw new Error("Invalid deployment mode");
+    }
+    if (mode === "ssh" && !DEPLOY_HOST) {
+      throw new Error("SSH deployment is not configured");
+    }
     let deployedFiles: string[];
 
-    if (mode === "ssh" && DEPLOY_HOST) {
+    if (mode === "ssh") {
       deployedFiles = await deploySSH(site.files, DEPLOY_HOST, DEPLOY_USER, DEPLOY_DIR);
     } else {
       deployedFiles = await deployLocal(site.files, DEPLOY_DIR);

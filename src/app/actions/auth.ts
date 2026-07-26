@@ -39,6 +39,8 @@ import { encryptSecret } from "@/lib/crypto/secret-box";
 import { syncMurmurationsProfilesForActor } from "@/lib/murmurations";
 import { getClientIp } from "@/lib/client-ip";
 import { hashToken } from "@/lib/token-hash";
+import { getInstanceConfig } from "@/lib/federation/instance-config";
+import { isLocalSignupAllowed } from "@/lib/auth/sovereign-owner";
 
 const BCRYPT_SALT_ROUNDS = 12;
 // NIST SP 800-63B recommends a minimum password length of 8 characters
@@ -177,6 +179,14 @@ export async function signupAction(data: {
   acceptedTerms?: boolean;
   murmurationsPublishing?: boolean;
 }): Promise<AuthResult> {
+  const { instanceType } = getInstanceConfig();
+  if (!isLocalSignupAllowed(instanceType, process.env.ALLOW_LOCAL_SIGNUP)) {
+    return {
+      success: false,
+      error: "Local signup is disabled on this sovereign instance.",
+    };
+  }
+
   const {
     name,
     email,

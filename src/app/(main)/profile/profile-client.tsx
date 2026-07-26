@@ -250,7 +250,12 @@ function ConnectBalanceSection() {
   const handlePayout = async (speed: "standard" | "instant") => {
     if (!connectBalance || connectBalance.availableCents <= 0) return;
     setPayoutLoading(true);
-    const result = await requestPayoutAction(connectBalance.availableCents, speed);
+    const result = await requestPayoutAction(
+      connectBalance.availableCents,
+      speed,
+      undefined,
+      crypto.randomUUID(),
+    );
     setPayoutLoading(false);
     if (result.success) {
       toast({ title: "Payout initiated", description: `${speed === "instant" ? "Instant" : "Standard (1-3 days)"} payout started.` });

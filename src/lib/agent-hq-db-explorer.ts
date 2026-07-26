@@ -948,7 +948,8 @@ export async function readDbFile(relativePath: string): Promise<{
     // @{agentId}/agents/{type}/{id}/file → agents/{type}/{id}/file
     if (subParts[0] === "resources" && subParts.length >= 3) {
       // Handle virtual transcripts path: resources/document/transcripts/{id}/{file}
-      let [, rType, rId, rFile] = subParts;
+      const [, rType] = subParts;
+      let [, , rId, rFile] = subParts;
       if (rType === "document" && rId === "transcripts" && subParts.length >= 5) {
         rId = subParts[3];
         rFile = subParts[4];

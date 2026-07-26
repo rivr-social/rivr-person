@@ -65,6 +65,10 @@ services:
           export NEXTAUTH_SECRET="$$AUTH_VALUE"
           echo "[secrets] Auth secret loaded"
         fi
+        if [ -f /run/secrets/rivr_agent_hq_session_secret ]; then
+          export AGENT_HQ_SESSION_SECRET=$$(cat /run/secrets/rivr_agent_hq_session_secret)
+          echo "[secrets] Agent HQ session secret loaded"
+        fi
         if [ -f /run/secrets/minio_root_password ]; then
           export MINIO_SECRET_KEY=$$(cat /run/secrets/minio_root_password)
           export MINIO_ROOT_PASSWORD=$$(cat /run/secrets/minio_root_password)
@@ -97,6 +101,7 @@ services:
     secrets:
       - rivr_db_password
       - rivr_auth_secret
+      - rivr_agent_hq_session_secret
       - rivr_federation_admin_key
       - rivr_google_smtp_password
       - minio_root_user
@@ -135,6 +140,8 @@ secrets:
     file: ../../secrets/rivr_db_password
   rivr_auth_secret:
     file: ../../secrets/rivr_auth_secret
+  rivr_agent_hq_session_secret:
+    file: ../../secrets/rivr_agent_hq_session_secret
   rivr_federation_admin_key:
     file: ../../secrets/rivr_federation_admin_key
   rivr_google_smtp_password:

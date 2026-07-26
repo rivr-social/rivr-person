@@ -9,9 +9,7 @@
  */
 import { NextResponse } from "next/server";
 
-import { auth } from "@/auth";
-import { getInstanceConfig } from "@/lib/federation/instance-config";
-import { STATUS_UNAUTHORIZED, STATUS_FORBIDDEN } from "@/lib/http-status";
+import { resolveSovereignOwner } from "@/lib/auth/sovereign-owner";
 
 const CACHE_CONTROL_NO_STORE = "private, no-store, max-age=0, must-revalidate";
 
@@ -25,23 +23,14 @@ export function isOwnerError(owner: BuilderOwner): owner is { error: NextRespons
 
 /** Resolves the authenticated builder owner agent id, or an error response. */
 export async function resolveBuilderOwner(): Promise<BuilderOwner> {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const result = await resolveSovereignOwner();
+  if (!result.ok) {
     return {
       error: NextResponse.json(
-        { error: "Authentication required" },
-        { status: STATUS_UNAUTHORIZED, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
+        { error: result.error },
+        { status: result.status, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
       ),
     };
   }
-  const { primaryAgentId } = getInstanceConfig();
-  if (primaryAgentId && session.user.id !== primaryAgentId) {
-    return {
-      error: NextResponse.json(
-        { error: "Forbidden: owner-only resource" },
-        { status: STATUS_FORBIDDEN, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-      ),
-    };
-  }
-  return { agentId: session.user.id };
+  return { agentId: result.owner.agentId };
 }

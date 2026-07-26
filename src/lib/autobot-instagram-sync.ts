@@ -213,7 +213,7 @@ export async function syncInstagramConnection(
   const maxResults = parsePositiveInteger(connection.config.maxResults, 25, 100);
   let imported = 0;
   let updated = 0;
-  let skipped = 0;
+  const skipped = 0;
 
   if (connection.syncDirection === "import" || connection.syncDirection === "bidirectional") {
     const mediaUrl = new URL(`${INSTAGRAM_GRAPH_API}/${encodeURIComponent(accountId)}/media`);

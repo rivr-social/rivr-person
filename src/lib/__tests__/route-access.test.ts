@@ -97,6 +97,7 @@ describe("route-access", () => {
 
     it("prefix list matches exported PUBLIC_PAGE_PREFIXES", () => {
       const EXPECTED_PREFIXES = [
+        "/docs",
         "/auth/signup",
         "/auth/reset-password",
         "/auth/forgot-password",
@@ -276,6 +277,8 @@ describe("route-access", () => {
         "/api/billing/trial-reminders",
         "/api/cron/federation-deliver",
         "/api/cron/federation-sync",
+        "/api/cron/thanks-demurrage",
+        "/api/admin/federation/drain-credential-sync-queue",
         "/api/health",
         "/api/federation",
         "/api/mcp",

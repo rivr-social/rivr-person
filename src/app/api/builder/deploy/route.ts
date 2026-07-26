@@ -1,5 +1,5 @@
-import { auth } from "@/auth";
 import { NextResponse } from "next/server";
+import { dirname, relative, resolve } from "node:path";
 import { getDeployCapability } from "@/lib/deploy/capability";
 import {
   pushSiteToGitHub,
@@ -8,6 +8,13 @@ import {
   GitHubDeployError,
 } from "@/lib/deploy/github-deploy";
 import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
+import { resolveBuilderOwner, isOwnerError } from "@/lib/builder/site-owner";
+import {
+  MAX_FILE_BYTES,
+  MAX_WORKSPACE_BYTES,
+  MAX_WORKSPACE_FILES,
+  validateSitePath,
+} from "@/lib/builder/assistant-tools";
 
 export const dynamic = "force-dynamic";
 
@@ -48,13 +55,8 @@ interface DeployRequestBody {
  * core isolation boundary for the site builder.
  */
 export async function POST(request: Request) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json(
-      { error: "Authentication required" },
-      { status: STATUS_UNAUTHORIZED, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-    );
-  }
+  const owner = await resolveBuilderOwner();
+  if (isOwnerError(owner)) return owner.error;
 
   const capability = getDeployCapability();
 
@@ -75,6 +77,38 @@ export async function POST(request: Request) {
     );
   }
 
+  const entries = Object.entries(body.files);
+  if (entries.length > MAX_WORKSPACE_FILES) {
+    return NextResponse.json(
+      { error: `Too many files (max ${MAX_WORKSPACE_FILES})` },
+      { status: STATUS_BAD_REQUEST, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
+    );
+  }
+  let totalBytes = 0;
+  for (const [filePath, content] of entries) {
+    const pathError = validateSitePath(filePath);
+    if (pathError || typeof content !== "string") {
+      return NextResponse.json(
+        { error: pathError ?? `${filePath}: File content must be text` },
+        { status: STATUS_BAD_REQUEST, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
+      );
+    }
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > MAX_FILE_BYTES) {
+      return NextResponse.json(
+        { error: `${filePath}: File exceeds ${MAX_FILE_BYTES} bytes` },
+        { status: STATUS_BAD_REQUEST, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
+      );
+    }
+    totalBytes += bytes;
+  }
+  if (totalBytes > MAX_WORKSPACE_BYTES) {
+    return NextResponse.json(
+      { error: `Site exceeds ${MAX_WORKSPACE_BYTES} bytes` },
+      { status: STATUS_BAD_REQUEST, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
+    );
+  }
+
   const commitMessage = body.commitMessage || `Site update from Rivr Builder — ${new Date().toISOString()}`;
 
   // -------------------------------------------------------------------------
@@ -83,20 +117,16 @@ export async function POST(request: Request) {
   if (capability.isSovereign && capability.deployMethod === "direct") {
     try {
       const { writeFileSync, mkdirSync, existsSync } = await import("fs");
-      const { join, dirname } = await import("path");
 
-      const publicDir = join(process.cwd(), "public", "site");
+      const publicDir = resolve(process.cwd(), "public", "site");
 
       for (const [filePath, content] of Object.entries(body.files)) {
-        // Sanitize path to prevent directory traversal
-        const sanitized = filePath.replace(/\.\./g, "").replace(/^\//, "");
-        const fullPath = join(publicDir, sanitized);
-        const dir = dirname(fullPath);
-
-        // Ensure the target is still under publicDir
-        if (!fullPath.startsWith(publicDir)) {
-          continue;
+        const fullPath = resolve(publicDir, filePath);
+        const rel = relative(publicDir, fullPath);
+        if (!rel || rel.startsWith("..") || rel.startsWith("/") || rel.startsWith("\\")) {
+          throw new Error(`Path escapes deployment root: ${filePath}`);
         }
+        const dir = dirname(fullPath);
 
         if (!existsSync(dir)) {
           mkdirSync(dir, { recursive: true });
@@ -126,7 +156,7 @@ export async function POST(request: Request) {
   // Shared instance: GitHub deploy
   // -------------------------------------------------------------------------
   if (capability.deployMethod === "github") {
-    const { directAgentId } = await resolveDirectAgent(session.user.id);
+    const { directAgentId } = await resolveDirectAgent(owner.agentId);
     const connection = await getGitHubConnection(directAgentId);
 
     if (!connection) {
@@ -203,19 +233,14 @@ export async function POST(request: Request) {
  * Returns the current deploy status and capability information.
  */
 export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json(
-      { error: "Authentication required" },
-      { status: STATUS_UNAUTHORIZED, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-    );
-  }
+  const owner = await resolveBuilderOwner();
+  if (isOwnerError(owner)) return owner.error;
 
   const capability = getDeployCapability();
 
   // For GitHub deploy, include connection and status info
   if (capability.deployMethod === "github") {
-    const { directAgentId } = await resolveDirectAgent(session.user.id);
+    const { directAgentId } = await resolveDirectAgent(owner.agentId);
     const connection = await getGitHubConnection(directAgentId);
 
     if (!connection) {

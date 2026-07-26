@@ -304,7 +304,7 @@ export function GpuStatusBadge() {
   const openProviderConsole = useCallback(() => {
     if (!gpuStatus?.providerConsoleUrl) return;
     window.open(gpuStatus.providerConsoleUrl, "_blank", "noopener,noreferrer");
-  }, [gpuStatus?.providerConsoleUrl]);
+  }, [gpuStatus]);
 
   // Status label and color
   let badgeLabel = "No GPU";

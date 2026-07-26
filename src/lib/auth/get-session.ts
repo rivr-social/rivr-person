@@ -72,11 +72,7 @@ export interface UnifiedSession {
     homeBaseUrl: string | null;
     /** How this session was authenticated. */
     authMethod: SessionAuthMethod;
-    /**
-     * Whether this actor is the instance owner (`PRIMARY_AGENT_ID`). Local
-     * NextAuth sessions are always the owner; a federated visitor is the owner
-     * only when their actor id matches the configured primary agent.
-     */
+    /** Whether this actor matches the configured instance owner. */
     isOwner: boolean;
   };
   /** ISO expiry string. NextAuth stamps this; federated is the cookie `expiresAt`. */
@@ -202,11 +198,8 @@ export async function getSession(): Promise<UnifiedSession | null> {
         image: nextAuthSession.user.image ?? null,
         homeBaseUrl: null,
         authMethod: "nextauth",
-        // A locally-authenticated session is the sovereign owner whenever it
-        // matches the configured primary agent. When PRIMARY_AGENT_ID is unset
-        // (e.g. the global registry build), treat the local session as owner.
         isOwner:
-          primaryAgentId === null || nextAuthSession.user.id === primaryAgentId,
+          primaryAgentId !== null && nextAuthSession.user.id === primaryAgentId,
       },
       expires: nextAuthSession.expires,
     };

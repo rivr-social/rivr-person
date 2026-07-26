@@ -13,10 +13,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { auth } from '@/auth';
-import { db } from '@/db';
-import { agents, wallets } from '@/db/schema';
-import { eq } from 'drizzle-orm';
-import { createConnectAccount, createAccountLink } from '@/lib/stripe-connect';
 import { getOrCreateWallet } from '@/lib/wallet';
 
 /**
@@ -49,32 +45,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL(resolvedReturnPath, baseUrl));
     }
 
-    // Look up user email for the new Connect account.
-    const [agent] = await db
-      .select({ email: agents.email })
-      .from(agents)
-      .where(eq(agents.id, userId))
-      .limit(1);
-
-    const account = await createConnectAccount(userId, agent?.email ?? '');
-
-    // Persist the Connect account ID in wallet metadata.
-    await db
-      .update(wallets)
-      .set({
-        metadata: { ...walletMeta, stripeConnectAccountId: account.id },
-        updatedAt: new Date(),
-      })
-      .where(eq(wallets.id, wallet.id));
-
-    // Redirect to Stripe's hosted Express onboarding.
-    const onboardingUrl = await createAccountLink(
-      account.id,
-      `${baseUrl}/api/stripe/connect?account_id=${account.id}&return_path=${encodeURIComponent(resolvedReturnPath)}`,
-      `${baseUrl}/api/stripe/connect?account_id=${account.id}&return_path=${encodeURIComponent(resolvedReturnPath)}`,
-    );
-
-    return NextResponse.redirect(onboardingUrl);
+    const destination = new URL(resolvedReturnPath, baseUrl);
+    destination.searchParams.set('connect', 'country_required');
+    return NextResponse.redirect(destination);
   } catch (error) {
     console.error('[subscription-success] Connect onboarding setup failed:', error);
     // Fall through to profile even on error — subscription is already active.

@@ -98,6 +98,6 @@ COPY --from=deps --chown=nextjs:nodejs /app/node_modules/ws ./node_modules/ws
 
 USER nextjs
 
-EXPOSE 3000 3100
+EXPOSE 3000
 
 CMD ["node", "src/server/start.mjs"]

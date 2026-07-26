@@ -998,14 +998,14 @@ export async function createScopedDocumentAction(input: {
 
   let targetOwnerId = userId;
   let visibility: VisibilityLevel = "private";
-  let metadata: Record<string, unknown> = {
+  const metadata: Record<string, unknown> = {
     entityType: "document",
     resourceKind: "document",
     category: input.category ?? null,
     createdBy: userId,
     scopeType: input.ownerType,
   };
-  let ledgerMetadata: Record<string, unknown> = {
+  const ledgerMetadata: Record<string, unknown> = {
     resourceType: "document",
     source: "executive-session-record",
     scopeType: input.ownerType,

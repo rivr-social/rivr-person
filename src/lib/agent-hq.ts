@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { auth } from "@/auth";
+import { requireSovereignOwner } from "@/lib/auth/sovereign-owner";
 import { getDeployCapability } from "@/lib/deploy/capability";
 import { ensureSessionContextFolder } from "@/lib/agent-docs";
 
@@ -484,10 +484,7 @@ export function paneKeyForSession(
 }
 
 export async function assertAgentHqAccess() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    throw new Error("Authentication required");
-  }
+  await requireSovereignOwner();
   const capability = getDeployCapability();
   if (!capability.canAccessHost) {
     throw new Error("Agent terminal control is only available on sovereign instances.");

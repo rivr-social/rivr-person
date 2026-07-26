@@ -4,15 +4,17 @@
  * Standalone WebSocket server that provides real interactive terminal sessions
  * by bridging browser WebSocket connections to node-pty pseudo-terminals.
  *
- * Supports two modes:
- *   1. Attach to an existing tmux pane:  ws://host:PORT/terminal?pane=<tmuxPaneKey>
- *   2. Spawn a new command directly:     ws://host:PORT/terminal?new=1&cmd=<command>&cwd=<dir>
+ * Attaches an authenticated client to an existing tmux session. Session
+ * creation and command selection remain behind the owner-gated Next.js API.
  *
  * Environment variables:
  *   PTY_BRIDGE_PORT           - listen port (default 3100)
- *   AGENT_HQ_SESSION_SECRET   - optional auth token; when set, clients must provide it
+ *   AGENT_HQ_SESSION_SECRET   - required bearer token
+ *   PTY_BRIDGE_HOST           - listen host (default 127.0.0.1)
  */
 
+import { timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { URL } from "node:url";
 import { createRequire } from "node:module";
@@ -37,9 +39,34 @@ const HTTP_NOT_FOUND_STATUS = 404;
 const UPGRADE_REQUIRED_STATUS = 426;
 const WS_POLICY_VIOLATION = 1008;
 const WS_INTERNAL_ERROR = 1011;
+const MAX_MESSAGE_BYTES = 64 * 1024;
 
 const PTY_BRIDGE_PORT = parseInt(process.env.PTY_BRIDGE_PORT ?? String(DEFAULT_PORT), 10);
-const SESSION_SECRET = process.env.AGENT_HQ_SESSION_SECRET ?? "";
+const PTY_BRIDGE_HOST = process.env.PTY_BRIDGE_HOST?.trim() || "127.0.0.1";
+
+function readSessionSecret() {
+  const direct = process.env.AGENT_HQ_SESSION_SECRET?.trim();
+  if (direct) return direct;
+  const file = process.env.AGENT_HQ_SESSION_SECRET_FILE?.trim();
+  if (!file) return "";
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const SESSION_SECRET = readSessionSecret();
+if (!SESSION_SECRET) {
+  throw new Error(
+    "AGENT_HQ_SESSION_SECRET or AGENT_HQ_SESSION_SECRET_FILE is required",
+  );
+}
+
+function parseDimension(value, fallback, min, max) {
+  const parsed = Number.parseInt(value ?? String(fallback), 10);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Logging helpers
@@ -60,16 +87,14 @@ function logError(msg) {
 // ---------------------------------------------------------------------------
 
 function isAuthorized(req) {
-  if (!SESSION_SECRET) return true;
-
   const headerToken = req.headers["x-session-token"];
-  if (headerToken === SESSION_SECRET) return true;
-
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const queryToken = url.searchParams.get("token");
-  if (queryToken === SESSION_SECRET) return true;
-
-  return false;
+  if (typeof headerToken !== "string") return false;
+  const received = Buffer.from(headerToken);
+  const expected = Buffer.from(SESSION_SECRET);
+  return (
+    received.length === expected.length &&
+    timingSafeEqual(received, expected)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -122,37 +147,18 @@ httpServer.on("upgrade", (req, socket, head) => {
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const paneKey = url.searchParams.get("pane");
-  const isNew = url.searchParams.get("new") === "1";
-  const cmd = url.searchParams.get("cmd") || "bash";
-  const cwd = url.searchParams.get("cwd") || process.env.HOME || "/";
-  const cols = parseInt(url.searchParams.get("cols") ?? String(DEFAULT_COLS), 10);
-  const rows = parseInt(url.searchParams.get("rows") ?? String(DEFAULT_ROWS), 10);
+  const cols = parseDimension(url.searchParams.get("cols"), DEFAULT_COLS, 20, 400);
+  const rows = parseDimension(url.searchParams.get("rows"), DEFAULT_ROWS, 5, 200);
 
-  if (!paneKey && !isNew) {
-    ws.close(WS_POLICY_VIOLATION, "Missing pane or new parameter");
+  if (!paneKey || !/^[a-zA-Z0-9_.-]{1,128}:\d+\.\d+$/.test(paneKey)) {
+    ws.close(WS_POLICY_VIOLATION, "Invalid tmux pane target");
     return;
   }
 
-  let shell;
-  let args;
-
-  if (isNew) {
-    // Spawn the command directly via node-pty (no tmux)
-    shell = cmd;
-    args = [];
-    log(`New session: cmd=${cmd} cwd=${cwd} cols=${cols} rows=${rows}`);
-  } else {
-    // Attach to the tmux session that owns the requested pane. `attach-session`
-    // does not accept a `session:window.pane` target, only a session/client target.
-    const sessionTarget = paneKey.startsWith("%") ? null : paneKey.split(":")[0];
-    if (!sessionTarget) {
-      ws.close(WS_POLICY_VIOLATION, "Unsupported pane target");
-      return;
-    }
-    shell = "tmux";
-    args = ["attach-session", "-t", sessionTarget];
-    log(`Attach session: pane=${paneKey} session=${sessionTarget} cols=${cols} rows=${rows}`);
-  }
+  const sessionTarget = paneKey.split(":")[0];
+  const shell = "tmux";
+  const args = ["attach-session", "-t", sessionTarget];
+  log(`Attach session: pane=${paneKey} session=${sessionTarget} cols=${cols} rows=${rows}`);
 
   let ptyProcess;
   try {
@@ -160,7 +166,7 @@ wss.on("connection", (ws, req) => {
       name: "xterm-256color",
       cols,
       rows,
-      cwd: isNew ? cwd : process.env.HOME || "/",
+      cwd: process.env.HOME || "/",
       env: {
         ...process.env,
         TERM: "xterm-256color",
@@ -195,6 +201,10 @@ wss.on("connection", (ws, req) => {
 
   // WebSocket messages -> PTY stdin (or resize)
   ws.on("message", (data) => {
+    if (data.length > MAX_MESSAGE_BYTES) {
+      ws.close(WS_POLICY_VIOLATION, "Terminal message is too large");
+      return;
+    }
     const msg = typeof data === "string" ? data : data.toString("utf-8");
 
     // Check for JSON control messages
@@ -234,8 +244,8 @@ wss.on("connection", (ws, req) => {
 // Start
 // ---------------------------------------------------------------------------
 
-httpServer.listen(PTY_BRIDGE_PORT, "0.0.0.0", () => {
-  log(`Listening on 0.0.0.0:${PTY_BRIDGE_PORT}`);
+httpServer.listen(PTY_BRIDGE_PORT, PTY_BRIDGE_HOST, () => {
+  log(`Listening on ${PTY_BRIDGE_HOST}:${PTY_BRIDGE_PORT}`);
 });
 
 // ---------------------------------------------------------------------------

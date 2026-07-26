@@ -98,6 +98,20 @@ interface ExplorerNode extends FsEntry {
   children?: ExplorerNode[]
 }
 
+function updateTreeNode(
+  nodes: ExplorerNode[],
+  targetId: string,
+  updater: (node: ExplorerNode) => ExplorerNode,
+): ExplorerNode[] {
+  return nodes.map((node) => {
+    if (node.id === targetId) return updater(node)
+    if (node.children && node.children.length > 0) {
+      return { ...node, children: updateTreeNode(node.children, targetId, updater) }
+    }
+    return node
+  })
+}
+
 interface DocumentsTabProps {
   /** Group identifier for group-scoped documents. */
   groupId?: string
@@ -185,24 +199,6 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
     [sortFsEntries],
   )
 
-  const updateTreeNode = useCallback(
-    (
-      nodes: ExplorerNode[],
-      targetId: string,
-      updater: (node: ExplorerNode) => ExplorerNode,
-    ): ExplorerNode[] =>
-      nodes.map((node) => {
-        if (node.id === targetId) {
-          return updater(node)
-        }
-        if (node.children && node.children.length > 0) {
-          return { ...node, children: updateTreeNode(node.children, targetId, updater) }
-        }
-        return node
-      }),
-    [],
-  )
-
   const loadFsTreeRoot = useCallback(
     async (workspaceId: string, rootPath: string) => {
       if (!workspaceId) return
@@ -265,7 +261,7 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
         )
       }
     },
-    [fetchFsEntries, fsWorkspaceId, toTreeNodes, updateTreeNode],
+    [fetchFsEntries, fsWorkspaceId, toTreeNodes],
   )
 
   const loadFsFile = useCallback(async (workspaceId: string, path: string) => {
@@ -398,7 +394,7 @@ export function DocumentsTab({ groupId, ownerId, documents, docsPath }: Document
         setDbTree((current) => updateTreeNode(current, node.id, (entry) => ({ ...entry, loading: false })))
       }
     },
-    [fetchDbEntries, toTreeNodes, updateTreeNode],
+    [fetchDbEntries, toTreeNodes],
   )
 
   const loadDbFile = useCallback(async (path: string) => {
