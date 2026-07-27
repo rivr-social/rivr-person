@@ -34,7 +34,8 @@
     "federation:verify:e2e": "tsx src/scripts/verify-federation-e2e.ts",
     "federation:person:export": "tsx src/scripts/export-person-instance.ts",
     "federation:person:import": "tsx src/scripts/import-person-instance.ts",
-    "federation:person:cutover": "tsx src/scripts/person-instance-cutover.ts"
+    "federation:person:cutover": "tsx src/scripts/person-instance-cutover.ts",
+    "check:migrations": "node scripts/check-migration-journal.mjs"
   },
   "dependencies": {
     "3d-force-graph": "^1.79.1",

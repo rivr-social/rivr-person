@@ -39,6 +39,7 @@ import {
   creditWalletCapital,
 } from '@/lib/wallet';
 import { STATUS_BAD_REQUEST, STATUS_INTERNAL_ERROR } from '@/lib/http-status';
+import { eventMatchesRuntimeMode, getStripeRuntimeMode, stripeModeOfLivemode } from '@/lib/stripe-mode';
 import { consumeBookingSlot, isBookingSlotAvailable } from '@/lib/booking-slots';
 import { assertAmountReconciled } from '@/lib/stripe-reconcile';
 import { reconcileCheckoutSettlement } from '@/lib/stripe-checkout-settlement';
@@ -214,6 +215,17 @@ export async function POST(request: NextRequest) {
       { error: `Webhook signature verification failed: ${message}` },
       { status: STATUS_BAD_REQUEST }
     );
+  }
+
+  // Reject cross-mode deliveries before dispatching. A correctly signed event
+  // whose livemode disagrees with our keys came from an endpoint pointed at the
+  // wrong instance, and retrying can never fix that — acknowledge with 200
+  // instead of letting Stripe redeliver indefinitely.
+  if (!eventMatchesRuntimeMode(event.livemode)) {
+    console.error(
+      `[stripe-webhook] Rejected ${stripeModeOfLivemode(event.livemode)}-mode event ${event.id} (${event.type}); instance mode is ${getStripeRuntimeMode() ?? 'unconfigured'}`,
+    );
+    return NextResponse.json({ received: true, ignored: 'stripe-mode-mismatch' });
   }
 
   try {
@@ -779,8 +791,6 @@ async function handleMarketplacePurchaseCompleted(session: Stripe.Checkout.Sessi
       buyerAgentId = newAgent.id;
     }
   }
-
-  const totalFeeCents = platformFeeCents + orgCommissionCents;
 
   await db.transaction(async (tx) => {
     // Re-check inside transaction for idempotency

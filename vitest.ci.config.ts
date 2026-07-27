@@ -8,6 +8,7 @@ export default defineConfig({
       "src/lib/auth/__tests__/sovereign-owner.test.ts",
       "src/lib/__tests__/env.test.ts",
       "src/lib/__tests__/stripe-config.test.ts",
+      "src/lib/__tests__/stripe-mode.test.ts",
       "src/lib/__tests__/checkout-fees.test.ts",
       "src/lib/__tests__/route-access.test.ts",
       "src/lib/__tests__/matrix-admin.test.ts",
