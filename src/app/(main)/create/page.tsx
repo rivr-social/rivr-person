@@ -173,6 +173,14 @@ export default function CreatePage() {
   const [eventEndDate, setEventEndDate] = useState("")
   const [eventEndTime, setEventEndTime] = useState("")
   const [eventLocation, setEventLocation] = useState(() => isLiveClass && urlLocation ? decodeURIComponent(urlLocation) : "")
+  // Structured venue address — admissions tax sources to the VENUE, so paid
+  // tickets for an in-person event need this (mediated checkout refuses
+  // without it).
+  const [venueLine1, setVenueLine1] = useState("")
+  const [venueLine2, setVenueLine2] = useState("")
+  const [venueCity, setVenueCity] = useState("")
+  const [venueState, setVenueState] = useState("")
+  const [venuePostalCode, setVenuePostalCode] = useState("")
   const [eventType, setEventType] = useState(() => isLiveClass ? "in-person" : "in-person") // "in-person" or "online"
   // G2: lazy-section reveal flags for the event creator. Optional sections
   // (location/meeting link, venue booking, tickets, sessions) stay collapsed
@@ -1061,6 +1069,17 @@ export default function CreatePage() {
         endDate: eventEndDate || null,
         endTime: eventEndTime || null,
         location: eventLocation,
+        venueAddress:
+          eventType === "in-person" && venueLine1.trim()
+            ? {
+                line1: venueLine1,
+                line2: venueLine2 || undefined,
+                city: venueCity,
+                state: venueState,
+                postalCode: venuePostalCode,
+                country: "US",
+              }
+            : null,
         eventType: eventType as "in-person" | "online",
         price: normalizedTickets[0] && Number.isFinite(normalizedTickets[0].price) ? normalizedTickets[0].price : null,
         imageUrl: eventImageUrl ?? undefined,
@@ -1886,6 +1905,22 @@ export default function CreatePage() {
                   <Plus className="mr-2 h-4 w-4" />
                   {eventType === "online" ? "Add meeting link" : "Add location"}
                 </Button>
+              )}
+
+              {eventType === "in-person" && (
+                <div className="space-y-2 rounded-md border p-3">
+                  <Label className="text-sm font-medium">Venue address</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Required to sell paid tickets — admissions tax is calculated where the event takes place.
+                  </p>
+                  <Input placeholder="Street address" value={venueLine1} onChange={(e) => setVenueLine1(e.target.value)} />
+                  <Input placeholder="Suite, room, etc. (optional)" value={venueLine2} onChange={(e) => setVenueLine2(e.target.value)} />
+                  <div className="grid grid-cols-3 gap-2">
+                    <Input placeholder="City" value={venueCity} onChange={(e) => setVenueCity(e.target.value)} />
+                    <Input placeholder="State" maxLength={2} value={venueState} onChange={(e) => setVenueState(e.target.value.toUpperCase())} />
+                    <Input placeholder="ZIP" value={venuePostalCode} onChange={(e) => setVenuePostalCode(e.target.value)} />
+                  </div>
+                </div>
               )}
 
               {/* Venue Booking Section - Only show for in-person events, revealed on demand */}
