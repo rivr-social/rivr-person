@@ -6,8 +6,8 @@
  */
 
 import postgres from "postgres";
+import { migrateForTests } from "./migrate-for-tests";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import path from "path";
 import { readFileSync } from "fs";
 
@@ -90,8 +90,11 @@ export async function setup() {
     if (process.env.TEST_SCHEMA_PRELOADED === "true") {
       console.log("[test-setup] Using preloaded disposable schema");
     } else {
-      const migrationDb = drizzle(migrationClient);
-      await migrate(migrationDb, { migrationsFolder: migrationsPath });
+      // NOT drizzle's migrate(): it wraps every migration in ONE transaction, so
+      // a migration that does `ALTER TYPE ... ADD VALUE` and then USES that value
+      // fails on a fresh database ("unsafe use of new value"). This runner commits
+      // between files, which is what makes from-scratch provisioning work.
+      await migrateForTests(databaseUrl);
       console.log("[test-setup] Migrations applied successfully");
     }
 
