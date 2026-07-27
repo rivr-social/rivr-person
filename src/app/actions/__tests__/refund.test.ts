@@ -41,19 +41,16 @@ vi.mock("@/lib/client-ip", () => ({
   getClientIp: vi.fn().mockReturnValue("127.0.0.1"),
 }));
 
-const mockStripeRefundsCreate = vi.fn().mockResolvedValue({ id: "re_test_123" });
-const mockStripePaymentIntentsRetrieve = vi.fn().mockResolvedValue({
-  id: "pi_test_123",
-  amount: 1000,
-  status: "succeeded",
-});
+// Global is the only Stripe platform, so this action no longer touches Stripe.
+// It submits an obligation and maps the verdict.
+const mockSubmitGlobalRefund = vi.fn();
 
-vi.mock("@/lib/billing", () => ({
-  getStripe: vi.fn(() => ({
-    refunds: { create: mockStripeRefundsCreate },
-    paymentIntents: { retrieve: mockStripePaymentIntentsRetrieve },
-  })),
+vi.mock("@/lib/global-refund", () => ({
+  submitGlobalRefund: (...args: unknown[]) => mockSubmitGlobalRefund(...args),
 }));
+
+// Deliberately NOT mocking "@/lib/billing": if this action ever reaches for a
+// Stripe client again, the import should fail loudly rather than be satisfied.
 
 // Import AFTER all mocks
 import { auth } from "@/auth";
@@ -68,11 +65,10 @@ describe("refund actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(rateLimit).mockResolvedValue({ success: true, resetMs: 0 });
-    mockStripeRefundsCreate.mockResolvedValue({ id: "re_test_123" });
-    mockStripePaymentIntentsRetrieve.mockResolvedValue({
-      id: "pi_test_123",
-      amount: 1000,
-      status: "succeeded",
+    // Default to a successful Global verdict; individual tests override.
+    mockSubmitGlobalRefund.mockResolvedValue({
+      status: "refunded",
+      refundId: "re_test_123",
     });
   });
 
@@ -193,130 +189,85 @@ describe("refund actions", () => {
   // Stripe verification
   // ===========================================================================
 
-  describe("Stripe verification", () => {
-    it("returns error when payment intent amount does not match receipt", () =>
-      withTestTransaction(async (db) => {
-        const user = await createTestAgent(db);
-        const receipt = await createTestResource(db, user.id, {
-          type: "receipt",
-          metadata: {
-            stripePaymentIntentId: "pi_test_123",
-            totalCents: 5000,
-          },
-        });
+  describe("Global-mediated refund", () => {
+    async function seedRefundableReceipt(db: TestDatabase) {
+      const user = await createTestAgent(db);
+      const receipt = await createTestResource(db, user.id, {
+        type: "receipt",
+        metadata: { stripePaymentIntentId: "pi_test_123", totalCents: 1000 },
+      });
+      vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
+      return { user, receipt };
+    }
 
-        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
-        mockStripePaymentIntentsRetrieve.mockResolvedValue({
-          id: "pi_test_123",
-          amount: 1000,
-          status: "succeeded",
+    it("submits the obligation to Global and never calls Stripe itself", () =>
+      withTestTransaction(async (db) => {
+        const { user, receipt } = await seedRefundableReceipt(db);
+        mockSubmitGlobalRefund.mockResolvedValue({
+          status: "refunded",
+          refundId: "re_test_123",
         });
 
         const result = await requestRefundAction(receipt.id);
-        expect(result).toEqual({ success: false, error: "Payment verification failed" });
-      }));
 
-    it("returns error when payment intent is not in succeeded state", () =>
-      withTestTransaction(async (db) => {
-        const user = await createTestAgent(db);
-        const receipt = await createTestResource(db, user.id, {
-          type: "receipt",
-          metadata: {
-            stripePaymentIntentId: "pi_test_123",
-            totalCents: 1000,
-          },
+        expect(result.success).toBe(true);
+        expect(mockSubmitGlobalRefund).toHaveBeenCalledWith({
+          receiptId: receipt.id,
+          buyerAgentId: user.id,
         });
 
-        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
-        mockStripePaymentIntentsRetrieve.mockResolvedValue({
-          id: "pi_test_123",
-          amount: 1000,
-          status: "pending",
-        });
-
-        const result = await requestRefundAction(receipt.id);
-        expect(result).toEqual({ success: false, error: "Payment is not in a refundable state" });
-      }));
-  });
-
-  // ===========================================================================
-  // Successful refund
-  // ===========================================================================
-
-  describe("successful refund", () => {
-    it("creates Stripe refund and updates receipt status", () =>
-      withTestTransaction(async (db) => {
-        const user = await createTestAgent(db);
-        const seller = await createTestAgent(db);
-        const receipt = await createTestResource(db, user.id, {
-          type: "receipt",
-          metadata: {
-            stripePaymentIntentId: "pi_test_123",
-            totalCents: 1000,
-            sellerAgentId: seller.id,
-            originalListingId: "listing-123",
-            priceCents: 900,
-          },
-        });
-
-        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
-
-        const result = await requestRefundAction(receipt.id);
-
-        expect(result).toEqual({ success: true });
-
-        // Verify Stripe refund was created
-        expect(mockStripeRefundsCreate).toHaveBeenCalledWith(
-          { payment_intent: "pi_test_123" },
-          {
-            idempotencyKey: `receipt-refund:${receipt.id}:pi_test_123`,
-          },
-        );
-
-        // Verify receipt was updated
         const [updated] = await db
-          .select()
+          .select({ metadata: resources.metadata })
           .from(resources)
           .where(eq(resources.id, receipt.id));
-        const meta = updated.metadata as Record<string, unknown>;
-        expect(meta.status).toBe("refund_requested");
-        expect(meta.refundRequestedAt).toBeDefined();
+        expect(updated.metadata).toEqual(
+          expect.objectContaining({ status: "refund_requested" }),
+        );
       }));
 
-    it("returns error when Stripe refund creation fails", () =>
+    it.each([
+      ["disabled", /not enabled yet/i],
+      ["not-authorized", /not authorized/i],
+      ["not-refundable", /not in a refundable state/i],
+    ])("refuses and records nothing when Global returns %s", (status, expected) =>
       withTestTransaction(async (db) => {
-        const user = await createTestAgent(db);
-        const receipt = await createTestResource(db, user.id, {
-          type: "receipt",
-          metadata: {
-            stripePaymentIntentId: "pi_test_123",
-            totalCents: 1000,
-          },
-        });
-
-        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
-        mockStripeRefundsCreate.mockRejectedValueOnce(new Error("Stripe API error"));
+        const { receipt } = await seedRefundableReceipt(db);
+        mockSubmitGlobalRefund.mockResolvedValue({ status });
 
         const result = await requestRefundAction(receipt.id);
+
         expect(result.success).toBe(false);
-        expect(result.error).toContain("Refund failed");
+        expect(result.error).toMatch(expected);
+
+        const [unchanged] = await db
+          .select({ metadata: resources.metadata })
+          .from(resources)
+          .where(eq(resources.id, receipt.id));
+        expect(
+          (unchanged.metadata as Record<string, unknown>).status,
+        ).toBeUndefined();
       }));
 
-    it("allows refund when totalCents is zero (free purchase edge case)", () =>
+    it("leaves the receipt untouched on an ambiguous failure", () =>
       withTestTransaction(async (db) => {
-        const user = await createTestAgent(db);
-        const receipt = await createTestResource(db, user.id, {
-          type: "receipt",
-          metadata: {
-            stripePaymentIntentId: "pi_test_123",
-            totalCents: 0,
-          },
+        // Global may or may not have executed. Its idempotency key makes a
+        // retry safe, so looking settled would be worse than recording nothing.
+        const { receipt } = await seedRefundableReceipt(db);
+        mockSubmitGlobalRefund.mockResolvedValue({
+          status: "error",
+          detail: "network",
         });
 
-        vi.mocked(auth).mockResolvedValue(mockAuthSession(user.id));
-
         const result = await requestRefundAction(receipt.id);
-        expect(result.success).toBe(true);
+
+        expect(result.success).toBe(false);
+        const [unchanged] = await db
+          .select({ metadata: resources.metadata })
+          .from(resources)
+          .where(eq(resources.id, receipt.id));
+        expect(
+          (unchanged.metadata as Record<string, unknown>).status,
+        ).toBeUndefined();
       }));
   });
 });

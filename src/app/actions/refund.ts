@@ -4,7 +4,7 @@ import { getSession } from '@/lib/auth/get-session';
 import { db } from '@/db';
 import { resources, ledger, type NewLedgerEntry } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getStripe } from '@/lib/billing';
+import { submitGlobalRefund } from '@/lib/global-refund';
 import { headers } from 'next/headers';
 import { getClientIp } from '@/lib/client-ip';
 import { rateLimit, RATE_LIMITS } from '@/lib/rate-limit';
@@ -50,23 +50,31 @@ export async function requestRefundAction(receiptId: string): Promise<{ success:
   if (!paymentIntentId) return { success: false, error: 'No payment intent found' };
 
   try {
-    const stripe = getStripe();
+    // Global is the primary instance and the only Stripe platform, so the
+    // refund is submitted to it as an obligation rather than created here.
+    // Global re-derives origin, owner, amount, and payment intent from its own
+    // projection of this receipt before any money moves.
+    const refund = await submitGlobalRefund({
+      receiptId,
+      buyerAgentId: session.user.id,
+    });
 
-    // Verify the payment intent via Stripe API before issuing refund
-    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-    const receiptTotalCents = Number(meta.totalCents ?? 0);
-    if (receiptTotalCents > 0 && Math.abs(pi.amount - receiptTotalCents) > 1) {
-      console.error('Refund PI amount mismatch', { paymentIntentId, piAmount: pi.amount, receiptTotal: receiptTotalCents });
-      return { success: false, error: 'Payment verification failed' };
+    if (refund.status === 'disabled') {
+      return { success: false, error: 'Refunds are not enabled yet. Please contact the seller.' };
     }
-    if (pi.status !== 'succeeded') {
+    if (refund.status === 'not-authorized') {
+      console.error('[refund] Global rejected the obligation:', refund.detail);
+      return { success: false, error: 'Not authorized' };
+    }
+    if (refund.status === 'not-refundable') {
       return { success: false, error: 'Payment is not in a refundable state' };
     }
-
-    await stripe.refunds.create(
-      { payment_intent: paymentIntentId },
-      { idempotencyKey: `receipt-refund:${receiptId}:${paymentIntentId}` },
-    );
+    if (refund.status === 'error') {
+      // Ambiguous: Global may or may not have executed. Global's idempotency
+      // key makes a retry safe, so record nothing rather than look settled.
+      console.error('[refund] Global refund failed:', refund.detail);
+      return { success: false, error: 'Refund failed. Please try again later.' };
+    }
 
     await db
       .update(resources)
