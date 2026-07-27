@@ -9,6 +9,7 @@ export default defineConfig({
       "src/app/actions/__tests__/refund.test.ts",
       "src/app/actions/wallet/__tests__/seller.test.ts",
       "src/app/api/stripe/webhook/__tests__/route.test.ts",
+      "src/app/api/federation/stripe/settlement/__tests__/route.test.ts",
     ],
     exclude: ["node_modules", "tests/**"],
     globalSetup: "./src/test/setup.ts",

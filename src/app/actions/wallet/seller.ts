@@ -15,6 +15,10 @@ import { updateFacade, emitDomainEvent, EVENT_TYPES } from '@/lib/federation';
 import { getCurrentUserId, resolveManagedWalletTarget } from './helpers';
 import { isPositiveInteger } from './types';
 import {
+  isGlobalConnectOnboardingEnabled,
+  requestGlobalConnectOnboarding,
+} from '@/lib/global-connect-onboarding';
+import {
   createCustomConnectAccount,
   createFinancialConnectionsSession,
   createTreasuryFinancialAccount,
@@ -139,6 +143,52 @@ export async function setupConnectAccountAction(
       payload: { ownerId, returnPath, accountCountry },
     },
     async () => {
+      // Global-mediated onboarding: Global holds every connected account in
+      // the ecosystem, so when the lane is enabled the account is provisioned
+      // there and the seller returns to THIS instance. The local platform lane
+      // below remains the fallback until this instance's platform credentials
+      // are retired.
+      if (isGlobalConnectOnboardingEnabled()) {
+        const instanceBaseUrl = (
+          process.env.NEXT_PUBLIC_BASE_URL ??
+          process.env.BASE_URL ??
+          process.env.NEXTAUTH_URL ??
+          ''
+        ).replace(/\/+$/, '');
+        if (!instanceBaseUrl) {
+          throw new Error('This instance has no configured base URL for the onboarding return.');
+        }
+        const safeReturnPath =
+          returnPath && returnPath.startsWith('/') ? returnPath : '/settings?connect=done';
+
+        const onboarding = await requestGlobalConnectOnboarding({
+          sellerAgentId: ownerId ?? currentUserId,
+          // Immutable on the Stripe account, so it must be an explicit choice.
+          accountCountry: accountCountry ?? '',
+          returnUrl: `${instanceBaseUrl}${safeReturnPath}`,
+          refreshUrl: `${instanceBaseUrl}${safeReturnPath}`,
+        });
+
+        switch (onboarding.status) {
+          case 'ok':
+            return { success: true, url: onboarding.url } as {
+              success: boolean;
+              url?: string;
+              error?: string;
+            };
+          case 'invalid':
+            throw new Error(
+              onboarding.detail ?? 'Choose your bank country before setting up payouts.',
+            );
+          case 'not-authorized':
+            console.error('[connect-onboarding] Global rejected:', onboarding.detail);
+            throw new Error('Payment onboarding is not available for this account.');
+          default:
+            console.error('[connect-onboarding] failed:', onboarding.detail);
+            throw new Error('Unable to start payment onboarding. Please try again.');
+        }
+      }
+
       const target = await resolveManagedWalletTarget(currentUserId, ownerId);
       const [wallet] = await db
         .select({ id: wallets.id, metadata: wallets.metadata })

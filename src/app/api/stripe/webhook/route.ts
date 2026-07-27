@@ -28,7 +28,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import Stripe from 'stripe';
 import { db } from '@/db';
-import { agents, capitalEntries, ledger, resources, subscriptions, wallets, walletTransactions, type NewLedgerEntry } from '@/db/schema';
+import { capitalEntries, ledger, resources, subscriptions, wallets, walletTransactions, type NewLedgerEntry } from '@/db/schema';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { getStripe, tierForPriceId } from '@/lib/billing';
 import {
@@ -40,9 +40,18 @@ import {
 } from '@/lib/wallet';
 import { STATUS_BAD_REQUEST, STATUS_INTERNAL_ERROR } from '@/lib/http-status';
 import { eventMatchesRuntimeMode, getStripeRuntimeMode, stripeModeOfLivemode } from '@/lib/stripe-mode';
-import { consumeBookingSlot, isBookingSlotAvailable } from '@/lib/booking-slots';
 import { assertAmountReconciled } from '@/lib/stripe-reconcile';
 import { reconcileCheckoutSettlement } from '@/lib/stripe-checkout-settlement';
+import {
+  getPaymentIntentPayoutEligibleAt,
+  incrementListingInventory,
+  lockWallets,
+} from '@/lib/settlement-accounting';
+import {
+  resolveGuestBuyerAgentId,
+  settleMarketplacePurchase,
+} from '@/lib/marketplace-settlement';
+import { settleEventTicketPurchase } from '@/lib/event-ticket-settlement';
 import {
   clawbackChargeback,
   clawbackRefund,
@@ -51,123 +60,6 @@ import {
 
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const MONTHLY_SUBSCRIPTION_THANKS_GRANT = 100;
-
-function getInventoryState(metadata: Record<string, unknown>): {
-  quantityAvailable: number | null;
-  quantitySold: number;
-  quantityRemaining: number | null;
-} {
-  const quantityAvailable =
-    typeof metadata.quantityAvailable === 'number' && Number.isFinite(metadata.quantityAvailable)
-      ? metadata.quantityAvailable
-      : null;
-  const quantitySold =
-    typeof metadata.quantitySold === 'number' && Number.isFinite(metadata.quantitySold)
-      ? metadata.quantitySold
-      : 0;
-  const quantityRemaining =
-    typeof metadata.quantityRemaining === 'number' && Number.isFinite(metadata.quantityRemaining)
-      ? metadata.quantityRemaining
-      : quantityAvailable != null
-        ? Math.max(quantityAvailable - quantitySold, 0)
-        : null;
-
-  return { quantityAvailable, quantitySold, quantityRemaining };
-}
-
-function sortedUniqueWalletIds(walletIds: Array<string | null | undefined>): string[] {
-  return Array.from(
-    new Set(
-      walletIds.filter(
-        (walletId): walletId is string => typeof walletId === 'string' && walletId.length > 0,
-      ),
-    ),
-  ).sort();
-}
-
-async function lockWallets(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  walletIds: Array<string | null | undefined>,
-): Promise<void> {
-  for (const walletId of sortedUniqueWalletIds(walletIds)) {
-    await tx.execute(sql`SELECT id FROM wallets WHERE id = ${walletId} FOR UPDATE`);
-  }
-}
-
-async function incrementListingInventory(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  resourceId: string,
-  requestedQuantity: number,
-  bookingSelection?: { date: string; slot: string } | null,
-): Promise<void> {
-  if (!Number.isInteger(requestedQuantity) || requestedQuantity <= 0) return;
-
-  // Lock the row to prevent concurrent webhooks from reading stale inventory
-  const [resource] = await tx.execute(
-    sql`SELECT metadata FROM resources WHERE id = ${resourceId} LIMIT 1 FOR UPDATE`
-  ) as unknown as { metadata: Record<string, unknown> }[];
-
-  const metadata = (resource?.metadata ?? {}) as Record<string, unknown>;
-  if (!isBookingSlotAvailable(metadata, bookingSelection)) {
-    throw new Error(`Booking slot unavailable for resource ${resourceId}`);
-  }
-  const { quantityAvailable, quantitySold, quantityRemaining } = getInventoryState(metadata);
-  if (quantityAvailable == null && !bookingSelection) return;
-
-  if (quantityAvailable != null && requestedQuantity > (quantityRemaining ?? 0)) {
-    throw new Error(`Inventory exceeded for resource ${resourceId}`);
-  }
-
-  const nextQuantitySold = quantitySold + requestedQuantity;
-  const nextQuantityRemaining =
-    quantityAvailable != null ? Math.max(quantityAvailable - nextQuantitySold, 0) : null;
-  const nextMetadata = consumeBookingSlot(metadata, bookingSelection);
-
-  await tx
-    .update(resources)
-    .set({
-      metadata: {
-        ...nextMetadata,
-        ...(quantityAvailable != null
-          ? {
-              quantityAvailable,
-              quantitySold: nextQuantitySold,
-              quantityRemaining: nextQuantityRemaining,
-              ...(nextQuantityRemaining === 0 ? { status: 'sold_out' } : {}),
-            }
-          : {}),
-      },
-    })
-    .where(eq(resources.id, resourceId));
-}
-
-async function getPaymentIntentPayoutEligibleAt(paymentIntentId: string): Promise<string | null> {
-  try {
-    const stripe = getStripe();
-    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
-      expand: ['latest_charge.balance_transaction'],
-    });
-
-    const latestCharge =
-      paymentIntent.latest_charge && typeof paymentIntent.latest_charge !== 'string'
-        ? paymentIntent.latest_charge
-        : null;
-    const balanceTransaction =
-      latestCharge?.balance_transaction &&
-      typeof latestCharge.balance_transaction !== 'string'
-        ? latestCharge.balance_transaction
-        : null;
-
-    if (!balanceTransaction?.available_on) {
-      return null;
-    }
-
-    return new Date(balanceTransaction.available_on * 1000).toISOString();
-  } catch (error) {
-    console.error('Failed to fetch payment intent payout eligibility:', paymentIntentId, error);
-    return null;
-  }
-}
 
 /**
  * Stripe webhook handler.
@@ -473,28 +365,13 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
   const platformFeeCents = Number(metadata.platformFeeCents ?? 0);
   const salesTaxCents = Number(metadata.salesTaxCents ?? 0);
   const paymentFeeCents = Number(metadata.paymentFeeCents ?? 0);
-  const internalFeeCents = platformFeeCents + salesTaxCents + paymentFeeCents;
   const settlement = reconcileCheckoutSettlement(
     session,
     expectedPreTaxCents,
     `event-ticket:${session.id}`,
   );
-  const sellerNetCents = settlement.preTaxCents - internalFeeCents;
-
-  // Idempotency guard: check once before opening a transaction to short-circuit duplicates.
-  const [existingTx] = await db
-    .select({ id: walletTransactions.id })
-    .from(walletTransactions)
-    .where(eq(walletTransactions.stripePaymentIntentId, paymentIntentId))
-    .limit(1);
-
-  if (existingTx) {
-    return;
-  }
 
   const payoutEligibleAt = await getPaymentIntentPayoutEligibleAt(paymentIntentId);
-  const organizerWallet = await getSettlementWalletForAgent(organizerAgentId);
-  const platformWallet = internalFeeCents > 0 ? await getPlatformWallet() : null;
   const ticketSelections = parsedSelections.length > 0
     ? parsedSelections
         .map((selection) => ({
@@ -509,182 +386,24 @@ async function handlePaymentCheckoutCompleted(session: Stripe.Checkout.Session) 
         subtotalCents: Number(metadata.subtotalCents ?? settlement.preTaxCents),
       }];
 
-  await db.transaction(async (tx) => {
-    // Re-check inside the transaction to avoid race conditions across concurrent webhook deliveries.
-    const [existingInTx] = await tx
-      .select({ id: walletTransactions.id })
-      .from(walletTransactions)
-      .where(eq(walletTransactions.stripePaymentIntentId, paymentIntentId))
-      .limit(1);
-
-    if (existingInTx) return;
-
-    for (const walletId of Array.from(new Set([
-      organizerWallet.id,
-      platformWallet?.id,
-    ].filter((walletId): walletId is string => typeof walletId === 'string' && walletId.length > 0))).sort()) {
-      await tx.execute(sql`SELECT id FROM wallets WHERE id = ${walletId} FOR UPDATE`);
-    }
-
-    const [ledgerEntry] = await tx
-      .insert(ledger)
-      .values({
-        verb: 'buy',
-        subjectId: buyerAgentId,
-        objectId: organizerAgentId,
-        objectType: 'agent',
-        resourceId: ticketProductId,
-        metadata: {
-          interactionType: 'event-ticket-purchase',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          eventId,
-          ticketProductId,
-          subtotalCents: Number(metadata.subtotalCents ?? 0),
-          platformFeeCents,
-          salesTaxCents,
-          paymentFeeCents,
-          totalCents: settlement.totalCents,
-          stripeTaxCents: settlement.taxCents,
-        },
-      } as NewLedgerEntry)
-      .returning({ id: ledger.id });
-
-    await tx.insert(walletTransactions).values({
-      type: 'marketplace_purchase',
-      amountCents: settlement.totalCents,
-      feeCents: internalFeeCents + settlement.taxCents,
-      currency: session.currency ?? 'usd',
-      // Business traceability: description helps with back-office reconciliation.
-      description: `Event ticket purchase for event ${eventId}`,
-      stripePaymentIntentId: paymentIntentId,
-      referenceType: 'resource',
-      referenceId: ticketProductId,
-      ledgerEntryId: ledgerEntry.id,
-      status: 'completed',
-      metadata: {
-        checkoutSessionId: session.id,
-        eventId,
-        ticketProductId,
-        buyerAgentId,
-        organizerAgentId,
-        stripeTaxCents: settlement.taxCents,
-      },
-    });
-
-    let remainingFeeCents = internalFeeCents;
-    for (const [index, selection] of ticketSelections.entries()) {
-      const lineFeeCents =
-        index === ticketSelections.length - 1
-          ? remainingFeeCents
-          : Math.floor(
-              (internalFeeCents * selection.subtotalCents) /
-                Math.max(1, Number(metadata.subtotalCents ?? settlement.preTaxCents)),
-            );
-      remainingFeeCents -= lineFeeCents;
-
-      await tx.insert(walletTransactions).values({
-        type: 'event_ticket',
-        amountCents: selection.subtotalCents + lineFeeCents,
-        feeCents: lineFeeCents,
-        currency: session.currency ?? 'usd',
-        description: `Event ticket purchase for event ${eventId}`,
-        referenceType: 'resource',
-        referenceId: selection.ticketProductId,
-        ledgerEntryId: ledgerEntry.id,
-        status: 'completed',
-        metadata: {
-          checkoutSessionId: session.id,
-          eventId,
-          ticketProductId: selection.ticketProductId,
-          buyerAgentId,
-          organizerAgentId,
-          quantity: selection.quantity,
-        },
-      });
-    }
-
-    if (sellerNetCents > 0) {
-      await tx
-        .update(wallets)
-        .set({
-          balanceCents: sql`${wallets.balanceCents} + ${sellerNetCents}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(wallets.id, organizerWallet.id));
-
-      const [sellerPayoutTx] = await tx.insert(walletTransactions).values({
-        type: 'marketplace_payout',
-        toWalletId: organizerWallet.id,
-        amountCents: sellerNetCents,
-        feeCents: 0,
-        currency: session.currency ?? 'usd',
-        description: `Stripe ticket settlement for event ${eventId}`,
-        referenceType: 'resource',
-        referenceId: ticketSelections[0]?.ticketProductId ?? ticketProductId,
-        ledgerEntryId: ledgerEntry.id,
-        status: 'completed',
-        metadata: {
-          source: 'stripe_event_ticket',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          organizerAgentId,
-          eventId,
-        },
-      }).returning({ id: walletTransactions.id });
-
-      await creditWalletCapital(tx, organizerWallet.id, sellerNetCents, {
-        settlementStatus: 'pending',
-        availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-        sourceType: 'stripe_event_ticket',
-        sourceTransactionId: sellerPayoutTx.id,
-        metadata: {
-          eventId,
-          paymentIntentId,
-        },
-      });
-    }
-
-    if (internalFeeCents > 0 && platformWallet) {
-      await tx
-        .update(wallets)
-        .set({
-          balanceCents: sql`${wallets.balanceCents} + ${internalFeeCents}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(wallets.id, platformWallet.id));
-
-      const [platformFeeTx] = await tx.insert(walletTransactions).values({
-        type: 'service_fee',
-        toWalletId: platformWallet.id,
-        amountCents: internalFeeCents,
-        feeCents: 0,
-        currency: session.currency ?? 'usd',
-        description: `Service fee for event ticket ${eventId}`,
-        referenceType: 'resource',
-        referenceId: ticketProductId,
-        ledgerEntryId: ledgerEntry.id,
-        status: 'completed',
-        metadata: {
-          source: 'stripe_event_ticket',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          organizerAgentId,
-          eventId,
-        },
-      }).returning({ id: walletTransactions.id });
-
-      await creditWalletCapital(tx, platformWallet.id, internalFeeCents, {
-        settlementStatus: 'pending',
-        availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-        sourceType: 'stripe_event_ticket_fee',
-        sourceTransactionId: platformFeeTx.id,
-        metadata: {
-          eventId,
-          paymentIntentId,
-        },
-      });
-    }
+  await settleEventTicketPurchase({
+    eventId,
+    ticketProductId,
+    ticketSelections,
+    buyerAgentId,
+    organizerAgentId,
+    preTaxCents: settlement.preTaxCents,
+    subtotalCents: Number(metadata.subtotalCents ?? 0),
+    feeProrationBaseCents: Number(metadata.subtotalCents ?? settlement.preTaxCents),
+    platformFeeCents,
+    salesTaxCents,
+    paymentFeeCents,
+    chargedTotalCents: settlement.totalCents,
+    taxCents: settlement.taxCents,
+    currency: session.currency ?? 'usd',
+    checkoutSessionId: session.id,
+    paymentIntentId,
+    payoutEligibleAt,
   });
 }
 
@@ -736,303 +455,36 @@ async function handleMarketplacePurchaseCompleted(session: Stripe.Checkout.Sessi
     return;
   }
 
-  const payoutEligibleAt = await getPaymentIntentPayoutEligibleAt(paymentIntentId);
-  const sellerWallet = await getSettlementWalletForAgent(sellerAgentId);
-  const orgWallet = orgId ? await getSettlementWalletForAgent(orgId) : null;
-  const platformWallet = await getPlatformWallet();
-  const sellerCreditCents = priceCents;
-  const platformRevenueCents = Math.max(0, buyerTotalCents - sellerCreditCents - orgCommissionCents);
-
-  // Idempotency guard
-  const [existingTx] = await db
-    .select({ id: walletTransactions.id })
-    .from(walletTransactions)
-    .where(eq(walletTransactions.stripePaymentIntentId, paymentIntentId))
-    .limit(1);
-
-  if (existingTx) return;
-
-  // If no buyer agent (guest checkout), create a guest agent from customer details.
-  // Only reuse an existing agent if it's a genuine guest (no password, no email verification).
-  // Never silently assign purchases to a registered user's account.
+  // Guest checkout: attribute the purchase from the identity Stripe collected.
   if (!buyerAgentId && session.customer_details?.email) {
-    const guestEmail = session.customer_details.email;
-    const guestName =
-      session.customer_details.name || `Guest (${guestEmail})`;
-
-    const [existingAgent] = await db
-      .select({
-        id: agents.id,
-        passwordHash: agents.passwordHash,
-        emailVerified: agents.emailVerified,
-      })
-      .from(agents)
-      .where(eq(agents.email, guestEmail))
-      .limit(1);
-
-    if (existingAgent) {
-      const isGuest = !existingAgent.passwordHash && !existingAgent.emailVerified;
-      if (isGuest) {
-        buyerAgentId = existingAgent.id;
-      } else {
-        // Real registered user — do not silently reuse their account for a guest purchase
-        console.warn('Guest checkout email matches registered user, skipping reuse:', guestEmail);
-      }
-    } else {
-      const [newAgent] = await db
-        .insert(agents)
-        .values({
-          name: guestName,
-          type: 'person',
-          email: guestEmail,
-          metadata: { source: 'guest_checkout', noSignin: true },
-        })
-        .returning({ id: agents.id });
-      buyerAgentId = newAgent.id;
-    }
+    buyerAgentId = await resolveGuestBuyerAgentId(
+      session.customer_details.email,
+      session.customer_details.name ?? null,
+    );
   }
 
-  await db.transaction(async (tx) => {
-    // Re-check inside transaction for idempotency
-    const [existingInTx] = await tx
-      .select({ id: walletTransactions.id })
-      .from(walletTransactions)
-      .where(eq(walletTransactions.stripePaymentIntentId, paymentIntentId))
-      .limit(1);
+  const payoutEligibleAt = await getPaymentIntentPayoutEligibleAt(paymentIntentId);
 
-    if (existingInTx) return;
-
-    await incrementListingInventory(tx, listingId, requestedQuantity, bookingSelection);
-    await lockWallets(tx, [sellerWallet.id, orgWallet?.id, platformWallet.id]);
-
-    // Create ledger entry for the purchase
-    const [ledgerEntry] = await tx
-      .insert(ledger)
-      .values({
-        verb: 'buy',
-        subjectId: buyerAgentId || sellerAgentId,
-        objectId: sellerAgentId,
-        objectType: 'agent',
-        resourceId: listingId,
-        metadata: {
-          interactionType: 'marketplace-purchase',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          listingId,
-          priceCents,
-          quantity: requestedQuantity,
-          bookingDate: bookingSelection?.date ?? null,
-          bookingSlot: bookingSelection?.slot ?? null,
-          platformFeeCents,
-          orgCommissionCents,
-          orgId,
-        },
-      } as NewLedgerEntry)
-      .returning({ id: ledger.id });
-
-    // Record wallet transaction
-    await tx.insert(walletTransactions).values({
-      type: 'marketplace_purchase',
-      amountCents: settlement.totalCents,
-      feeCents: settlement.totalCents - sellerCreditCents,
-      currency: session.currency ?? 'usd',
-      description: `Marketplace purchase: ${listingId}`,
-      stripePaymentIntentId: paymentIntentId,
-      referenceType: 'resource',
-      referenceId: listingId,
-      ledgerEntryId: ledgerEntry.id,
-      status: 'completed',
-      metadata: {
-        checkoutSessionId: session.id,
-        listingId,
-        buyerAgentId: buyerAgentId || null,
-        sellerAgentId,
-        quantity: requestedQuantity,
-        bookingDate: bookingSelection?.date ?? null,
-        bookingSlot: bookingSelection?.slot ?? null,
-        orgId,
-        purchaseType: 'marketplace_purchase',
-        stripeTaxCents: settlement.taxCents,
-      },
-    });
-
-    await tx
-      .update(wallets)
-      .set({
-        balanceCents: sql`${wallets.balanceCents} + ${sellerCreditCents}`,
-        updatedAt: new Date(),
-      })
-      .where(eq(wallets.id, sellerWallet.id));
-
-    const [sellerPayoutTx] = await tx.insert(walletTransactions).values({
-      type: 'marketplace_payout',
-      toWalletId: sellerWallet.id,
-      amountCents: sellerCreditCents,
-      feeCents: 0,
-      currency: session.currency ?? 'usd',
-      description: `Marketplace settlement for listing ${listingId}`,
-      referenceType: 'resource',
-      referenceId: listingId,
-      ledgerEntryId: ledgerEntry.id,
-      status: 'completed',
-        metadata: {
-          source: 'stripe_marketplace_checkout',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          sellerAgentId,
-        listingId,
-        payoutEligibleAt,
-      },
-    }).returning({ id: walletTransactions.id });
-
-    await creditWalletCapital(tx, sellerWallet.id, sellerCreditCents, {
-      settlementStatus: 'pending',
-      availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-      sourceType: 'stripe_marketplace_checkout',
-      sourceTransactionId: sellerPayoutTx.id,
-      metadata: {
-        paymentIntentId,
-        stripePaymentIntentId: paymentIntentId,
-        listingId,
-      },
-    });
-
-    if (orgCommissionCents > 0 && orgWallet) {
-      await tx
-        .update(wallets)
-        .set({
-          balanceCents: sql`${wallets.balanceCents} + ${orgCommissionCents}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(wallets.id, orgWallet.id));
-
-      const [orgPayoutTx] = await tx.insert(walletTransactions).values({
-        type: 'marketplace_payout',
-        toWalletId: orgWallet.id,
-        amountCents: orgCommissionCents,
-        feeCents: 0,
-        currency: session.currency ?? 'usd',
-        description: `Org commission for listing ${listingId}`,
-        referenceType: 'resource',
-        referenceId: listingId,
-        ledgerEntryId: ledgerEntry.id,
-        status: 'completed',
-        metadata: {
-          source: 'stripe_marketplace_checkout',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          orgId,
-          listingId,
-          payoutEligibleAt,
-        },
-      }).returning({ id: walletTransactions.id });
-
-      await creditWalletCapital(tx, orgWallet.id, orgCommissionCents, {
-        settlementStatus: 'pending',
-        availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-        sourceType: 'stripe_marketplace_org_commission',
-        sourceTransactionId: orgPayoutTx.id,
-        metadata: {
-          paymentIntentId,
-          stripePaymentIntentId: paymentIntentId,
-          listingId,
-          orgId,
-        },
-      });
-    }
-
-    if (platformRevenueCents > 0) {
-      await tx
-        .update(wallets)
-        .set({
-          balanceCents: sql`${wallets.balanceCents} + ${platformRevenueCents}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(wallets.id, platformWallet.id));
-
-      const [platformFeeTx] = await tx.insert(walletTransactions).values({
-        type: 'service_fee',
-        toWalletId: platformWallet.id,
-        amountCents: platformRevenueCents,
-        feeCents: 0,
-        currency: session.currency ?? 'usd',
-        description: `Platform fee for marketplace purchase ${listingId}`,
-        referenceType: 'resource',
-        referenceId: listingId,
-        ledgerEntryId: ledgerEntry.id,
-        status: 'completed',
-        metadata: {
-          source: 'stripe_marketplace_checkout',
-          checkoutSessionId: session.id,
-          paymentIntentId,
-          listingId,
-          buyerPlatformFeeCents,
-          platformFeeCents,
-        },
-      }).returning({ id: walletTransactions.id });
-
-      await creditWalletCapital(tx, platformWallet.id, platformRevenueCents, {
-        settlementStatus: 'pending',
-        availableOn: payoutEligibleAt ? new Date(payoutEligibleAt) : null,
-        sourceType: 'stripe_marketplace_platform_fee',
-        sourceTransactionId: platformFeeTx.id,
-        metadata: {
-          paymentIntentId,
-          stripePaymentIntentId: paymentIntentId,
-          listingId,
-        },
-      });
-    }
-
-    // Create notification ledger entry for seller
-    if (buyerAgentId) {
-      await tx.insert(ledger).values({
-        verb: 'buy',
-        subjectId: buyerAgentId,
-        objectId: sellerAgentId,
-        objectType: 'agent',
-        isActive: true,
-        metadata: {
-          kind: 'marketplace-purchase',
-          listingId,
-          amountCents: priceCents,
-          message: 'purchased your listing',
-        },
-      } as NewLedgerEntry);
-    }
-
-    // Create receipt resource for buyer's purchase history
-    if (buyerAgentId) {
-      await tx.insert(resources).values({
-        name: `Receipt: ${listingId}`,
-        type: 'receipt',
-        ownerId: buyerAgentId,
-        description: `Purchase receipt for listing ${listingId}`,
-        metadata: {
-          originalListingId: listingId,
-          buyerAgentId,
-          sellerAgentId,
-          stripePaymentIntentId: paymentIntentId,
-          stripeCheckoutSessionId: session.id,
-          priceCents,
-          platformFeeCents: buyerPlatformFeeCents,
-          platformMarginCents: platformFeeCents,
-          orgCommissionCents,
-          totalCents: settlement.totalCents,
-          stripeTaxCents: settlement.taxCents,
-          feeCents: buyerPlatformFeeCents,
-          quantity: requestedQuantity,
-          bookingDate: bookingSelection?.date ?? null,
-          bookingSlot: bookingSelection?.slot ?? null,
-          purchasedAt: new Date().toISOString(),
-          status: 'completed',
-          currency: session.currency ?? 'usd',
-          orgId,
-          customerEmail: session.customer_details?.email || null,
-          customerName: session.customer_details?.name || null,
-        },
-      });
-    }
+  await settleMarketplacePurchase({
+    listingId,
+    sellerAgentId,
+    buyerAgentId,
+    orgId,
+    orgCommissionCents,
+    platformFeeCents,
+    buyerPlatformFeeCents,
+    priceCents,
+    buyerTotalCents,
+    quantity: requestedQuantity,
+    bookingSelection,
+    chargedTotalCents: settlement.totalCents,
+    taxCents: settlement.taxCents,
+    currency: session.currency ?? 'usd',
+    checkoutSessionId: session.id,
+    paymentIntentId,
+    payoutEligibleAt,
+    customerEmail: session.customer_details?.email || null,
+    customerName: session.customer_details?.name || null,
   });
 }
 
