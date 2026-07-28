@@ -52,9 +52,9 @@ The links that actually reach a listing on this instance are:
    row, and the **Total**. The fee row changes with your payment method — see
    [What you actually pay](#what-you-actually-pay) below.
 
-> 📸 **Screenshot:** _The purchase page's Order Summary with the payment-method selector above it — card selected, showing the Platform fee row and Total._ — capture at `/marketplace/[id]/purchase` (select **Card**). _(placeholder — remove when image added)_
+![A purchase page with Credit or debit card selected: quantity picker, both payment methods, and the Order Summary showing the item price, the card-path Platform fee, and Total](/wiki/marketplace/person-10-purchase-card.png)
 
-> 📸 **Screenshot:** _The same Order Summary with **Wallet** selected, so the Platform fee row shows the smaller wallet-path figure._ — capture at `/marketplace/[id]/purchase` (click the **Wallet** payment method). _(placeholder — remove when image added)_
+![The same purchase page with Rivr Wallet selected — the wallet balance shown under the payment method and the Order Summary's Platform fee row showing the smaller wallet-path figure](/wiki/marketplace/person-11-purchase-wallet.png)
 
 5. Press checkout. Card sends you to Stripe; wallet settles in-app; crypto asks
    your wallet for **one** signature.
@@ -62,7 +62,7 @@ The links that actually reach a listing on this instance are:
    order number, a **Contact seller** button, **View My Purchases**, and
    **Back to Mart**.
 
-> 📸 **Screenshot:** _The "Purchase Successful!" confirmation page with the Order Number row and the Contact seller / View My Purchases buttons._ — capture at `/marketplace/[id]/confirmed`. _(placeholder — remove when image added)_
+![The "Purchase Successful!" confirmation page with the item card, the Order Number and date rows, and the Contact seller, View Seller, and View My Purchases buttons](/wiki/marketplace/person-12-confirmed.png)
 
 7. Your itemised receipt lives at `/marketplace/[id]/receipt/[receiptId]` —
    **Date**, an optional **Booked Window**, then **Subtotal**, **Fees**, and
@@ -197,7 +197,7 @@ yourself, and you never approve a spender.
   question is only asked for a brand-new account.
 </Callout>
 
-> 📸 **Screenshot:** _The Seller tab's "Stripe USD Wallet" card showing the Details submitted / Charges enabled / Payouts enabled status rows and the Active badge._ — capture at `/settings` (open the **Seller** tab). _(placeholder — remove when image added)_
+![The Seller tab's Stripe USD Wallet card with the Active badge and the Details submitted / Charges enabled / Payouts enabled status rows above the available and pending Stripe balances](/wiki/marketplace/person-13-seller-tab.png)
 
 <Callout type="warning" title="No Connect account, no card checkout">
   Until Connect onboarding is complete, `listing.cardCheckoutAvailable` is

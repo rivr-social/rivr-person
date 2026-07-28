@@ -34,7 +34,7 @@ out, and **membership tiers** are bought as ordinary Stripe products.
    - **Transaction History** — the full history drawer.
    - **All Purchases** — jumps to `/profile/purchases`.
 
-> 📸 **Screenshot:** _The Wallet tab's balance cards (Total USD Balance, Rivr USD Wallet, Stripe USD Wallet with pending, Wallets) and the Add Money / Send Money / Transaction History / All Purchases action row._ — capture at `/profile` (open the **Wallet** tab). _(placeholder — remove when image added)_
+![The Wallet tab's balance cards — Total USD Balance, Rivr USD Wallet, Stripe USD Wallet with pending, Wallets — and the Add Money / Send Money / Transaction History / All Purchases action row](/wiki/wallet-treasury/person-16-wallet-cards.png)
 
 4. Below the balances are the **Thanks** cards — *Thanks Tokens* (current
    count), *Burned For Inactivity* (total removed by demurrage), and *Thanks
@@ -70,7 +70,7 @@ the picker telling you which payout rail that country uses, and press
   half-done onboarding.
 </Callout>
 
-> 📸 **Screenshot:** _The Wallet tab's three sub-view tabs with **Sales** selected, showing the Connect balance section above the sale rows._ — capture at `/profile` (Wallet tab → click **Sales**). _(placeholder — remove when image added)_
+![The Wallet tab's three sub-view tabs with Sales selected: the Stripe USD Wallet section with Available and Pending balances and status chips above completed settlement and fee rows](/wiki/wallet-treasury/person-17-wallet-sales.png)
 
 <Callout type="note" title="Deposits are rate-limited">
   `POST /api/wallet/deposit` enforces `RATE_LIMITS.WALLET_DEPOSIT` keyed on
@@ -136,7 +136,7 @@ To subscribe: open the tier's page, toggle **monthly / yearly**, and check out.
 The webhook (`POST /api/stripe/webhook`) grants the membership on settlement —
 and mints a Thanks grant with it.
 
-> 📸 **Screenshot:** _The Seller membership product page with the monthly/yearly toggle and the surcharge-inclusive price block._ — capture at `/products/membership-seller`. _(placeholder — remove when image added)_
+![The Seller membership product page: the What's Included list beside the Membership Checkout card with its Monthly/Yearly toggle and the monthly price](/wiki/wallet-treasury/person-19-membership-seller.png)
 
 <Callout type="warning" title="Treat the on-page 'Save $N' figures with suspicion">
   Each product page carries a hardcoded savings literal that is **not**
