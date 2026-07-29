@@ -9,6 +9,7 @@ import { updateMyProfile } from "@/app/actions/interactions/profile";
 import { createPostResource } from "@/app/actions/resource-creation/posts";
 import { deleteResource, updateResource } from "@/app/actions/resource-creation/lifecycle";
 import type { UpdateResourceInput } from "@/app/actions/resource-creation/types";
+import { dollarsToCents } from "@/app/actions/resource-creation/types";
 import { createEventResource } from "@/app/actions/resource-creation/events";
 import { createOfferingResource } from "@/app/actions/resource-creation/offerings";
 import {
@@ -83,6 +84,16 @@ function getBoolean(value: unknown, fallback = false): boolean {
 
 function getNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Coerce a DOLLAR-denominated tool argument to the integer CENTS the resource
+ * actions persist. Returns `undefined` when the caller omitted the field so the
+ * action leaves the price unset rather than writing a `0` price.
+ */
+function getDollarsAsCents(value: unknown): number | undefined {
+  const dollars = getNumber(value);
+  return dollars === undefined ? undefined : dollarsToCents(dollars);
 }
 
 function getRecord(value: unknown): Record<string, unknown> | undefined {
@@ -670,7 +681,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         description: { type: "string" },
         offeringType: { type: "string", description: "service, product, skill, resource, data, ticket, voucher, bounty, trip, gift, etc." },
         imageUrl: { type: "string" },
-        basePrice: { type: "number" },
+        basePrice: { type: "number", description: "Price in dollars. Omit for a free offering." },
         currency: { type: "string" },
         acceptedCurrencies: { type: "array", items: { type: "string" } },
         quantityAvailable: { type: "number" },
@@ -717,7 +728,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         description,
         offeringType,
         imageUrl: getString(args.imageUrl) ?? undefined,
-        basePrice: getNumber(args.basePrice),
+        // This tool's schema is denominated in DOLLARS; the action takes CENTS.
+        basePrice: getDollarsAsCents(args.basePrice),
         currency: getString(args.currency) ?? undefined,
         acceptedCurrencies: getStringArray(args.acceptedCurrencies),
         quantityAvailable: getNumber(args.quantityAvailable),

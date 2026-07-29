@@ -27,7 +27,8 @@ import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/ind
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import type { ActionResult } from "./types";
-import { getAllowedTerms, deriveOfferingListingType, dollarsToCents } from "./types";
+import { getAllowedTerms, deriveOfferingListingType } from "./types";
+import { normalizeOfferingPrice } from "@/lib/offering-pricing";
 
 const MAX_OFFERING_DESCRIPTION_LENGTH = 50000;
 
@@ -41,6 +42,10 @@ export async function createOfferingResource(input: {
     priceCents?: number;
   }>;
   offeringType?: string;
+  /**
+   * Base price in integer CENTS (see `@/lib/offering-pricing`). Dollar-
+   * denominated callers (MCP agent tools) convert at their own boundary.
+   */
   basePrice?: number;
   currency?: string;
   acceptedCurrencies?: string[];
@@ -253,12 +258,17 @@ export async function createOfferingResource(input: {
     const derivedListingType = validatedItems.length > 0
       ? deriveOfferingListingType(validatedItems)
       : (input.offeringType ?? "standalone");
-    // `input.basePrice` is DOLLARS; convert to cents for storage and downstream
-    // wire fields. Items already arrive as `priceCents` so they are summed as-is.
-    const basePriceCents = dollarsToCents(input.basePrice);
-    const totalPriceCents = validatedItems.length > 0
-      ? validatedItems.reduce((sum, i) => sum + i.priceCents, 0)
-      : basePriceCents;
+    // `input.basePrice` and `items[].priceCents` are BOTH integer CENTS — the
+    // unit every in-app writer produces (the offering form's draft payload, the
+    // marketplace edit path) and every reader divides by 100. Deriving the base,
+    // the charged total, and the display label from ONE normalizer is what keeps
+    // the displayed price and the Stripe-charged price identical. Callers whose
+    // surface is denominated in dollars (the MCP agent tools) convert at their
+    // own boundary with `dollarsToCents`.
+    const { basePriceCents, totalPriceCents, priceLabel } = normalizeOfferingPrice({
+      basePrice: input.basePrice,
+      items: validatedItems,
+    });
 
     // Paid offerings (price > 0) require a "seller" tier (or higher).
     if (totalPriceCents > 0) {
@@ -388,7 +398,7 @@ export async function createOfferingResource(input: {
         scopedUserIds: input.scopedUserIds ?? [],
         totalPriceCents,
         // Formatted price string for marketplace adapter consumption
-        ...(totalPriceCents > 0 ? { price: `$${(totalPriceCents / 100).toFixed(2)}` } : {}),
+        ...(priceLabel ? { price: priceLabel } : {}),
         ...(input.eftValues ? { eftValues: input.eftValues } : {}),
       ...(input.capitalValues ? { capitalValues: input.capitalValues } : {}),
       ...(input.auditValues ? { auditValues: input.auditValues } : {}),
