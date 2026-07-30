@@ -275,6 +275,16 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     // Return 500 for processing errors so Stripe can retry according to its backoff policy.
+    // Shared-platform fan-out backstop (M-6): "Agent not found" from the
+    // wallet/engine layer means the entity is NOT local — another instance's
+    // event on the shared Stripe platform (or a deleted entity). Retrying can
+    // never succeed, so acknowledge instead of feeding Stripe's retry storm.
+    if (err instanceof Error && /^Agent not found:/.test(err.message)) {
+      console.log(
+        `[stripe-webhook] Acknowledging foreign-entity event ${event.type} (${err.message})`,
+      );
+      return NextResponse.json({ received: true, foreignEntity: true });
+    }
     console.error(`Error handling webhook event ${event.type}:`, err);
     return NextResponse.json(
       { error: 'Webhook handler error' },
