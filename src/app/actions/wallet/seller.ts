@@ -1,6 +1,7 @@
 'use server';
 
 import { eq, sql } from 'drizzle-orm';
+import { getActiveSubscription } from '@/lib/billing';
 import { db } from '@/db';
 import { wallets, walletTransactions } from '@/db/schema';
 import { rateLimit, RATE_LIMITS } from '@/lib/rate-limit';
@@ -143,6 +144,20 @@ export async function setupConnectAccountAction(
       payload: { ownerId, returnPath, accountCountry },
     },
     async () => {
+
+      // A NEW personal payout account requires an active membership (Cameron,
+      // 2026-07-30): every connected account bills the shared platform
+      // ~$2/month, recovered on the membership's "Connect settlement fee"
+      // line — a tier-less seller would be an unrecovered cost forever.
+      // Managed group treasuries keep their own provisioning model.
+      if (!ownerId || ownerId === currentUserId) {
+        const activeSubscription = await getActiveSubscription(currentUserId);
+        if (!activeSubscription) {
+          throw new Error(
+            'Setting up payouts requires an active membership — subscribe to a plan first, then return here.',
+          );
+        }
+      }
       // Global-mediated onboarding: Global holds every connected account in
       // the ecosystem, so when the lane is enabled the account is provisioned
       // there and the seller returns to THIS instance. The local platform lane
