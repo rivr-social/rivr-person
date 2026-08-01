@@ -4,6 +4,7 @@ import { fetchProfileData, fetchUserEvents, fetchUserGroups, fetchUserPosts } fr
 import { getDocumentsForUser } from "@/lib/queries/resources";
 import { findAutobotEnabledPersona } from "@/app/actions/personas";
 import { PUBLIC_PROFILE_MODULE_ID, resolvePublicProfileAgent } from "@/lib/bespoke/modules/public-profile";
+import { toViewerScopedAgent } from "@/lib/agent-public-view";
 import type { CanonicalProfileRef, HomeAuthorityRef } from "@/lib/federation/cross-instance-types";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
@@ -38,6 +39,22 @@ export async function GET(
     ]);
 
     const config = getInstanceConfig();
+
+    // This route answers unauthenticated callers, so everything below is scoped
+    // to the viewer (parity with the global repo's public profile contract):
+    //   - agent metadata via the allowlist floor — `agents.metadata` carries
+    //     contact details, billing refs and autobot/connector settings that hold
+    //     live third-party credentials,
+    //   - documents to the owner only — `getDocumentsForUser` does no viewer
+    //     gating of its own, so a public caller was receiving document CONTENT.
+    const isOwnProfile = actorId === agent.id;
+    const scopeAgent = <T extends { metadata?: unknown }>(value: T): T =>
+      toViewerScopedAgent(value, { isSelf: isOwnProfile });
+    const scopedProfile = profile && !isOwnProfile
+      ? { ...profile, agent: scopeAgent(profile.agent) }
+      : profile;
+    const scopedDocuments = isOwnProfile ? (docsResult ?? []) : [];
+
     const canonicalUrl = `${homeInstance?.baseUrl ?? config.baseUrl}/profile/${encodeURIComponent(username)}`;
     const homeAuthority: HomeAuthorityRef | null = homeInstance
       ? {
@@ -71,12 +88,12 @@ export async function GET(
         actorId,
         subjectId: agent.id,
         subjectUsername: username,
-        agent,
-        profile,
+        agent: scopeAgent(agent),
+        profile: scopedProfile,
         posts,
         events,
         groups,
-        documents: docsResult ?? [],
+        documents: scopedDocuments,
         autobotPersona: autobotPersona
           ? {
               id: autobotPersona.id,
