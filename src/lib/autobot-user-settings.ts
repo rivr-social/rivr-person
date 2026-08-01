@@ -3,10 +3,20 @@ import { db } from "@/db";
 import { agents } from "@/db/schema";
 import {
   sanitizeAutobotConnections,
+  REDACTED_SECRET_PLACEHOLDER,
   type AutobotConnection,
 } from "@/lib/autobot-connectors";
 import { getInstanceConfig } from "@/lib/federation/instance-config";
 import { signPackedPayload } from "@/lib/federation-remote-session";
+import { decryptSecret, encryptSecret, isEncryptedSecret } from "@/lib/crypto/secret-box";
+
+/**
+ * Placeholder sent to clients in place of the stored GPU provider key, so a
+ * settings form can show "configured" without ever receiving the secret. Saving
+ * it back is a no-op that preserves the stored value. Aliases the ONE shared
+ * sentinel in the client-safe connector module.
+ */
+export const REDACTED_GPU_API_KEY = REDACTED_SECRET_PLACEHOLDER;
 
 export type VoiceMode = "browser" | "clone";
 /**
@@ -403,6 +413,12 @@ export async function getAutobotUserSettings(agentId: string): Promise<AutobotUs
   const metadata = isRecord(row?.metadata) ? row.metadata : {};
   const settings = sanitizeSettings(metadata[SETTINGS_KEY]);
 
+  // The GPU provider key is stored encrypted; server consumers (the /api/autobot
+  // gpu, live-avatar bake and session routes) need cleartext. Legacy plaintext
+  // passes through unchanged. Callers that answer a BROWSER must redact via
+  // `redactGpuApiKey` — this value is a live third-party credential.
+  settings.gpuProviderApiKey = decryptSecret(settings.gpuProviderApiKey) ?? "";
+
   // Auto-provision MCP token if missing or expired
   if (!isMcpTokenValid(settings.mcpToken)) {
     const mcpToken = provisionMcpToken(agentId);
@@ -432,6 +448,19 @@ export async function saveAutobotUserSettings(
     updatedAt: new Date().toISOString(),
   });
 
+  // Encryption-at-rest for the GPU provider key. It used to be stored — and
+  // served — in the clear: on 2026-08-01 a live 64-char Vast.ai key was found
+  // world-readable through the public profile route, because this blob rides on
+  // `agents.metadata`. Three cases:
+  //   - the redaction placeholder round-tripped by a form: keep what is stored,
+  //   - already ciphertext (untouched by this patch): leave it be,
+  //   - fresh cleartext: encrypt before it reaches the row.
+  if (next.gpuProviderApiKey === REDACTED_GPU_API_KEY) {
+    next.gpuProviderApiKey = current.gpuProviderApiKey;
+  } else if (next.gpuProviderApiKey && !isEncryptedSecret(next.gpuProviderApiKey)) {
+    next.gpuProviderApiKey = encryptSecret(next.gpuProviderApiKey) ?? "";
+  }
+
   await db
     .update(agents)
     .set({
@@ -443,5 +472,23 @@ export async function saveAutobotUserSettings(
     })
     .where(eq(agents.id, agentId));
 
-  return next;
+  // Return cleartext to match getAutobotUserSettings' contract — both are
+  // SERVER-side accessors. Anything answering a browser redacts.
+  return { ...next, gpuProviderApiKey: decryptSecret(next.gpuProviderApiKey) ?? "" };
+}
+
+/**
+ * Replaces the GPU provider key with a non-reversible placeholder so settings
+ * can be serialized to a browser. A configured key becomes
+ * {@link REDACTED_GPU_API_KEY}; an unset one stays empty, letting the UI tell
+ * "configured" from "not set" without ever holding the secret.
+ *
+ * @param settings - Server-side settings (cleartext key).
+ * @returns A copy safe to send to the client.
+ */
+export function redactGpuApiKey(settings: AutobotUserSettings): AutobotUserSettings {
+  return {
+    ...settings,
+    gpuProviderApiKey: settings.gpuProviderApiKey ? REDACTED_GPU_API_KEY : "",
+  };
 }

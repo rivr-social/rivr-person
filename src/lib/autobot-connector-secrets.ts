@@ -25,7 +25,10 @@
  * imported from server code — never from `@/lib/autobot-connectors`, which is
  * shared with client components.
  */
-import type { AutobotConnection } from "@/lib/autobot-connectors";
+import {
+  REDACTED_SECRET_PLACEHOLDER,
+  type AutobotConnection,
+} from "@/lib/autobot-connectors";
 import { decryptSecret, encryptSecret, isEncryptedSecret } from "@/lib/crypto/secret-box";
 
 /**
@@ -54,8 +57,13 @@ export const SECRET_CONFIG_KEYS: ReadonlySet<string> = new Set(
   ].map((key) => key.toLowerCase()),
 );
 
-/** Placeholder returned to clients in place of a stored secret value. */
-export const REDACTED_SECRET_PLACEHOLDER = "__stored__";
+/**
+ * Placeholder returned to clients in place of a stored secret value.
+ * Sourced from the client-safe connector module so the browser and the server
+ * share ONE definition rather than mirroring the string; re-exported here to
+ * keep this module's existing import surface intact.
+ */
+export { REDACTED_SECRET_PLACEHOLDER };
 
 /**
  * Providers whose secret config values are encrypted at rest. Scoped to the new

@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import {
   getAutobotUserSettings,
   saveAutobotUserSettings,
+  redactGpuApiKey,
   type AutobotUserSettings,
 } from "@/lib/autobot-user-settings";
 import { resolveAutobotConnectionScope } from "@/lib/autobot-connection-scope";
@@ -17,7 +18,8 @@ export async function GET() {
 
   const subject = await resolveAutobotConnectionScope(session.user.id);
   const settings = await getAutobotUserSettings(subject.actorId);
-  return NextResponse.json({ settings, subject });
+  // Answers a browser: never ship the GPU provider key itself.
+  return NextResponse.json({ settings: redactGpuApiKey(settings), subject });
 }
 
 export async function POST(request: Request) {
@@ -36,5 +38,5 @@ export async function POST(request: Request) {
   }
 
   const settings = await saveAutobotUserSettings(subject.actorId, body);
-  return NextResponse.json({ settings, subject });
+  return NextResponse.json({ settings: redactGpuApiKey(settings), subject });
 }

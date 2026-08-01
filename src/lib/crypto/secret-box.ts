@@ -18,12 +18,14 @@
  * transition. The next write re-stores the value as ciphertext via
  * `encryptSecret`, so plaintext is phased out lazily without a migration job.
  *
- * Key material:
- * - Primary: `CONNECTOR_ENCRYPTION_KEY` — 32 bytes, supplied as base64 or hex.
- * - Fallback: derived from `AUTH_SECRET` via scrypt so the feature is usable in
- *   development without provisioning a second secret. Production deployments
- *   MUST set `CONNECTOR_ENCRYPTION_KEY` explicitly; rotating `AUTH_SECRET` would
- *   otherwise make existing ciphertext undecryptable.
+ * Key material — an ORDERED CHAIN. Index 0 is the WRITE key; every entry is a
+ * candidate READ key, so adopting or rotating a key never orphans stored values:
+ * - `CONNECTOR_ENCRYPTION_KEY` — 32 bytes, base64 or hex.
+ * - `CONNECTOR_ENCRYPTION_KEY_PREVIOUS` — comma-separated retired keys,
+ *   decrypt-only.
+ * - `scrypt(AUTH_SECRET)` — the historical implicit key, kept as a READ fallback
+ *   so an instance that ran without an explicit key can adopt one with zero
+ *   downtime. Production deployments SHOULD set `CONNECTOR_ENCRYPTION_KEY`.
  *
  * Ported from the global app (`rivr-social/rivr-app` src/lib/crypto/secret-box.ts,
  * commit 4310ca2) so the person connector lane shares the same on-disk envelope
@@ -46,39 +48,82 @@ const CIPHERTEXT_PREFIX = "enc:v1:";
 /** Fixed salt for the scrypt fallback key derivation from AUTH_SECRET. */
 const SCRYPT_FALLBACK_SALT = "rivr.connector.secret-box.v1";
 
-/** Memoized key so we derive/parse it once per process. */
-let cachedKey: Buffer | null = null;
+/** Memoized key chain so we derive/parse once per process. */
+let cachedKeys: Buffer[] | null = null;
 
 /**
- * Resolves the 32-byte symmetric key, preferring an explicit
- * `CONNECTOR_ENCRYPTION_KEY` (base64 or hex) and falling back to a scrypt
- * derivation from `AUTH_SECRET`.
+ * Resolves the ordered key chain. Index 0 is the WRITE key; every entry is a
+ * candidate READ key, tried in order.
  *
- * @throws {Error} When neither a valid explicit key nor `AUTH_SECRET` is set.
+ * Order:
+ *   1. `CONNECTOR_ENCRYPTION_KEY` — explicit, 32 bytes base64/hex.
+ *   2. `CONNECTOR_ENCRYPTION_KEY_PREVIOUS` — comma-separated retired keys,
+ *      decrypt-only, so a rotation does not orphan rows written under the key
+ *      it replaced.
+ *   3. The scrypt derivation from `AUTH_SECRET` — the historical implicit key.
+ *      Retained as a READ fallback so instances that ran without an explicit
+ *      key can adopt one with ZERO downtime and migrate rows afterwards.
+ *
+ * Rotation without this chain is destructive: `decryptSecret` THROWS on a wrong
+ * key (GCM auth failure), so introducing `CONNECTOR_ENCRYPTION_KEY` on an
+ * instance holding rows encrypted under the AUTH_SECRET derivation would break
+ * every read of those rows. Verified 2026-08-01: global prod held 3 such
+ * `agents.matrix_access_token` values, dev 4.
+ *
+ * @throws {Error} When no key material is configured at all.
  */
-function resolveKey(): Buffer {
-  if (cachedKey) return cachedKey;
+function resolveKeys(): Buffer[] {
+  if (cachedKeys) return cachedKeys;
+
+  const keys: Buffer[] = [];
 
   const explicit = process.env.CONNECTOR_ENCRYPTION_KEY?.trim();
-  if (explicit) {
-    const decoded = decodeKeyMaterial(explicit);
-    if (decoded.length !== KEY_LENGTH_BYTES) {
-      throw new Error(
-        `CONNECTOR_ENCRYPTION_KEY must decode to ${KEY_LENGTH_BYTES} bytes (got ${decoded.length}). Provide 32 bytes as base64 or hex.`,
-      );
+  if (explicit) keys.push(parseKeyOrThrow(explicit, "CONNECTOR_ENCRYPTION_KEY"));
+
+  const previous = process.env.CONNECTOR_ENCRYPTION_KEY_PREVIOUS?.trim();
+  if (previous) {
+    for (const entry of previous.split(",").map((value) => value.trim()).filter(Boolean)) {
+      keys.push(parseKeyOrThrow(entry, "CONNECTOR_ENCRYPTION_KEY_PREVIOUS"));
     }
-    cachedKey = decoded;
-    return cachedKey;
   }
 
   const authSecret = getEnv("AUTH_SECRET");
-  if (!authSecret) {
+  if (authSecret) {
+    keys.push(scryptSync(authSecret, SCRYPT_FALLBACK_SALT, KEY_LENGTH_BYTES));
+  }
+
+  if (keys.length === 0) {
     throw new Error(
       "Cannot encrypt connector secrets: set CONNECTOR_ENCRYPTION_KEY (32 bytes base64/hex) or AUTH_SECRET.",
     );
   }
-  cachedKey = scryptSync(authSecret, SCRYPT_FALLBACK_SALT, KEY_LENGTH_BYTES);
-  return cachedKey;
+
+  cachedKeys = keys;
+  return cachedKeys;
+}
+
+/** The key new ciphertext is written under (head of the chain). */
+function resolveKey(): Buffer {
+  return resolveKeys()[0];
+}
+
+/** Decodes and length-checks key material, naming the offending var on error. */
+function parseKeyOrThrow(value: string, varName: string): Buffer {
+  const decoded = decodeKeyMaterial(value);
+  if (decoded.length !== KEY_LENGTH_BYTES) {
+    throw new Error(
+      `${varName} must decode to ${KEY_LENGTH_BYTES} bytes (got ${decoded.length}). Provide 32 bytes as base64 or hex.`,
+    );
+  }
+  return decoded;
+}
+
+/**
+ * Test-only: clears the memoized key chain so a test can change env vars.
+ * Production code never needs this — the chain is stable for a process.
+ */
+export function resetSecretBoxKeyCacheForTests(): void {
+  cachedKeys = null;
 }
 
 /**
@@ -145,13 +190,31 @@ export function decryptSecret(stored: string | null | undefined): string | null 
     throw new Error("Malformed encrypted secret envelope: expected enc:v1:iv:tag:ciphertext.");
   }
   const [, , ivB64, tagB64, ctB64] = parts;
-  const key = resolveKey();
   const iv = Buffer.from(ivB64, "base64url");
   const authTag = Buffer.from(tagB64, "base64url");
   const ciphertext = Buffer.from(ctB64, "base64url");
 
-  const decipher = createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH_BYTES });
-  decipher.setAuthTag(authTag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plaintext.toString("utf8");
+  // Try each key in the chain. GCM authenticates, so a wrong key throws rather
+  // than returning garbage — that makes "try the next one" safe, and it is what
+  // lets a new CONNECTOR_ENCRYPTION_KEY be adopted without orphaning rows
+  // written under a retired key or the AUTH_SECRET derivation.
+  const keys = resolveKeys();
+  let lastError: unknown;
+  for (const key of keys) {
+    try {
+      const decipher = createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH_BYTES });
+      decipher.setAuthTag(authTag);
+      const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      return plaintext.toString("utf8");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `Failed to decrypt secret with any configured key (tried ${keys.length}). ` +
+      "The value was written under a key that is no longer configured — restore it via " +
+      "CONNECTOR_ENCRYPTION_KEY_PREVIOUS. " +
+      `Underlying error: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  );
 }

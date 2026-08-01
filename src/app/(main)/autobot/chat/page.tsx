@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { REDACTED_SECRET_PLACEHOLDER } from "@/lib/autobot-connectors";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -1151,6 +1152,8 @@ export default function AutobotChatPage() {
   const [voiceSample, setVoiceSample] = useState<VoiceSample | null>(null);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("browser");
   const [gpuProviderApiKey, setGpuProviderApiKey] = useState("");
+  /** True when the server holds a key we deliberately never received. */
+  const [gpuKeyStored, setGpuKeyStored] = useState(false);
   const [settingsSubject, setSettingsSubject] = useState<SettingsSubject | null>(null);
   const [contextInventory, setContextInventory] = useState<ContextInventory | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
@@ -1271,8 +1274,18 @@ export default function AutobotChatPage() {
           saveVoiceMode(settings.voiceMode);
         }
         if (typeof settings.gpuProviderApiKey === "string") {
-          setGpuProviderApiKey(settings.gpuProviderApiKey);
-          saveStoredGpuProviderApiKey(settings.gpuProviderApiKey);
+          // The server redacts a stored key to the shared sentinel. Treat that
+          // as "configured": leave the input empty (so a blur cannot re-post a
+          // placeholder) and stop caching a secret in localStorage.
+          if (settings.gpuProviderApiKey === REDACTED_SECRET_PLACEHOLDER) {
+            setGpuKeyStored(true);
+            setGpuProviderApiKey("");
+            saveStoredGpuProviderApiKey("");
+          } else {
+            setGpuKeyStored(Boolean(settings.gpuProviderApiKey));
+            setGpuProviderApiKey(settings.gpuProviderApiKey);
+            saveStoredGpuProviderApiKey(settings.gpuProviderApiKey);
+          }
         }
         if (settings.voiceSample && typeof settings.voiceSample === "object") {
           const persistedVoiceSample = settings.voiceSample as VoiceSample;
@@ -2424,13 +2437,23 @@ export default function AutobotChatPage() {
                     saveStoredGpuProviderApiKey(event.target.value);
                   }}
                   onBlur={() => {
+                    // An empty field means "unchanged", not "clear it" — the
+                    // stored key is never sent to the browser, so posting ""
+                    // here would silently wipe a working credential.
+                    if (!gpuProviderApiKey.trim()) return;
                     fetch(SETTINGS_API_ENDPOINT, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ gpuProviderApiKey }),
-                    }).catch(() => {});
+                    })
+                      .then(() => setGpuKeyStored(true))
+                      .catch(() => {});
                   }}
-                  placeholder="Paste your Vast API key"
+                  placeholder={
+                    gpuKeyStored
+                      ? "Key saved — paste a new key to replace it"
+                      : "Paste your Vast API key"
+                  }
                   className="h-8 text-xs"
                 />
               </div>

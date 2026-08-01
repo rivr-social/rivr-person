@@ -1,3 +1,18 @@
+/**
+ * Placeholder sent to clients in place of any stored secret — connector config
+ * values and the GPU provider API key alike.
+ *
+ * It lives in THIS module because this is the client-safe half of the connector
+ * lane (no `crypto`, no `db`), so the browser and the server share ONE constant
+ * instead of duplicating the sentinel. A client that posts it back is asking to
+ * keep whatever is stored; the server treats it as a no-op.
+ *
+ * Duplicating this string would reproduce the failure mode that made the tier
+ * upgrade unreachable in July: a rule mirrored on both sides that silently
+ * drifted apart.
+ */
+export const REDACTED_SECRET_PLACEHOLDER = "__stored__";
+
 export type AutobotConnectionProvider =
   | "teller"
   | "google_docs"
