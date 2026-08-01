@@ -54,6 +54,12 @@ export async function GET(
       ? { ...profile, agent: scopeAgent(profile.agent) }
       : profile;
     const scopedDocuments = isOwnProfile ? (docsResult ?? []) : [];
+    // `posts.owner` is the SUBJECT serialized a second time, so it carries the
+    // same blob and has to be scoped too — scoping only `agent` leaves the
+    // credentials reachable one field over (verified live, 2026-08-01).
+    const scopedPosts = !isOwnProfile && posts?.owner
+      ? { ...posts, owner: scopeAgent(posts.owner) }
+      : posts;
 
     const canonicalUrl = `${homeInstance?.baseUrl ?? config.baseUrl}/profile/${encodeURIComponent(username)}`;
     const homeAuthority: HomeAuthorityRef | null = homeInstance
@@ -90,7 +96,7 @@ export async function GET(
         subjectUsername: username,
         agent: scopeAgent(agent),
         profile: scopedProfile,
-        posts,
+        posts: scopedPosts,
         events,
         groups,
         documents: scopedDocuments,
