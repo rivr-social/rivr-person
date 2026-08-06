@@ -27,6 +27,7 @@ import {
   createResourceWithLedger,
 } from "./helpers";
 import { updateFacade, emitDomainEvent, EVENT_TYPES } from "@/lib/federation/index";
+import { buildRevocationPayload } from "@/lib/federation/revocation-contract";
 import { routeWrite } from "@/lib/federation/write-router";
 import { resolveHomeInstance } from "@/lib/federation/resolution";
 import type { ActionResult, UpdateResourceInput } from "./types";
@@ -508,11 +509,17 @@ export async function deleteResource(
       // `payload.id` (or envelope `entityId` as a fallback). Without `id`
       // in the payload, federated peers import the delete event
       // successfully but can't locate the mirror row to soft-delete,
-      // leaving the row visible forever.
-      payload: {
+      // leaving the row visible forever. Standard revocation payload
+      // (revocation-contract.ts) carries id + revokedAt + reason.
+      payload: buildRevocationPayload({
         id: resourceId,
-        resourceType: (verifiedDeleteResource.metadata as Record<string, unknown>)?.resourceKind ?? null,
-      },
+        entityType: "resource",
+        resourceType:
+          typeof (verifiedDeleteResource.metadata as Record<string, unknown>)?.resourceKind ===
+          "string"
+            ? ((verifiedDeleteResource.metadata as Record<string, unknown>).resourceKind as string)
+            : null,
+      }) as unknown as Record<string, unknown>,
     }).catch(() => {});
   }
 
