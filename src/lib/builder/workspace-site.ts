@@ -151,6 +151,74 @@ export async function writeWorkspaceSiteFiles(
   return { filesWritten: entries.length, bytesWritten: totalBytes };
 }
 
+/**
+ * Read the editable text files in one jailed Builder workspace. This is shared
+ * by the browser file loader and per-app GitHub push so both surfaces operate
+ * on the exact same bounded file set.
+ */
+export async function readWorkspaceSiteFiles(
+  workspace: AgentWorkspace,
+  basePath = "",
+): Promise<{ files: SiteFiles; truncated: boolean }> {
+  const readRoot = resolveWorkspaceWriteRoot(workspace, basePath);
+  let canonicalReadRoot: string;
+  try {
+    canonicalReadRoot = await realpath(readRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { files: {}, truncated: false };
+    }
+    throw error;
+  }
+
+  const files: SiteFiles = {};
+  let totalBytes = 0;
+  let entryCount = 0;
+  let truncated = false;
+
+  async function visit(directory: string): Promise<void> {
+    const canonicalDirectory = await realpath(directory);
+    if (!isInside(canonicalReadRoot, canonicalDirectory)) {
+      throw new Error("A workspace path resolves outside the selected builder directory.");
+    }
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (entryCount >= 300 || totalBytes >= MAX_WORKSPACE_BYTES) {
+        truncated = true;
+        return;
+      }
+      if (entry.name.startsWith(".") || SKIP_DIRECTORIES.has(entry.name)) continue;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        await visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!ALLOWED_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+
+      const content = await readFile(fullPath, "utf8");
+      const bytes = Buffer.byteLength(content, "utf8");
+      if (bytes > MAX_FILE_BYTES) {
+        truncated = true;
+        continue;
+      }
+      if (totalBytes + bytes > MAX_WORKSPACE_BYTES) {
+        truncated = true;
+        return;
+      }
+      const relative = path.relative(canonicalReadRoot, fullPath).replace(/\\/g, "/");
+      files[relative] = content;
+      totalBytes += bytes;
+      entryCount += 1;
+    }
+  }
+
+  await visit(canonicalReadRoot);
+  return { files, truncated };
+}
+
 async function digestWorkspace(workspace: AgentWorkspace): Promise<string> {
   const hash = createHash("sha256");
 

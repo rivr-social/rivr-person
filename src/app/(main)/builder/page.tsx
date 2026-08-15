@@ -236,6 +236,15 @@ interface ChatMessage {
   applied?: boolean;
 }
 
+function isTransientWorkspaceMessage(message: Pick<ChatMessage, "id" | "content">): boolean {
+  return (
+    message.id.startsWith("ws-load-") ||
+    message.id.startsWith("ws-empty-") ||
+    /^Loaded \d+ files from workspace /u.test(message.content) ||
+    /^Workspace ".+" was empty/u.test(message.content)
+  );
+}
+
 interface PendingImage {
   id: string;
   name: string;
@@ -521,30 +530,79 @@ export default function BuilderPage() {
   // Keep a separate conversation for each selected app/site. File contents are
   // deliberately excluded—the workspace itself remains the source of truth.
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(builderChatStorageKey);
-      const stored = raw ? JSON.parse(raw) as Array<Omit<ChatMessage, "timestamp"> & { timestamp: string }> : [];
-      setMessages(stored.length > 0
-        ? stored.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }))
-        : [{ id: "welcome", role: "assistant", content: WELCOME_MESSAGE, timestamp: new Date() }]);
-    } catch {
-      setMessages([{ id: "welcome", role: "assistant", content: WELCOME_MESSAGE, timestamp: new Date() }]);
+    const controller = new AbortController();
+    hydratedChatKeyRef.current = null;
+    async function hydrateConversation() {
+      let stored: Array<Omit<ChatMessage, "timestamp"> & { timestamp: string }> = [];
+      try {
+        const response = await fetch(
+          `/api/builder/conversations?workspaceId=${encodeURIComponent(targetWorkspaceId)}&basePath=${encodeURIComponent(workspaceBasePath)}`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (response.ok) {
+          const data = (await response.json()) as { messages?: typeof stored };
+          stored = Array.isArray(data.messages) ? data.messages : [];
+        }
+      } catch {
+        // Browser-local cache remains an offline/degraded fallback.
+      }
+      if (stored.length === 0) {
+        try {
+          const raw = localStorage.getItem(builderChatStorageKey);
+          stored = raw ? JSON.parse(raw) as typeof stored : [];
+        } catch {
+          stored = [];
+        }
+      }
+      if (controller.signal.aborted) return;
+      const durableMessages = stored.filter((message) => !isTransientWorkspaceMessage(message));
+      const hydratedMessages: ChatMessage[] = durableMessages.length > 0
+        ? durableMessages.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }))
+        : [{ id: "welcome", role: "assistant", content: WELCOME_MESSAGE, timestamp: new Date() }];
+      const loadId = `ws-load-${targetWorkspaceId}:${workspaceBasePath}`;
+      const emptyId = `ws-empty-${targetWorkspaceId}:${workspaceBasePath}`;
+      // Workspace loading and profile-history hydration are intentionally
+      // concurrent. Preserve only the current target's one transient notice so
+      // whichever request finishes last cannot duplicate or erase it.
+      setMessages((current) => [
+        ...hydratedMessages,
+        ...current.filter((message) => message.id === loadId || message.id === emptyId).slice(-1),
+      ]);
+      hydratedChatKeyRef.current = builderChatStorageKey;
     }
-    queueMicrotask(() => { hydratedChatKeyRef.current = builderChatStorageKey; });
+    void hydrateConversation();
+    return () => controller.abort();
   }, [builderChatStorageKey]);
 
   useEffect(() => {
     if (hydratedChatKeyRef.current !== builderChatStorageKey) return;
+    const stored = messages
+      .filter((message) => message.id !== "welcome" && !isTransientWorkspaceMessage(message))
+      .slice(-MAX_STORED_BUILDER_MESSAGES)
+      .map(({ files: _files, ...message }) => message);
     try {
-      const stored = messages
-        .filter((message) => message.id !== "welcome")
-        .slice(-MAX_STORED_BUILDER_MESSAGES)
-        .map(({ files: _files, ...message }) => message);
       localStorage.setItem(builderChatStorageKey, JSON.stringify(stored));
     } catch {
       // Storage can be unavailable in privacy-restricted browsers.
     }
-  }, [builderChatStorageKey, messages]);
+    const timer = window.setTimeout(() => {
+      void fetch("/api/builder/conversations", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId: targetWorkspaceId,
+          basePath: workspaceBasePath,
+          messages: stored.map((message) => ({
+            ...message,
+            timestamp: message.timestamp instanceof Date
+              ? message.timestamp.toISOString()
+              : message.timestamp,
+          })),
+        }),
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [builderChatStorageKey, messages, targetWorkspaceId, workspaceBasePath]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -630,9 +688,9 @@ export default function BuilderPage() {
         if (data.files && data.fileCount && data.fileCount > 0) {
           applyLoadedFiles(data.files);
           setMessages((prev) => [
-            ...prev,
+            ...prev.filter((message) => !isTransientWorkspaceMessage(message)),
             {
-              id: `ws-load-${Date.now()}`,
+              id: `ws-load-${wsId}:${basePath}`,
               role: "assistant",
               content: `Loaded ${data.fileCount} files from workspace "${data.workspace?.label ?? wsId}"${basePath ? ` (${basePath})` : ""}. You can preview and edit them, or ask me to make changes.`,
               timestamp: new Date(),
@@ -641,9 +699,9 @@ export default function BuilderPage() {
         } else {
           applyLoadedFiles(EMPTY_WORKSPACE_STARTER);
           setMessages((prev) => [
-            ...prev,
+            ...prev.filter((message) => !isTransientWorkspaceMessage(message)),
             {
-              id: `ws-empty-${Date.now()}`,
+              id: `ws-empty-${wsId}:${basePath}`,
               role: "assistant",
               content: `Workspace "${data.workspace?.label ?? wsId}" was empty${basePath ? ` at ${basePath}` : ""}, so I added a minimal starter. Describe the app you want and I’ll inspect and edit those files in place.`,
               timestamp: new Date(),

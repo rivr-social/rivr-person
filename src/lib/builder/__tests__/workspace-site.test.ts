@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ vi.mock("@/lib/agent-hq", () => ({
 import type { AgentWorkspace } from "@/lib/agent-hq";
 import {
   queueWorkspaceDeployment,
+  readWorkspaceSiteFiles,
   resolveWorkspaceWriteRoot,
   writeWorkspaceSiteFiles,
 } from "@/lib/builder/workspace-site";
@@ -72,5 +73,30 @@ describe("workspace site service", () => {
     const second = await queueWorkspaceDeployment(target);
     expect(second.requestId).not.toBe(first.requestId);
     expect(second.sourceDigest).not.toBe(first.sourceDigest);
+  });
+
+  it("reads the same jailed editable tree used by per-app GitHub push", async () => {
+    const target = await workspace();
+    await writeWorkspaceSiteFiles(target, {
+      "index.html": "<h1>Hello</h1>",
+      "assets/style.css": "body { color: navy; }",
+    });
+    await mkdir(path.join(target.cwd, "node_modules"));
+    await writeFile(path.join(target.cwd, "node_modules/ignored.js"), "secret");
+    await writeFile(path.join(target.cwd, "ignored.png"), "not editable");
+    const outside = await mkdtemp(path.join(os.tmpdir(), "rivr-builder-outside-"));
+    tempDirectories.push(outside);
+    await writeFile(path.join(outside, "outside.css"), "nope");
+    await symlink(outside, path.join(target.cwd, "linked"));
+
+    const result = await readWorkspaceSiteFiles(target);
+
+    expect(result).toEqual({
+      files: {
+        "assets/style.css": "body { color: navy; }",
+        "index.html": "<h1>Hello</h1>",
+      },
+      truncated: false,
+    });
   });
 });

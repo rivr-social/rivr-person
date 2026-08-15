@@ -493,6 +493,7 @@ export const USER_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
  * surface renders its own section.
  */
 export const DEPLOY_CONNECTABLE_PROVIDERS: AutobotConnectionProvider[] = [
+  "github",
   "cloudflare",
   "squarespace",
   "namecheap",

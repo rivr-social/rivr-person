@@ -18,6 +18,7 @@
 
 import { db } from '@/db';
 import { agents } from '@/db/schema';
+import { decryptSecret, encryptSecret } from '@/lib/crypto/secret-box';
 import { eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,18 @@ export function parseRepoUrl(input: string): { owner: string; name: string } | n
   }
 
   return null;
+}
+
+export function normalizeGitHubBasePath(input = ''): string {
+  const normalized = input.trim().replace(/^\/+|\/+$/g, '');
+  if (!normalized) return '';
+  if (
+    normalized.includes('\\') ||
+    normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    throw new Error('GitHub base path must be a repository-relative directory.');
+  }
+  return normalized;
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +496,7 @@ export async function connectGitHubRepo(params: {
     repoName: parsed.name,
     branch: params.branch || 'main',
     token: params.token,
-    basePath: params.basePath || '',
+    basePath: normalizeGitHubBasePath(params.basePath),
     connectedAt: new Date().toISOString(),
   };
 
@@ -499,7 +512,14 @@ export async function connectGitHubRepo(params: {
   const currentMetadata = (agent.metadata as Record<string, unknown>) || {};
   const updatedMetadata = {
     ...currentMetadata,
-    [GITHUB_CONNECTION_SETTING_KEY]: connection,
+    // This connection predates the unified connectors table and is retained
+    // for builder compatibility. Never leave its credential plaintext in the
+    // agent metadata blob. `decryptSecret` remains backwards compatible with
+    // legacy plaintext rows, so existing connections migrate on next save.
+    [GITHUB_CONNECTION_SETTING_KEY]: {
+      ...connection,
+      token: encryptSecret(connection.token) ?? connection.token,
+    },
   };
 
   await db
@@ -533,7 +553,7 @@ export async function getGitHubConnection(userId: string): Promise<GitHubConnect
     repoOwner: conn.repoOwner as string,
     repoName: conn.repoName as string,
     branch: (conn.branch as string) || 'main',
-    token: conn.token as string,
+    token: decryptSecret(conn.token as string) ?? (conn.token as string),
     basePath: (conn.basePath as string) || '',
     connectedAt: (conn.connectedAt as string) || '',
   };

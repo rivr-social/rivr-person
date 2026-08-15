@@ -421,6 +421,13 @@
       "when": 1785024000001,
       "tag": "0061_nodes_instance_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1786836600000,
+      "tag": "0062_builder_conversations",
+      "breakpoints": true
     }
   ]
 }

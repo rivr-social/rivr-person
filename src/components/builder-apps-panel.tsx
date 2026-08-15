@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Globe,
+  Github,
   Loader2,
   Play,
   Plus,
@@ -26,6 +27,8 @@ import {
   RotateCcw,
   Square,
   Trash2,
+  Download,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,6 +71,13 @@ interface RegisteredApp {
   expectedUrl: string | null;
 }
 
+interface GitHubConnectionSummary {
+  connected: boolean;
+  repo?: string;
+  branch?: string;
+  basePath?: string;
+}
+
 const ACTIVE_PHASES: ReadonlySet<string> = new Set([
   "queued",
   "validating",
@@ -101,6 +111,8 @@ export function BuilderAppsPanel() {
   const [newRuntime, setNewRuntime] = useState<"static" | "node-22">("static");
   const [domainDrafts, setDomainDrafts] = useState<Record<string, string>>({});
   const [dnsProviders, setDnsProviders] = useState<string[]>([]);
+  const [github, setGithub] = useState<GitHubConnectionSummary>({ connected: false });
+  const [notice, setNotice] = useState<string | null>(null);
 
   const fetchApps = useCallback(async () => {
     try {
@@ -109,6 +121,7 @@ export function BuilderAppsPanel() {
         success?: boolean;
         apps?: RegisteredApp[];
         dnsProviders?: string[];
+        github?: GitHubConnectionSummary;
         error?: string;
       };
       if (!response.ok || !data.success) {
@@ -116,6 +129,7 @@ export function BuilderAppsPanel() {
       }
       setApps(data.apps ?? []);
       setDnsProviders(data.dnsProviders ?? []);
+      setGithub(data.github ?? { connected: false });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load apps");
@@ -244,6 +258,40 @@ export function BuilderAppsPanel() {
     [domainDrafts, fetchApps],
   );
 
+  const syncGitHub = useCallback(
+    async (appId: string, action: "push" | "pull") => {
+      setBusyAppId(appId);
+      setError(null);
+      setNotice(null);
+      try {
+        const response = await fetch(`/api/builder/apps/${appId}/github`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const data = (await response.json()) as {
+          success?: boolean;
+          error?: string;
+          filesUpdated?: number;
+          commitUrl?: string;
+        };
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || `GitHub ${action} failed`);
+        }
+        setNotice(
+          action === "push"
+            ? `Pushed ${data.filesUpdated ?? 0} ${appId} files to GitHub${data.commitUrl ? "." : ""}`
+            : `Pulled ${data.filesUpdated ?? 0} GitHub files into ${appId}. Reload that workspace in Builder to edit them.`,
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `GitHub ${action} failed`);
+      } finally {
+        setBusyAppId(null);
+      }
+    },
+    [],
+  );
+
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -278,6 +326,20 @@ export function BuilderAppsPanel() {
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
           <span className="break-words">{error}</span>
         </div>
+      )}
+
+      {notice && (
+        <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-700 dark:text-emerald-300">
+          <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+          <span className="break-words">{notice}</span>
+        </div>
+      )}
+
+      {github.connected && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Github className="h-3.5 w-3.5" />
+          {github.repo} · {github.branch ?? "main"}; each app uses its own repository directory.
+        </p>
       )}
 
       {showCreate && (
@@ -485,6 +547,30 @@ export function BuilderAppsPanel() {
                           Delete
                         </Button>
                       ))}
+                    {github.connected && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs gap-1"
+                          onClick={() => void syncGitHub(app.appId, "push")}
+                          disabled={busy || working}
+                        >
+                          <Upload className="h-3 w-3" />
+                          Push
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs gap-1"
+                          onClick={() => void syncGitHub(app.appId, "pull")}
+                          disabled={busy || working}
+                        >
+                          <Download className="h-3 w-3" />
+                          Pull
+                        </Button>
+                      </>
+                    )}
                   </div>
                 )}
 

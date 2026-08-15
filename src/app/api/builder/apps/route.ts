@@ -29,6 +29,7 @@ import {
 import { appTemplateFiles } from "@/lib/builder/app-templates";
 import { isOwnerError, resolveBuilderOwner } from "@/lib/builder/site-owner";
 import { listOwnerDnsProviders } from "@/lib/builder/site-publications";
+import { getGitHubConnection } from "@/lib/deploy/github-deploy";
 import {
   STATUS_BAD_REQUEST,
   STATUS_CONFLICT,
@@ -76,7 +77,16 @@ export async function GET() {
 
   const root = getAgentAppWorkspaceRoot();
   const dnsProviders = await listOwnerDnsProviders(owner.agentId);
-  if (!existsSync(root)) return response({ success: true, apps: [], dnsProviders });
+  const githubConnection = await getGitHubConnection(owner.agentId);
+  const github = githubConnection
+    ? {
+        connected: true,
+        repo: `${githubConnection.repoOwner}/${githubConnection.repoName}`,
+        branch: githubConnection.branch,
+        basePath: githubConnection.basePath,
+      }
+    : { connected: false };
+  if (!existsSync(root)) return response({ success: true, apps: [], dnsProviders, github });
 
   try {
     const entries = await readdir(root, { withFileTypes: true });
@@ -106,7 +116,7 @@ export async function GET() {
       });
     }
     apps.sort((a, b) => a.appId.localeCompare(b.appId));
-    return response({ success: true, apps, dnsProviders });
+    return response({ success: true, apps, dnsProviders, github });
   } catch (error) {
     return response(
       { error: `Failed to list apps: ${error instanceof Error ? error.message : "unknown"}` },

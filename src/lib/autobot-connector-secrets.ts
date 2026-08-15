@@ -77,6 +77,7 @@ export const ENCRYPTED_SECRET_PROVIDERS: ReadonlySet<string> = new Set([
   "cloudflare",
   "squarespace",
   "namecheap",
+  "github",
 ]);
 
 /**

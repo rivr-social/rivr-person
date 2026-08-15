@@ -2783,3 +2783,36 @@ export const x402ReceiptsRelations = relations(x402Receipts, ({ one }) => ({
 
 export type X402ReceiptRecord = typeof x402Receipts.$inferSelect;
 export type NewX402ReceiptRecord = typeof x402Receipts.$inferInsert;
+
+/**
+ * Owner-scoped Builder conversation memory. Files never live in this table;
+ * the selected workspace remains the only source of truth for source code.
+ */
+export const builderConversations = pgTable(
+  'builder_conversations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    workspaceId: text('workspace_id').notNull(),
+    basePath: text('base_path').notNull().default(''),
+    messages: jsonb('messages')
+      .$type<Array<{ id: string; role: 'user' | 'assistant'; content: string; timestamp: string }>>()
+      .default([])
+      .notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('builder_conversations_owner_workspace_idx').on(
+      table.agentId,
+      table.workspaceId,
+      table.basePath,
+    ),
+    index('builder_conversations_owner_updated_idx').on(table.agentId, table.updatedAt),
+  ],
+);
+
+export type BuilderConversationRecord = typeof builderConversations.$inferSelect;
+export type NewBuilderConversationRecord = typeof builderConversations.$inferInsert;
