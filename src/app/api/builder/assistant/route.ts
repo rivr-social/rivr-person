@@ -48,6 +48,7 @@ export const maxDuration = 120;
 const MAX_HISTORY_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 4000;
 const EDIT_INTENT_RE = /\b(add|adjust|change|create|delete|edit|fix|make|modify|remove|rename|replace|set|update)\b/i;
+const FULL_REWRITE_INTENT_RE = /\b(build|create (?:a |an )?(?:new )?(?:app|site|website)|rebuild|redesign|rewrite (?:the )?(?:entire|whole))\b/i;
 
 interface AssistantWorkspaceDeployment {
   request: { requestId: string };
@@ -251,6 +252,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         commitMessage: "Published from the builder assistant",
       });
       return { versionNumber: result.versionNumber };
+    }, {
+      allowExistingFileRewrite: FULL_REWRITE_INTENT_RE.test(message),
     });
 
     // Own-environment deploy tool (broker lane). Offered only when the caller

@@ -92,6 +92,17 @@ describe("makeBuilderToolset", () => {
     expect(toolset.getChangedPaths()).toEqual(["style.css"]);
   });
 
+  it("blocks whole-file replacement for ordinary edit turns", async () => {
+    const toolset = makeBuilderToolset(BASE, noopPublish);
+    expect(
+      await toolset.executeTool("write_file", {
+        path: "style.css",
+        content: "body { background: white; }",
+      }),
+    ).toMatchObject({ error: expect.stringContaining("protected") });
+    expect(toolset.getFiles()["style.css"]).toBe("body{}");
+  });
+
   it("rejects missing or ambiguous surgical replacements", async () => {
     const toolset = makeBuilderToolset(
       { "index.html": "<p>same</p><p>same</p>", "style.css": "body{}" },
@@ -127,7 +138,7 @@ describe("makeBuilderToolset", () => {
 
     const crowded: Record<string, string> = {};
     for (let i = 0; i < MAX_WORKSPACE_FILES; i += 1) crowded[`f${i}.txt`] = "x";
-    const full = makeBuilderToolset(crowded, noopPublish);
+    const full = makeBuilderToolset(crowded, noopPublish, { allowExistingFileRewrite: true });
     expect(
       await full.executeTool("write_file", { path: "one-more.txt", content: "x" }),
     ).toHaveProperty("error");
@@ -139,7 +150,7 @@ describe("makeBuilderToolset", () => {
 
   it("publishes the working copy through the injected callback exactly once asked", async () => {
     const publish = vi.fn(async () => ({ versionNumber: 7 }));
-    const toolset = makeBuilderToolset(BASE, publish);
+    const toolset = makeBuilderToolset(BASE, publish, { allowExistingFileRewrite: true });
     expect(toolset.wasPublished()).toBe(false);
 
     await toolset.executeTool("write_file", { path: "index.html", content: "<h1>v2</h1>" });

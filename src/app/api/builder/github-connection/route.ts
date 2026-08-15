@@ -1,6 +1,5 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
-import { getDeployCapability } from "@/lib/deploy/capability";
 import {
   connectGitHubRepo,
   disconnectGitHubRepo,
@@ -17,7 +16,6 @@ export const dynamic = "force-dynamic";
 const STATUS_OK = 200;
 const STATUS_BAD_REQUEST = 400;
 const STATUS_UNAUTHORIZED = 401;
-const STATUS_FORBIDDEN = 403;
 const STATUS_INTERNAL = 500;
 
 const CACHE_CONTROL_NO_STORE = "private, no-store, max-age=0, must-revalidate";
@@ -32,20 +30,6 @@ export async function GET() {
     return NextResponse.json(
       { error: "Authentication required" },
       { status: STATUS_UNAUTHORIZED, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-    );
-  }
-
-  const capability = getDeployCapability();
-
-  // Sovereign instances don't need GitHub connections — they deploy directly
-  if (capability.isSovereign) {
-    return NextResponse.json(
-      {
-        connected: false,
-        deployMethod: "direct",
-        message: "This sovereign instance deploys directly. GitHub connection is not needed.",
-      },
-      { status: STATUS_OK, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
     );
   }
 
@@ -93,17 +77,6 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: "Authentication required" },
       { status: STATUS_UNAUTHORIZED, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-    );
-  }
-
-  const capability = getDeployCapability();
-  if (capability.isSovereign) {
-    return NextResponse.json(
-      {
-        error: "Sovereign instances deploy directly and do not need GitHub connections.",
-        deployMethod: "direct",
-      },
-      { status: STATUS_FORBIDDEN, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
     );
   }
 

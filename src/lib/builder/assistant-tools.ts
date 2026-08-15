@@ -97,6 +97,7 @@ export interface BuilderToolsetResult {
 export function makeBuilderToolset(
   initialFiles: SiteFiles,
   publish: (files: SiteFiles) => Promise<Record<string, unknown>>,
+  options: { allowExistingFileRewrite?: boolean } = {},
 ): BuilderToolsetResult {
   const files: SiteFiles = { ...initialFiles };
   const changed: string[] = [];
@@ -125,7 +126,9 @@ export function makeBuilderToolset(
     {
       name: "write_file",
       description:
-        "Create or overwrite a workspace file with the given full contents. Write the COMPLETE file — partial contents replace the whole file.",
+        options.allowExistingFileRewrite
+          ? "Create or intentionally rewrite a workspace file with complete contents. Partial contents replace the whole file."
+          : "Create a NEW workspace file. Existing files are protected; use replace_in_file to edit them surgically.",
       input_schema: {
         type: "object",
         properties: {
@@ -200,6 +203,13 @@ export function makeBuilderToolset(
           return { error: `File too large (max ${MAX_FILE_BYTES} bytes).` };
         }
         const isNew = !(path in files);
+        if (!isNew && !options.allowExistingFileRewrite) {
+          return {
+            error:
+              "Existing files are protected from whole-file replacement for this request. " +
+              "Read the file and use replace_in_file with an exact, localized match.",
+          };
+        }
         if (isNew && Object.keys(files).length >= MAX_WORKSPACE_FILES) {
           return { error: `Workspace is at the ${MAX_WORKSPACE_FILES}-file limit.` };
         }

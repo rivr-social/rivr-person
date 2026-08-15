@@ -216,6 +216,9 @@ main { max-width: 64rem; margin: 0 auto; padding: 4rem 1.5rem; }
 `,
 };
 
+const BUILDER_CHAT_STORAGE_PREFIX = "rivr_builder_chat_v1";
+const MAX_STORED_BUILDER_MESSAGES = 40;
+
 // ---------------------------------------------------------------------------
 // Chat message types
 // ---------------------------------------------------------------------------
@@ -512,6 +515,36 @@ export default function BuilderPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const hydratedChatKeyRef = useRef<string | null>(null);
+  const builderChatStorageKey = `${BUILDER_CHAT_STORAGE_PREFIX}:${targetWorkspaceId}:${workspaceBasePath}`;
+
+  // Keep a separate conversation for each selected app/site. File contents are
+  // deliberately excluded—the workspace itself remains the source of truth.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(builderChatStorageKey);
+      const stored = raw ? JSON.parse(raw) as Array<Omit<ChatMessage, "timestamp"> & { timestamp: string }> : [];
+      setMessages(stored.length > 0
+        ? stored.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }))
+        : [{ id: "welcome", role: "assistant", content: WELCOME_MESSAGE, timestamp: new Date() }]);
+    } catch {
+      setMessages([{ id: "welcome", role: "assistant", content: WELCOME_MESSAGE, timestamp: new Date() }]);
+    }
+    queueMicrotask(() => { hydratedChatKeyRef.current = builderChatStorageKey; });
+  }, [builderChatStorageKey]);
+
+  useEffect(() => {
+    if (hydratedChatKeyRef.current !== builderChatStorageKey) return;
+    try {
+      const stored = messages
+        .filter((message) => message.id !== "welcome")
+        .slice(-MAX_STORED_BUILDER_MESSAGES)
+        .map(({ files: _files, ...message }) => message);
+      localStorage.setItem(builderChatStorageKey, JSON.stringify(stored));
+    } catch {
+      // Storage can be unavailable in privacy-restricted browsers.
+    }
+  }, [builderChatStorageKey, messages]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -624,88 +657,16 @@ export default function BuilderPage() {
     [applyLoadedFiles],
   );
 
-  // Reload sovereign / default site files
-  const reloadDefaultFiles = useCallback(async () => {
-    try {
-      const liveResponse = await fetch("/api/builder/live-files", {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (liveResponse.ok) {
-        const liveData = (await liveResponse.json()) as {
-          files?: SiteFiles;
-          fileCount?: number;
-        };
-        if (liveData.files && liveData.fileCount && liveData.fileCount > 0) {
-          applyLoadedFiles(liveData.files);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `default-reload-${Date.now()}`,
-              role: "assistant",
-              content: `Switched back to sovereign site. Loaded ${liveData.fileCount} live files.`,
-              timestamp: new Date(),
-            },
-          ]);
-          return;
-        }
-      }
-    } catch {
-      // Live files not available
-    }
-
-    // Fallback: try latest version snapshot
-    try {
-      const versionsResponse = await fetch("/api/builder/versions", {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (versionsResponse.ok) {
-        const versionsData = (await versionsResponse.json()) as {
-          versions?: Array<{ id: string; versionNumber: number; fileCount: number }>;
-        };
-        if (versionsData.versions && versionsData.versions.length > 0 && versionsData.versions[0].fileCount > 0) {
-          const latestVersion = versionsData.versions[0];
-          const restoreResponse = await fetch(`/api/builder/versions/${latestVersion.id}/restore`, {
-            method: "POST",
-            credentials: "same-origin",
-          });
-          if (restoreResponse.ok) {
-            const restoreData = (await restoreResponse.json()) as { files?: SiteFiles };
-            if (restoreData.files && Object.keys(restoreData.files).length > 0) {
-              applyLoadedFiles(restoreData.files);
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `default-version-reload-${Date.now()}`,
-                  role: "assistant",
-                  content: `Switched back to sovereign site. Restored ${Object.keys(restoreData.files!).length} files from latest version.`,
-                  timestamp: new Date(),
-                },
-              ]);
-            }
-          }
-        }
-      }
-    } catch {
-      // Version loading failed
-    }
-  }, [applyLoadedFiles]);
-
   // Handle workspace target change
   const handleWorkspaceChange = useCallback(
     (wsId: string) => {
       setTargetWorkspaceId(wsId);
-      if (wsId !== WORKSPACE_TARGET_DEFAULT) {
-        clearLoadedFiles("");
-        void loadWorkspaceFiles(wsId, workspaceBasePath);
-      } else {
-        void reloadDefaultFiles();
-      }
+      // Clearing lets the single loader effect below handle both default and
+      // app workspaces. Calling a loader here as well caused duplicate loads
+      // and duplicate assistant messages for empty workspaces.
+      clearLoadedFiles("");
     },
-    [clearLoadedFiles, loadWorkspaceFiles, reloadDefaultFiles, workspaceBasePath],
+    [clearLoadedFiles],
   );
 
   // Create new app workspace handler

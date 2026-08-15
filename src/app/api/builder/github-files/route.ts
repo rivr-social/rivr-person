@@ -4,7 +4,6 @@ import {
   getGitHubConnection,
   fetchFilesFromGitHub,
 } from "@/lib/deploy/github-deploy";
-import { getDeployCapability } from "@/lib/deploy/capability";
 
 export const dynamic = "force-dynamic";
 
@@ -29,16 +28,6 @@ export async function GET() {
     return NextResponse.json(
       { error: "Authentication required" },
       { status: STATUS_UNAUTHORIZED, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
-    );
-  }
-
-  const capability = getDeployCapability();
-
-  // Sovereign instances deploy directly — no GitHub repo to pull from
-  if (capability.isSovereign) {
-    return NextResponse.json(
-      { files: null, fileCount: 0, source: "sovereign" },
-      { status: STATUS_OK, headers: { "Cache-Control": CACHE_CONTROL_NO_STORE } },
     );
   }
 
