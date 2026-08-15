@@ -498,25 +498,31 @@ def deploy_static(app_id: str, manifest: dict, request: dict) -> None:
     domains = load_verified_domains(app_id)
     old_containers = list_app_containers(app_id)
     name = container_name(app_id, release)
-    if name not in old_containers:
-        run_result = docker([
-            "run", "-d", "--name", name,
-            *hardening_flags(manifest["resourceClass"]),
-            # nginx master must chown its temp dirs and setuid to the worker
-            # user — the same three caps the proven camalot-site lane grants.
-            "--cap-add", "CHOWN", "--cap-add", "SETGID", "--cap-add", "SETUID",
-            "--read-only",
-            "--tmpfs", "/var/cache/nginx:size=16m,mode=0755",
-            "--tmpfs", "/var/run:size=1m,mode=0755",
-            "--tmpfs", "/tmp:size=8m,mode=1777",
-            "-v", f"{app_root}:/srv/app:ro",
-            "-v", f"{conf_path}:/etc/nginx/conf.d/default.conf:ro",
-            *traefik_labels(app_id, release, 80, domains),
-            "nginx:alpine",
-        ], timeout=180)
-        if run_result.returncode != 0:
-            raise BrokerError(f"Failed to start static container: {run_result.stderr[-500:]}")
-        remove_containers([c for c in old_containers if c != name])
+    # A lifecycle `start` is also the route-refresh primitive used after a
+    # custom-domain bind. Docker labels are immutable, so merely starting the
+    # existing same-release container cannot apply its new Host rule. Recreate
+    # that container even when the source digest/release did not change.
+    if name in old_containers:
+        docker(["rm", "-f", name], timeout=60)
+        old_containers.remove(name)
+    run_result = docker([
+        "run", "-d", "--name", name,
+        *hardening_flags(manifest["resourceClass"]),
+        # nginx master must chown its temp dirs and setuid to the worker
+        # user — the same three caps the proven camalot-site lane grants.
+        "--cap-add", "CHOWN", "--cap-add", "SETGID", "--cap-add", "SETUID",
+        "--read-only",
+        "--tmpfs", "/var/cache/nginx:size=16m,mode=0755",
+        "--tmpfs", "/var/run:size=1m,mode=0755",
+        "--tmpfs", "/tmp:size=8m,mode=1777",
+        "-v", f"{app_root}:/srv/app:ro",
+        "-v", f"{conf_path}:/etc/nginx/conf.d/default.conf:ro",
+        *traefik_labels(app_id, release, 80, domains),
+        "nginx:alpine",
+    ], timeout=180)
+    if run_result.returncode != 0:
+        raise BrokerError(f"Failed to start static container: {run_result.stderr[-500:]}")
+    remove_containers(old_containers)
 
     prune_releases(app_id)
     write_status(
@@ -756,13 +762,8 @@ def action_stop(app_id: str, request: dict) -> None:
 
 def action_start(app_id: str, request: dict) -> None:
     """(Re)start the current release; refreshes routes via a fresh deploy of
-    the CURRENT artifacts when the container set is gone."""
-    containers = list_app_containers(app_id)
-    if containers:
-        for name in containers:
-            docker(["start", name], timeout=90)
-        write_status(app_id, "running", request)
-        return
+    the CURRENT artifacts. Route labels are immutable, so this always recreates
+    the live container rather than only starting an existing one."""
     manifest = load_manifest(app_id)
     if manifest["runtime"] == "static":
         deploy_static(app_id, manifest, request)
