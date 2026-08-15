@@ -442,6 +442,31 @@ function mergeWorkspaces(base: AgentWorkspace[], overlay: AgentWorkspace[]) {
   return sortWorkspaces(Array.from(byId.values()));
 }
 
+async function applyWorkspaceCanonicalHosts(
+  workspaces: AgentWorkspace[],
+): Promise<AgentWorkspace[]> {
+  return Promise.all(
+    workspaces.map(async (workspace) => {
+      if (workspace.scope !== "app") return workspace;
+      const cnamePath = path.join(workspace.cwd, "CNAME");
+      if (!existsSync(cnamePath)) return workspace;
+      try {
+        const hostname = (await readFile(cnamePath, "utf8")).trim().toLowerCase();
+        if (
+          hostname.length > 0 &&
+          hostname.length <= 253 &&
+          /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)
+        ) {
+          return { ...workspace, liveSubdomain: hostname };
+        }
+      } catch {
+        // Keep the registry/discovery hostname when CNAME is unreadable.
+      }
+      return workspace;
+    }),
+  );
+}
+
 function normalizeMetadata(input?: Partial<AgentSessionMetadata>): AgentSessionMetadata {
   const kgScopeSet = Array.isArray(input?.kgScopeSet)
     ? Array.from(
@@ -783,7 +808,7 @@ export async function discoverAgentProjects(): Promise<AgentWorkspace[]> {
 
   if (!existsSync(APP_WORKSPACE_ROOT)) {
     const registry = await loadWorkspaceRegistry();
-    return mergeWorkspaces(discovered, registry.workspaces);
+    return applyWorkspaceCanonicalHosts(mergeWorkspaces(discovered, registry.workspaces));
   }
 
   const entries = await readdir(APP_WORKSPACE_ROOT, { withFileTypes: true });
@@ -830,7 +855,9 @@ export async function discoverAgentProjects(): Promise<AgentWorkspace[]> {
   }
 
   const registry = await loadWorkspaceRegistry();
-  const merged = mergeWorkspaces(discovered, registry.workspaces);
+  const merged = await applyWorkspaceCanonicalHosts(
+    mergeWorkspaces(discovered, registry.workspaces),
+  );
   if (JSON.stringify(registry.workspaces) !== JSON.stringify(merged)) {
     await saveWorkspaceRegistry(merged);
   }

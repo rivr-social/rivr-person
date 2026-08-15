@@ -75,6 +75,44 @@ describe("makeBuilderToolset", () => {
     expect(await toolset.executeTool("nonsense", {})).toHaveProperty("error");
   });
 
+  it("makes exact surgical replacements without rewriting the rest of a CSS file", async () => {
+    const css = ":root { --bg-color: #080808; }\nbody { background: var(--bg-color); }\n";
+    const toolset = makeBuilderToolset({ "index.html": "<html></html>", "style.css": css }, noopPublish);
+
+    expect(
+      await toolset.executeTool("replace_in_file", {
+        path: "style.css",
+        old_text: "--bg-color: #080808;",
+        new_text: "--bg-color: #234567;",
+      }),
+    ).toMatchObject({ ok: true, replacements: 1 });
+    expect(toolset.getFiles()["style.css"]).toBe(
+      css.replace("--bg-color: #080808;", "--bg-color: #234567;"),
+    );
+    expect(toolset.getChangedPaths()).toEqual(["style.css"]);
+  });
+
+  it("rejects missing or ambiguous surgical replacements", async () => {
+    const toolset = makeBuilderToolset(
+      { "index.html": "<p>same</p><p>same</p>", "style.css": "body{}" },
+      noopPublish,
+    );
+    expect(
+      await toolset.executeTool("replace_in_file", {
+        path: "index.html",
+        old_text: "missing",
+        new_text: "new",
+      }),
+    ).toHaveProperty("error");
+    expect(
+      await toolset.executeTool("replace_in_file", {
+        path: "index.html",
+        old_text: "same",
+        new_text: "new",
+      }),
+    ).toHaveProperty("error");
+  });
+
   it("protects index.html and enforces size/count caps", async () => {
     const toolset = makeBuilderToolset(BASE, noopPublish);
     expect(await toolset.executeTool("delete_file", { path: "index.html" })).toHaveProperty(

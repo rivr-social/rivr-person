@@ -27,6 +27,14 @@ import { makeBuilderToolset } from "@/lib/builder/assistant-tools";
 import { deploySiteAsApp, SiteAppBridgeError } from "@/lib/builder/site-app-bridge";
 import { AppLifecycleError } from "@/lib/builder/app-lifecycle";
 import { assertAgentHqAccess } from "@/lib/agent-hq";
+import {
+  queueWorkspaceDeployment,
+  resolveBuilderWorkspace,
+  waitForWorkspaceDeployment,
+  writeWorkspaceSiteFiles,
+  type WorkspaceDeployRequest,
+  type WorkspaceDeployResult,
+} from "@/lib/builder/workspace-site";
 import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
 import { resolveClaudeCodeConnectorToken } from "@/lib/autobot-connector-secrets";
 import {
@@ -41,29 +49,48 @@ export const maxDuration = 120;
 
 const MAX_HISTORY_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 4000;
+const EDIT_INTENT_RE = /\b(add|adjust|change|create|delete|edit|fix|make|modify|remove|rename|replace|set|update)\b/i;
 
 interface BuilderAssistantBody {
   message?: string;
   history?: Array<{ role?: string; content?: string }>;
   /** The builder page's CURRENT workspace — the map the assistant edits. */
   files?: SiteFiles;
+  target?: {
+    workspaceId?: string;
+    basePath?: string;
+  };
 }
 
-function buildSystemPrompt(isPublished: boolean): string {
+function buildSystemPrompt(
+  isPublished: boolean,
+  target?: { label: string; basePath: string; liveSubdomain?: string | null },
+): string {
   return [
-    "You are the site-builder assistant on this person's RIVR instance. You",
-    "edit their static site workspace using the provided tools.",
+    "You are the builder assistant on this person's RIVR instance. You edit",
+    "the selected site or app workspace using the provided tools.",
+    target
+      ? `- Your selected target is ${target.label}${target.basePath ? ` at ${target.basePath}` : ""}${target.liveSubdomain ? `, live at https://${target.liveSubdomain}/` : ""}.`
+      : "- Your selected target is the person's default sovereign site.",
     "",
     "Rules:",
     "- Start by calling list_files, and read_file before editing anything.",
-    "- write_file replaces the ENTIRE file — always write complete contents.",
+    "- Prefer replace_in_file for localized CSS, copy, and code changes.",
+    "- write_file replaces the ENTIRE file; use it only when creating a file",
+    "  or when a full rewrite is genuinely needed.",
+    "- For visual CSS requests, inspect the cascade and variables, change the",
+    "  declaration that actually controls the rendered element, then read the",
+    "  changed area again to verify it.",
     "- Keep the site's existing structure and style unless asked to change it.",
     "- NEVER call publish_site or deploy_site_environment unless the operator",
     "  explicitly asked to publish or deploy in this conversation turn. Edits",
     "  are previewed first.",
     "- Never announce an edit and stop: if you say you are changing a file,",
     "  complete the write_file call in this SAME turn.",
-    "- publish_site updates the instance-served site; deploy_site_environment",
+    target
+      ? "- publish_site saves the CURRENT files to the selected workspace and queues that exact app/site for deployment."
+      : "- publish_site updates the person's default instance-served site.",
+    "- deploy_site_environment",
     "  ships the workspace as its OWN static-app environment (own container +",
     "  hostname) via the app broker — use it when the operator asks to deploy",
     "  the site as its own app/environment.",
@@ -86,6 +113,11 @@ function sanitizeHistory(history: BuilderAssistantBody["history"]): HistoryMessa
     )
     .slice(-MAX_HISTORY_LENGTH)
     .map((entry) => ({ role: entry.role as "user" | "assistant", content: entry.content }));
+}
+
+function requestsWorkspaceEdit(message: string): boolean {
+  if (/^\s*(how|what|where|why)\b/i.test(message)) return false;
+  return EDIT_INTENT_RE.test(message);
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -119,7 +151,23 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const publication = await getSitePublication(owner.agentId).catch(() => null);
+    const targetWorkspaceId = body.target?.workspaceId?.trim() ?? "";
+    const targetBasePath = body.target?.basePath?.trim() ?? "";
+    let targetWorkspace: Awaited<ReturnType<typeof resolveBuilderWorkspace>> = null;
+    if (targetWorkspaceId) {
+      await assertAgentHqAccess();
+      targetWorkspace = await resolveBuilderWorkspace(targetWorkspaceId);
+      if (!targetWorkspace) {
+        return NextResponse.json(
+          { error: "The selected builder workspace is unavailable." },
+          { status: STATUS_BAD_REQUEST },
+        );
+      }
+    }
+
+    const publication = targetWorkspace
+      ? null
+      : await getSitePublication(owner.agentId).catch(() => null);
 
     // Same credential resolution as the generator chat: the owner's Claude
     // Code connector token when connected; native-chat falls back to env.
@@ -128,7 +176,24 @@ export async function POST(request: Request): Promise<NextResponse> {
       autobotSettings.connections,
     );
 
+    let workspaceDeployment: {
+      request: WorkspaceDeployRequest;
+      result: WorkspaceDeployResult | null;
+    } | null = null;
     const toolset = makeBuilderToolset(baseFiles, async (files) => {
+      if (targetWorkspace) {
+        await writeWorkspaceSiteFiles(targetWorkspace, files, targetBasePath);
+        const deployRequest = await queueWorkspaceDeployment(targetWorkspace);
+        workspaceDeployment = { request: deployRequest, result: null };
+        return {
+          requestId: deployRequest.requestId,
+          status: "queued",
+          target: targetWorkspace.label,
+          url: targetWorkspace.liveSubdomain
+            ? `https://${targetWorkspace.liveSubdomain}/`
+            : undefined,
+        };
+      }
       const result = await publishSite(owner.agentId, files, {
         commitMessage: "Published from the builder assistant",
       });
@@ -138,7 +203,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     // Own-environment deploy tool (broker lane). Offered only when the caller
     // holds agent-hq access — the same gate as /api/builder/apps.
     let environmentDeployed: { appId: string; requestId: string } | null = null;
-    const canUseAppLane = await assertAgentHqAccess()
+    const canUseAppLane = !targetWorkspace && await assertAgentHqAccess()
       .then(() => true)
       .catch(() => false);
     const deployTool = {
@@ -184,26 +249,87 @@ export async function POST(request: Request): Promise<NextResponse> {
       return toolset.executeTool(name, input);
     };
 
-    const chat = await nativeCloudChat({
+    const cleanHistory = sanitizeHistory(body.history);
+    let chat = await nativeCloudChat({
       selectedModel: DEFAULT_MODEL,
-      systemPrompt: buildSystemPrompt(publication?.publishedVersionNumber != null),
-      history: sanitizeHistory(body.history),
+      systemPrompt: buildSystemPrompt(
+        publication?.publishedVersionNumber != null,
+        targetWorkspace
+          ? {
+              label: targetWorkspace.label,
+              basePath: targetBasePath,
+              liveSubdomain: targetWorkspace.liveSubdomain,
+            }
+          : undefined,
+      ),
+      history: cleanHistory,
       message,
       connectorToken: claudeConnectorToken ?? undefined,
       tools,
       executeTool,
     });
 
+    // A builder assistant that merely narrates an explicitly requested edit is
+    // not a successful turn. Give the model one bounded corrective pass over
+    // the same working copy; the path jail and publish gate remain unchanged.
+    if (
+      requestsWorkspaceEdit(message) &&
+      toolset.getChangedPaths().length === 0 &&
+      !toolset.wasPublished() &&
+      !environmentDeployed
+    ) {
+      const firstReply = chat.reply;
+      const firstToolCalls = chat.toolCalls ?? [];
+      const retry = await nativeCloudChat({
+        selectedModel: DEFAULT_MODEL,
+        systemPrompt: buildSystemPrompt(
+          publication?.publishedVersionNumber != null,
+          targetWorkspace
+            ? {
+                label: targetWorkspace.label,
+                basePath: targetBasePath,
+                liveSubdomain: targetWorkspace.liveSubdomain,
+              }
+            : undefined,
+        ),
+        history: [
+          ...cleanHistory,
+          { role: "user", content: message },
+          { role: "assistant", content: firstReply },
+        ],
+        message:
+          "You described the requested change but did not modify a file. Use the workspace tools now, verify the edit, and then summarize the completed change.",
+        connectorToken: claudeConnectorToken ?? undefined,
+        tools,
+        executeTool,
+      });
+      chat = {
+        ...retry,
+        toolCalls: [...firstToolCalls, ...(retry.toolCalls ?? [])],
+      };
+    }
+
     const published = toolset.wasPublished();
+    const completedWorkspaceDeployment = workspaceDeployment as {
+      request: WorkspaceDeployRequest;
+      result: WorkspaceDeployResult | null;
+    } | null;
+    if (completedWorkspaceDeployment && targetWorkspace) {
+      completedWorkspaceDeployment.result = await waitForWorkspaceDeployment(
+        targetWorkspace,
+        completedWorkspaceDeployment.request.requestId,
+      );
+    }
     return NextResponse.json(
       {
         reply: chat.reply,
         files: toolset.getFiles(),
         changedPaths: toolset.getChangedPaths(),
         published,
-        publication: published
+        publication: published && !targetWorkspace
           ? await getSitePublication(owner.agentId).catch(() => publication)
           : publication,
+        workspaceDeployment: completedWorkspaceDeployment,
         environmentDeployed,
         toolCalls: chat.toolCalls ?? [],
       },

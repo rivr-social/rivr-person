@@ -104,6 +104,41 @@ const DEPLOY_STATUS_SUCCESS: DeployStatus = "success";
 const DEPLOY_STATUS_ERROR: DeployStatus = "error";
 
 const DEPLOY_STATUS_RESET_DELAY_MS = 5000;
+const WORKSPACE_DEPLOY_TIMEOUT_MS = 45_000;
+
+interface WorkspaceDeployResult {
+  requestId?: string;
+  status?: string;
+  fileCount?: number;
+  url?: string;
+  error?: string;
+}
+
+async function waitForWorkspaceDeployResult(
+  workspaceId: string,
+  requestId: string,
+): Promise<WorkspaceDeployResult> {
+  const deadline = Date.now() + WORKSPACE_DEPLOY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const response = await fetch(
+      `/api/builder/workspace-deploy?workspaceId=${encodeURIComponent(workspaceId)}`,
+      { credentials: "same-origin", cache: "no-store" },
+    );
+    const data = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+      result?: WorkspaceDeployResult | null;
+    };
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Could not verify the workspace deployment.");
+    }
+    if (data.result?.requestId === requestId) return data.result;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  throw new Error(
+    "The deployment is still queued after 45 seconds. The files were saved, but the release worker has not confirmed it yet.",
+  );
+}
 
 const WELCOME_MESSAGE =
   "I'm your AI site builder. I have your Rivr profile data and can build anything you describe.\n\n" +
@@ -1339,11 +1374,25 @@ export default function BuilderPage() {
           success?: boolean;
           error?: string;
           queued?: boolean;
+          request?: { requestId?: string };
         };
         if (!deployResponse.ok || !deployData.success) {
           throw new Error(deployData.error || "Workspace files were saved, but deployment could not be queued");
         }
-        targetLabel = `${targetLabel} (deployment queued)`;
+        const requestId = deployData.request?.requestId;
+        if (!requestId) {
+          throw new Error("Workspace files were saved, but the deployment request had no id.");
+        }
+        setDeployMessage(`Waiting for ${ws?.label ?? targetWorkspaceId} release confirmation...`);
+        const result = await waitForWorkspaceDeployResult(targetWorkspaceId, requestId);
+        if (result.status === "failed") {
+          throw new Error(result.error || "The workspace release worker rejected the deployment.");
+        }
+        if (result.status !== "deployed") {
+          throw new Error(`Unexpected deployment status: ${result.status ?? "unknown"}`);
+        }
+        fileCount = result.fileCount ?? fileCount;
+        targetLabel = result.url ?? ws?.liveSubdomain ?? targetLabel;
       } else {
         // Default sovereign deploy
         const response = await fetch("/api/builder/deploy", {
@@ -3066,9 +3115,40 @@ export default function BuilderPage() {
                   <BuilderAssistantPanel
                     siteFiles={siteFiles}
                     onFiles={applyLoadedFiles}
-                    onPublished={() => {
-                      setDeployStatus(DEPLOY_STATUS_SUCCESS);
-                      setDeployMessage("Published by the assistant.");
+                    target={targetWorkspaceId !== WORKSPACE_TARGET_DEFAULT
+                      ? (() => {
+                          const workspace = workspaces.find((item) => item.id === targetWorkspaceId);
+                          return workspace
+                            ? {
+                                workspaceId: workspace.id,
+                                basePath: workspaceBasePath || undefined,
+                                label: workspace.label,
+                                liveSubdomain: workspace.liveSubdomain,
+                              }
+                            : undefined;
+                        })()
+                      : undefined}
+                    onPublished={(payload) => {
+                      const data = payload as {
+                        workspaceDeployment?: {
+                          result?: WorkspaceDeployResult | null;
+                        } | null;
+                      };
+                      const result = data.workspaceDeployment?.result;
+                      if (result?.status === "failed") {
+                        setDeployStatus(DEPLOY_STATUS_ERROR);
+                        setDeployMessage(result.error || "Assistant deployment failed.");
+                      } else if (data.workspaceDeployment && !result) {
+                        setDeployStatus(DEPLOY_STATUS_DEPLOYING);
+                        setDeployMessage("Assistant deployment is queued; confirmation is still pending.");
+                      } else {
+                        setDeployStatus(DEPLOY_STATUS_SUCCESS);
+                        setDeployMessage(
+                          result?.url
+                            ? `Deployed by the assistant to ${result.url}`
+                            : "Published by the assistant.",
+                        );
+                      }
                     }}
                   />
                   <div className="border-t pt-6">

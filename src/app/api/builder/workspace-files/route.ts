@@ -5,6 +5,10 @@ import {
   discoverAgentProjects,
   type AgentWorkspace,
 } from "@/lib/agent-hq";
+import {
+  resolveWorkspaceWriteRoot,
+  writeWorkspaceSiteFiles,
+} from "@/lib/builder/workspace-site";
 
 export const dynamic = "force-dynamic";
 
@@ -95,14 +99,16 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   try {
     const { readFileSync, readdirSync, statSync, existsSync } = await import("fs");
-    const { join, extname, relative, resolve } = await import("path");
+    const { join, extname, relative } = await import("path");
 
-    const scanRoot = basePath
-      ? resolve(workspace.cwd, basePath.replace(/\.\./g, "").replace(/^\//, ""))
-      : workspace.cwd;
-
-    if (!scanRoot.startsWith(resolve(workspace.cwd))) {
-      return jsonError("basePath escapes workspace boundary", STATUS_BAD_REQUEST);
+    let scanRoot: string;
+    try {
+      scanRoot = resolveWorkspaceWriteRoot(workspace, basePath);
+    } catch (error) {
+      return jsonError(
+        error instanceof Error ? error.message : "Invalid basePath",
+        STATUS_BAD_REQUEST,
+      );
     }
 
     if (!existsSync(scanRoot)) {
@@ -245,35 +251,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const { writeFileSync, mkdirSync, existsSync } = await import("fs");
-    const { join, dirname, resolve } = await import("path");
-
-    const writeRoot = body.basePath
-      ? resolve(workspace.cwd, body.basePath.replace(/\.\./g, "").replace(/^\//, ""))
-      : workspace.cwd;
-
-    if (!writeRoot.startsWith(resolve(workspace.cwd))) {
-      return jsonError("basePath escapes workspace boundary", STATUS_BAD_REQUEST);
-    }
-
-    let filesWritten = 0;
-
-    for (const [filePath, content] of Object.entries(body.files)) {
-      const sanitized = filePath.replace(/\.\./g, "").replace(/^\//, "");
-      const fullPath = join(writeRoot, sanitized);
-
-      // Ensure target stays within workspace
-      if (!fullPath.startsWith(resolve(workspace.cwd))) {
-        continue;
-      }
-
-      const dir = dirname(fullPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      writeFileSync(fullPath, content, "utf-8");
-      filesWritten++;
-    }
+    const { filesWritten } = await writeWorkspaceSiteFiles(
+      workspace,
+      body.files,
+      body.basePath ?? "",
+    );
 
     return NextResponse.json(
       {

@@ -28,12 +28,17 @@ export const MAX_WORKSPACE_BYTES = 2_000_000;
 /** Extensions a generated static site may contain — the write allowlist. */
 export const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set([
   "html",
+  "htm",
   "css",
   "js",
   "json",
   "svg",
   "txt",
   "xml",
+  "md",
+  "ts",
+  "tsx",
+  "jsx",
 ]);
 
 const SEGMENT_RE = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -91,7 +96,7 @@ export interface BuilderToolsetResult {
  */
 export function makeBuilderToolset(
   initialFiles: SiteFiles,
-  publish: (files: SiteFiles) => Promise<{ versionNumber: number }>,
+  publish: (files: SiteFiles) => Promise<Record<string, unknown>>,
 ): BuilderToolsetResult {
   const files: SiteFiles = { ...initialFiles };
   const changed: string[] = [];
@@ -128,6 +133,28 @@ export function makeBuilderToolset(
           content: { type: "string", description: "The complete new file contents." },
         },
         required: ["path", "content"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "replace_in_file",
+      description:
+        "Make a surgical exact-text replacement in an existing file. Prefer this over write_file for a localized CSS, copy, or code change so the rest of the file remains byte-for-byte intact.",
+      input_schema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          old_text: {
+            type: "string",
+            description: "Exact text currently in the file. Include enough surrounding context to make it unique.",
+          },
+          new_text: { type: "string", description: "Replacement text." },
+          replace_all: {
+            type: "boolean",
+            description: "Replace every match. Defaults to false and requires exactly one match.",
+          },
+        },
+        required: ["path", "old_text", "new_text"],
         additionalProperties: false,
       },
     },
@@ -188,6 +215,50 @@ export function makeBuilderToolset(
         return { ok: true, path, bytes: Buffer.byteLength(content, "utf8") };
       }
 
+      case "replace_in_file": {
+        const pathError = validateSitePath(input.path);
+        if (pathError) return { error: pathError };
+        const path = input.path as string;
+        const oldText = input.old_text;
+        const newText = input.new_text;
+        if (typeof oldText !== "string" || oldText.length === 0) {
+          return { error: "old_text must be a non-empty string." };
+        }
+        if (typeof newText !== "string") return { error: "new_text must be a string." };
+        const current = files[path];
+        if (typeof current !== "string") return { error: "No such file." };
+
+        const matches = current.split(oldText).length - 1;
+        if (matches === 0) {
+          return { error: "old_text was not found. Read the file again and use an exact match." };
+        }
+        const replaceAll = input.replace_all === true;
+        if (!replaceAll && matches !== 1) {
+          return {
+            error: `old_text matched ${matches} times. Add surrounding context or set replace_all to true.`,
+          };
+        }
+        const next = replaceAll
+          ? current.split(oldText).join(newText)
+          : current.replace(oldText, newText);
+        if (Buffer.byteLength(next, "utf8") > MAX_FILE_BYTES) {
+          return { error: `File too large (max ${MAX_FILE_BYTES} bytes).` };
+        }
+        const nextTotal =
+          totalBytes() - Buffer.byteLength(current, "utf8") + Buffer.byteLength(next, "utf8");
+        if (nextTotal > MAX_WORKSPACE_BYTES) {
+          return { error: `Workspace would exceed ${MAX_WORKSPACE_BYTES} bytes.` };
+        }
+        files[path] = next;
+        changed.push(path);
+        return {
+          ok: true,
+          path,
+          replacements: replaceAll ? matches : 1,
+          bytes: Buffer.byteLength(next, "utf8"),
+        };
+      }
+
       case "delete_file": {
         const pathError = validateSitePath(input.path);
         if (pathError) return { error: pathError };
@@ -205,7 +276,7 @@ export function makeBuilderToolset(
         }
         const result = await publish({ ...files });
         published = true;
-        return { ok: true, versionNumber: result.versionNumber };
+        return { ok: true, ...result };
       }
 
       default:
