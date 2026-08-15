@@ -7,6 +7,7 @@ import {
   ANTHROPIC_OAUTH_BETA,
   ANTHROPIC_VERSION,
   CLAUDE_CODE_IDENTITY,
+  DEFAULT_MODEL,
   resolveClaudeOAuthToken,
 } from "@/lib/ai/native-chat";
 
@@ -21,7 +22,10 @@ const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
-const ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
+// Keep the streaming builder on the same supported Claude model as every
+// other assistant surface. A separately hard-coded legacy model left Builder
+// in template mode after Anthropic retired that identifier.
+const ANTHROPIC_MODEL = DEFAULT_MODEL.replace(/^anthropic\//, "");
 const OPENAI_MODEL = "gpt-4o";
 const GEMINI_MODEL = "gemini-2.0-flash";
 

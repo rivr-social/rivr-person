@@ -57,13 +57,15 @@ APPS_ROOT = Path("/opt/rivr-apps")
 TRASH_ROOT = APPS_ROOT / ".trash"
 LOCK_PATH = Path("/run/lock/rivr-app-broker.lock")
 
-BASE_DOMAIN = "camalot.me"
-PROXY_NETWORK = "pmdl_proxy-external"
-DB_NETWORK = "pmdl_db-internal"
-TRAEFIK_ENTRYPOINT = "websecure"
-TRAEFIK_CERTRESOLVER = "letsencrypt"
-POSTGRES_CONTAINER = "pmdl_postgres"
-POSTGRES_SECRET_FILE = Path("/opt/pm-core/secrets/postgres_password")
+BASE_DOMAIN = os.environ.get("RIVR_APP_BASE_DOMAIN", "camalot.me").strip().lower()
+PROXY_NETWORK = os.environ.get("RIVR_APP_PROXY_NETWORK", "pmdl_proxy-external")
+DB_NETWORK = os.environ.get("RIVR_APP_DB_NETWORK", "pmdl_db-internal")
+TRAEFIK_ENTRYPOINT = os.environ.get("RIVR_APP_TRAEFIK_ENTRYPOINT", "websecure")
+TRAEFIK_CERTRESOLVER = os.environ.get("RIVR_APP_TRAEFIK_CERTRESOLVER", "letsencrypt")
+POSTGRES_CONTAINER = os.environ.get("RIVR_APP_POSTGRES_CONTAINER", "pmdl_postgres")
+POSTGRES_SECRET_FILE = Path(
+    os.environ.get("RIVR_APP_POSTGRES_SECRET_FILE", "/opt/pm-core/secrets/postgres_password")
+)
 
 CONTAINER_PREFIX = "pmdl_app_"
 IMAGE_PREFIX = "rivr-app-"

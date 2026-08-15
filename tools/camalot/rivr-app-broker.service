@@ -7,6 +7,7 @@ Requires=docker.service
 Type=oneshot
 User=root
 Group=root
+EnvironmentFile=-/etc/rivr-app-broker.env
 ExecStart=/usr/local/libexec/rivr-app-broker.py
 # The broker itself is a thin orchestrator; builds run inside the capped
 # BuildKit container and app workloads inside their own capped containers,
