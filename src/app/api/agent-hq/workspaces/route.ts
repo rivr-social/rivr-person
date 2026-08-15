@@ -82,7 +82,9 @@ export async function POST(request: Request) {
   // Sanitize name for directory usage
   const safeName = name
     .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "-")
+    // Keep this identical to the app-broker id grammar so every workspace
+    // created here can actually be deployed through /api/builder/site-app.
+    .replace(/[^a-z0-9-]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 

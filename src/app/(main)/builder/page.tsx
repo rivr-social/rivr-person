@@ -87,6 +87,7 @@ interface BuilderWorkspace {
   scope: string;
   cwd: string;
   liveSubdomain?: string | null;
+  deployRoot?: string | null;
 }
 
 /** Sentinel value for the default in-memory / sovereign site target. */
@@ -137,6 +138,48 @@ async function waitForWorkspaceDeployResult(
   }
   throw new Error(
     "The deployment is still queued after 45 seconds. The files were saved, but the release worker has not confirmed it yet.",
+  );
+}
+
+async function waitForAppDeployResult(
+  appId: string,
+  requestId: string,
+): Promise<WorkspaceDeployResult> {
+  const deadline = Date.now() + WORKSPACE_DEPLOY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const response = await fetch("/api/builder/apps", {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const data = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+      apps?: Array<{
+        appId: string;
+        status?: {
+          requestId?: string;
+          phase?: string;
+          url?: string;
+          error?: string;
+        } | null;
+      }>;
+    };
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Could not verify the app deployment.");
+    }
+    const status = data.apps?.find((app) => app.appId === appId)?.status;
+    if (status?.requestId === requestId) {
+      if (status.phase === "running") {
+        return { requestId, status: "deployed", url: status.url };
+      }
+      if (status.phase === "failed") {
+        return { requestId, status: "failed", error: status.error };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  throw new Error(
+    "The app deployment is still queued after 45 seconds. Its files were saved; check the Apps tab for broker progress.",
   );
 }
 
@@ -496,6 +539,7 @@ export default function BuilderPage() {
             scope: string;
             cwd: string;
             liveSubdomain?: string | null;
+            deployRoot?: string | null;
           }>;
         };
         if (!cancelled && data.workspaces) {
@@ -1364,27 +1408,47 @@ export default function BuilderPage() {
         fileCount = data.filesWritten ?? fileCount;
         targetLabel = `${ws?.label ?? data.workspace?.label ?? targetWorkspaceId}${workspaceBasePath ? ` (${workspaceBasePath})` : ""}`;
 
-        const deployResponse = await fetch("/api/builder/workspace-deploy", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspaceId: targetWorkspaceId }),
-        });
-        const deployData = (await deployResponse.json()) as {
-          success?: boolean;
-          error?: string;
-          queued?: boolean;
-          request?: { requestId?: string };
-        };
-        if (!deployResponse.ok || !deployData.success) {
-          throw new Error(deployData.error || "Workspace files were saved, but deployment could not be queued");
+        let result: WorkspaceDeployResult;
+        if (ws?.deployRoot) {
+          const deployResponse = await fetch("/api/builder/workspace-deploy", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workspaceId: targetWorkspaceId }),
+          });
+          const deployData = (await deployResponse.json()) as {
+            success?: boolean;
+            error?: string;
+            request?: { requestId?: string };
+          };
+          if (!deployResponse.ok || !deployData.success) {
+            throw new Error(deployData.error || "Workspace files were saved, but deployment could not be queued");
+          }
+          const requestId = deployData.request?.requestId;
+          if (!requestId) {
+            throw new Error("Workspace files were saved, but the deployment request had no id.");
+          }
+          setDeployMessage(`Waiting for ${ws.label} release confirmation...`);
+          result = await waitForWorkspaceDeployResult(targetWorkspaceId, requestId);
+        } else {
+          const appId = ws?.name ?? targetWorkspaceId.replace(/^app-/, "");
+          const deployResponse = await fetch("/api/builder/site-app", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ appId, name: ws?.label ?? appId, files: siteFiles }),
+          });
+          const deployData = (await deployResponse.json()) as {
+            success?: boolean;
+            error?: string;
+            requestId?: string;
+          };
+          if (!deployResponse.ok || !deployData.success || !deployData.requestId) {
+            throw new Error(deployData.error || "Workspace files were saved, but the app broker request failed");
+          }
+          setDeployMessage(`Waiting for ${ws?.label ?? appId} app broker confirmation...`);
+          result = await waitForAppDeployResult(appId, deployData.requestId);
         }
-        const requestId = deployData.request?.requestId;
-        if (!requestId) {
-          throw new Error("Workspace files were saved, but the deployment request had no id.");
-        }
-        setDeployMessage(`Waiting for ${ws?.label ?? targetWorkspaceId} release confirmation...`);
-        const result = await waitForWorkspaceDeployResult(targetWorkspaceId, requestId);
         if (result.status === "failed") {
           throw new Error(result.error || "The workspace release worker rejected the deployment.");
         }

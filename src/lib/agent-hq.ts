@@ -820,7 +820,8 @@ export async function discoverAgentProjects(): Promise<AgentWorkspace[]> {
     const cwd = path.join(APP_WORKSPACE_ROOT, entry.name);
     const pkgPath = path.join(cwd, "package.json");
     const gitPath = path.join(cwd, ".git");
-    if (!existsSync(pkgPath) && !existsSync(gitPath)) continue;
+    const appManifestPath = path.join(cwd, "rivr-app.json");
+    if (!existsSync(pkgPath) && !existsSync(gitPath) && !existsSync(appManifestPath)) continue;
 
     try {
       const packageJson = existsSync(pkgPath)
@@ -834,7 +835,9 @@ export async function discoverAgentProjects(): Promise<AgentWorkspace[]> {
         packageName: packageJson?.name ?? null,
         scope: "app",
         description: `App workspace for ${entry.name}. Use this for source edits, local build/test, and app-scoped deploy work.`,
-        deployRoot: `/opt/${entry.name}`,
+        // Camalot is the one fixed host-release workspace. All user-created
+        // apps deploy through the typed app-broker spool instead.
+        deployRoot: entry.name === "camalot" ? "/opt/camalot" : null,
         liveSubdomain: `${entry.name}.camalot.me`,
         foundationId: "foundation-pm-core",
       });
@@ -847,7 +850,7 @@ export async function discoverAgentProjects(): Promise<AgentWorkspace[]> {
         packageName: null,
         scope: "app",
         description: `App workspace for ${entry.name}. Use this for source edits, local build/test, and app-scoped deploy work.`,
-        deployRoot: `/opt/${entry.name}`,
+        deployRoot: entry.name === "camalot" ? "/opt/camalot" : null,
         liveSubdomain: `${entry.name}.camalot.me`,
         foundationId: "foundation-pm-core",
       });

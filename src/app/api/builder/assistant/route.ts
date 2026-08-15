@@ -25,15 +25,13 @@ import { resolveBuilderOwner, isOwnerError } from "@/lib/builder/site-owner";
 import { getSitePublication, publishSite } from "@/lib/builder/site-publications";
 import { makeBuilderToolset } from "@/lib/builder/assistant-tools";
 import { deploySiteAsApp, SiteAppBridgeError } from "@/lib/builder/site-app-bridge";
-import { AppLifecycleError } from "@/lib/builder/app-lifecycle";
+import { AppLifecycleError, readAppStatus } from "@/lib/builder/app-lifecycle";
 import { assertAgentHqAccess } from "@/lib/agent-hq";
 import {
   queueWorkspaceDeployment,
   resolveBuilderWorkspace,
   waitForWorkspaceDeployment,
   writeWorkspaceSiteFiles,
-  type WorkspaceDeployRequest,
-  type WorkspaceDeployResult,
 } from "@/lib/builder/workspace-site";
 import { resolveDirectAgent } from "@/lib/assistant/resolve-direct-agent";
 import { resolveClaudeCodeConnectorToken } from "@/lib/autobot-connector-secrets";
@@ -50,6 +48,15 @@ export const maxDuration = 120;
 const MAX_HISTORY_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 4000;
 const EDIT_INTENT_RE = /\b(add|adjust|change|create|delete|edit|fix|make|modify|remove|rename|replace|set|update)\b/i;
+
+interface AssistantWorkspaceDeployment {
+  request: { requestId: string };
+  result: {
+    status: string;
+    url?: string;
+    error?: string;
+  } | null;
+}
 
 interface BuilderAssistantBody {
   message?: string;
@@ -120,6 +127,23 @@ function requestsWorkspaceEdit(message: string): boolean {
   return EDIT_INTENT_RE.test(message);
 }
 
+async function waitForAppDeployment(appId: string, requestId: string) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const status = await readAppStatus(appId);
+    if (status?.requestId === requestId) {
+      if (status.phase === "running") {
+        return { status: "deployed", url: status.url };
+      }
+      if (status.phase === "failed") {
+        return { status: "failed", error: status.error };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return null;
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const owner = await resolveBuilderOwner();
   if (isOwnerError(owner)) return owner.error;
@@ -176,15 +200,44 @@ export async function POST(request: Request): Promise<NextResponse> {
       autobotSettings.connections,
     );
 
-    let workspaceDeployment: {
-      request: WorkspaceDeployRequest;
-      result: WorkspaceDeployResult | null;
-    } | null = null;
+    let workspaceDeployment: AssistantWorkspaceDeployment | null = null;
+    let workspaceDeploymentWaiter: (() => Promise<AssistantWorkspaceDeployment["result"]>) | null = null;
     const toolset = makeBuilderToolset(baseFiles, async (files) => {
       if (targetWorkspace) {
         await writeWorkspaceSiteFiles(targetWorkspace, files, targetBasePath);
+        if (!targetWorkspace.deployRoot) {
+          const brokerRequest = await deploySiteAsApp(
+            targetWorkspace.name,
+            targetWorkspace.label,
+            files,
+          );
+          workspaceDeployment = {
+            request: { requestId: brokerRequest.requestId },
+            result: null,
+          };
+          workspaceDeploymentWaiter = () =>
+            waitForAppDeployment(brokerRequest.appId, brokerRequest.requestId);
+          return {
+            requestId: brokerRequest.requestId,
+            status: "queued",
+            target: targetWorkspace.label,
+            lane: "app-broker",
+          };
+        }
         const deployRequest = await queueWorkspaceDeployment(targetWorkspace);
-        workspaceDeployment = { request: deployRequest, result: null };
+        workspaceDeployment = {
+          request: { requestId: deployRequest.requestId },
+          result: null,
+        };
+        workspaceDeploymentWaiter = async () => {
+          const result = await waitForWorkspaceDeployment(
+            targetWorkspace!,
+            deployRequest.requestId,
+          );
+          return result
+            ? { status: result.status ?? "unknown", url: result.url, error: result.error }
+            : null;
+        };
         return {
           requestId: deployRequest.requestId,
           status: "queued",
@@ -310,15 +363,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const published = toolset.wasPublished();
-    const completedWorkspaceDeployment = workspaceDeployment as {
-      request: WorkspaceDeployRequest;
-      result: WorkspaceDeployResult | null;
-    } | null;
-    if (completedWorkspaceDeployment && targetWorkspace) {
-      completedWorkspaceDeployment.result = await waitForWorkspaceDeployment(
-        targetWorkspace,
-        completedWorkspaceDeployment.request.requestId,
-      );
+    const completedWorkspaceDeployment = workspaceDeployment as AssistantWorkspaceDeployment | null;
+    const completedWorkspaceDeploymentWaiter = workspaceDeploymentWaiter as
+      | (() => Promise<AssistantWorkspaceDeployment["result"]>)
+      | null;
+    if (completedWorkspaceDeployment && completedWorkspaceDeploymentWaiter) {
+      completedWorkspaceDeployment.result = await completedWorkspaceDeploymentWaiter();
     }
     return NextResponse.json(
       {
