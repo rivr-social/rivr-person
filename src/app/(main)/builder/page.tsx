@@ -184,14 +184,37 @@ async function waitForAppDeployResult(
 }
 
 const WELCOME_MESSAGE =
-  "I'm your AI site builder. I have your Rivr profile data and can build anything you describe.\n\n" +
+  "I'm your AI site builder. I inspect the selected workspace and make precise edits without replacing files unnecessarily.\n\n" +
   "Try something like:\n" +
   '- "Build me a dark, modern portfolio"\n' +
   '- "Make it rainbow bright with gradients"\n' +
   '- "Create a minimalist Japanese aesthetic"\n' +
   '- "Add a section for my events with a timeline layout"\n' +
   '- "Change the font to something playful"\n\n' +
-  "I'll generate complete HTML, CSS, and JS files that you can preview and deploy.";
+  "I’ll preserve the existing app unless you ask for a redesign, and every change is previewable before deploy.";
+
+const EMPTY_WORKSPACE_STARTER: SiteFiles = {
+  "index.html": `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>New Rivr App</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>New Rivr App</h1>
+    <p>Ask the Builder assistant what you want to make.</p>
+  </main>
+</body>
+</html>`,
+  "style.css": `:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; font-family: system-ui, sans-serif; }
+main { max-width: 64rem; margin: 0 auto; padding: 4rem 1.5rem; }
+`,
+};
 
 // ---------------------------------------------------------------------------
 // Chat message types
@@ -514,7 +537,7 @@ export default function BuilderPage() {
   }, []);
 
   const clearLoadedFiles = useCallback((nextSourceValue = "") => {
-    setSiteFiles({});
+    setSiteFiles((current) => Object.keys(current).length === 0 ? current : {});
     setActivePreviewFile("index.html");
     setSelectedSourceFile(null);
     setSourceEditorValue(nextSourceValue);
@@ -583,13 +606,13 @@ export default function BuilderPage() {
             },
           ]);
         } else {
-          clearLoadedFiles("");
+          applyLoadedFiles(EMPTY_WORKSPACE_STARTER);
           setMessages((prev) => [
             ...prev,
             {
               id: `ws-empty-${Date.now()}`,
               role: "assistant",
-              content: `Workspace "${data.workspace?.label ?? wsId}" is empty${basePath ? ` at ${basePath}` : ""}. Start describing the app you want and I’ll generate the first files into this workspace.`,
+              content: `Workspace "${data.workspace?.label ?? wsId}" was empty${basePath ? ` at ${basePath}` : ""}, so I added a minimal starter. Describe the app you want and I’ll inspect and edit those files in place.`,
               timestamp: new Date(),
             },
           ]);
@@ -598,7 +621,7 @@ export default function BuilderPage() {
         // Workspace file loading failed
       }
     },
-    [applyLoadedFiles, clearLoadedFiles],
+    [applyLoadedFiles],
   );
 
   // Reload sovereign / default site files
@@ -951,6 +974,8 @@ export default function BuilderPage() {
     abortRef.current = controller;
 
     let fullText = "";
+    let agenticFiles: SiteFiles | null = null;
+    let agenticChangedPaths: string[] = [];
 
     try {
       // Build optional workspace context for the system prompt
@@ -967,7 +992,39 @@ export default function BuilderPage() {
           }
         : undefined;
 
-      const response = await fetch("/api/builder/chat", {
+      // Text-only requests against an existing workspace use the same jailed,
+      // inspect-first tool loop as the Deploy assistant. The legacy streaming
+      // generator drafts whole files and is retained only for an empty first
+      // generation or image-assisted generation.
+      const useAgenticEditor = requestImages.length === 0 && Object.keys(siteFiles).length > 0;
+      if (useAgenticEditor) {
+        const response = await fetch("/api/builder/assistant", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: prompt,
+            history: conversationHistory.slice(0, -1),
+            files: siteFiles,
+            target: activeWs
+              ? { workspaceId: activeWs.id, basePath: workspaceBasePath || undefined }
+              : undefined,
+          }),
+          signal: controller.signal,
+        });
+        const data = (await response.json()) as {
+          reply?: string;
+          files?: SiteFiles;
+          changedPaths?: string[];
+          error?: string;
+        };
+        if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+        fullText = data.reply || "Done.";
+        agenticFiles = data.files ?? null;
+        agenticChangedPaths = Array.isArray(data.changedPaths) ? data.changedPaths : [];
+        setStreamingText(fullText);
+      } else {
+        const response = await fetch("/api/builder/chat", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
@@ -985,42 +1042,43 @@ export default function BuilderPage() {
           attachments: requestImages.map(({ mediaType, data }) => ({ mediaType, data })),
         }),
         signal: controller.signal,
-      });
+        });
 
-      if (!response.ok) {
-        const errorData = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(errorData.error || `Request failed (${response.status})`);
-      }
+        if (!response.ok) {
+          const errorData = (await response.json().catch(() => ({}))) as { error?: string };
+          throw new Error(errorData.error || `Request failed (${response.status})`);
+        }
 
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6).trim();
-          if (data === "[DONE]") continue;
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") continue;
 
-          try {
-            const parsed = JSON.parse(data) as { text?: string; error?: string; warning?: string };
-            if (parsed.error) {
-              fullText += `\n\n**Error**: ${parsed.error}`;
-              setStreamingText(fullText);
-            } else if (parsed.warning) {
-              fullText += `\n\n⚠️ ${parsed.warning}`;
-              setStreamingText(fullText);
-            } else if (parsed.text) {
-              fullText += parsed.text;
-              setStreamingText(fullText);
+            try {
+              const parsed = JSON.parse(data) as { text?: string; error?: string; warning?: string };
+              if (parsed.error) {
+                fullText += `\n\n**Error**: ${parsed.error}`;
+                setStreamingText(fullText);
+              } else if (parsed.warning) {
+                fullText += `\n\n⚠️ ${parsed.warning}`;
+                setStreamingText(fullText);
+              } else if (parsed.text) {
+                fullText += parsed.text;
+                setStreamingText(fullText);
+              }
+            } catch {
+              // Skip malformed SSE data
             }
-          } catch {
-            // Skip malformed SSE data
           }
         }
       }
@@ -1035,12 +1093,20 @@ export default function BuilderPage() {
     }
 
     // Parse the complete response for code blocks
-    const parsed = parseLLMResponse(fullText);
+    const parsed = agenticFiles
+      ? {
+          files: Object.fromEntries(
+            agenticChangedPaths
+              .filter((path) => typeof agenticFiles?.[path] === "string")
+              .map((path) => [path, agenticFiles![path]]),
+          ) as SiteFiles,
+        }
+      : parseLLMResponse(fullText);
 
     // Surface a truncated/unclosed code block so a silently-dropped file doesn't
     // look like success (only when the notice isn't already present from an SSE
     // warning frame).
-    if (hasUnterminatedCodeFence(fullText) && !fullText.includes(TRUNCATED_FILE_NOTICE.trim())) {
+    if (!agenticFiles && hasUnterminatedCodeFence(fullText) && !fullText.includes(TRUNCATED_FILE_NOTICE.trim())) {
       fullText += TRUNCATED_FILE_NOTICE;
     }
 
@@ -1058,8 +1124,9 @@ export default function BuilderPage() {
     abortRef.current = null;
 
     // Auto-apply files if any were generated
-    if (Object.keys(parsed.files).length > 0) {
-      setSiteFiles((prev) => mergeSiteFiles(prev, parsed.files));
+    if (agenticFiles || Object.keys(parsed.files).length > 0) {
+      if (agenticFiles) applyLoadedFiles(agenticFiles);
+      else setSiteFiles((prev) => mergeSiteFiles(prev, parsed.files));
       assistantMsg.applied = true;
 
       // Switch to preview if we got new files
@@ -1069,7 +1136,7 @@ export default function BuilderPage() {
         setActivePreviewFile("index.html");
       }
     }
-  }, [input, pendingImages, isStreaming, messages, bundle, siteFiles, targetWorkspaceId, workspaces, workspaceBasePath, dataSourcePreviews, dataSources]);
+  }, [input, pendingImages, isStreaming, messages, bundle, siteFiles, targetWorkspaceId, workspaces, workspaceBasePath, dataSourcePreviews, dataSources, applyLoadedFiles]);
 
   const handleChatPaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));

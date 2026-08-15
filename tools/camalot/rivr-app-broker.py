@@ -306,8 +306,13 @@ def load_verified_domains(app_id: str) -> list[str]:
     for domain in candidates[:MAX_CUSTOM_DOMAINS]:
         if not isinstance(domain, str) or not DOMAIN_RE.fullmatch(domain):
             continue
-        if domain == BASE_DOMAIN or domain.endswith(f".{BASE_DOMAIN}"):
-            continue  # base-domain traffic is owned by the platform site lane
+        if domain == BASE_DOMAIN:
+            continue  # apex traffic is owned by the platform site lane
+        if domain.endswith(f".{BASE_DOMAIN}") and not domain.startswith(f"{app_id}-"):
+            # Same-zone aliases must stay visibly namespaced to their owning
+            # app; this prevents one app from claiming another app's automatic
+            # `<appId>.<base>` hostname.
+            continue
         try:
             resolved = {info[4][0] for info in socket.getaddrinfo(domain, None)}
         except OSError:

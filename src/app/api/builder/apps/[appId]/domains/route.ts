@@ -20,6 +20,7 @@ import {
   normalizeCustomDomain,
   readAppDomains,
 } from "@/lib/builder/app-domains";
+import { appSubdomain } from "@/lib/builder/app-manifest";
 import {
   AppLifecycleError,
   appWorkspaceDir,
@@ -28,6 +29,8 @@ import {
 } from "@/lib/builder/app-lifecycle";
 import { APP_ID_PATTERN } from "@/lib/builder/app-manifest";
 import { isOwnerError, resolveBuilderOwner } from "@/lib/builder/site-owner";
+import { resolveDnsCredentialForOwner } from "@/lib/builder/site-publications";
+import { applyDnsRecords, planDnsRecords } from "@/lib/builder/dns-write";
 import { verifyDomainPointsToApp } from "@/lib/builder/site-host-resolve";
 import {
   STATUS_BAD_REQUEST,
@@ -41,7 +44,7 @@ export const dynamic = "force-dynamic";
 
 const CACHE_CONTROL_NO_STORE = "private, no-store, max-age=0, must-revalidate";
 
-const DOMAIN_ACTIONS = ["verify", "bind", "unbind"] as const;
+const DOMAIN_ACTIONS = ["verify", "bind", "unbind", "set-dns"] as const;
 type DomainAction = (typeof DOMAIN_ACTIONS)[number];
 
 function response(body: unknown, status = STATUS_OK) {
@@ -53,7 +56,7 @@ function response(body: unknown, status = STATUS_OK) {
 
 async function requireApp(
   context: { params: Promise<{ appId: string }> },
-): Promise<{ appId: string } | { error: NextResponse }> {
+): Promise<{ appId: string; agentId: string } | { error: NextResponse }> {
   try {
     await assertAgentHqAccess();
   } catch (error) {
@@ -76,7 +79,7 @@ async function requireApp(
       error: response({ error: `App workspace "${appId}" not found` }, STATUS_NOT_FOUND),
     };
   }
-  return { appId };
+  return { appId, agentId: owner.agentId };
 }
 
 export async function GET(
@@ -104,7 +107,7 @@ export async function POST(
   if ("error" in resolved) return resolved.error;
   const { appId } = resolved;
 
-  let body: { action?: unknown; domain?: unknown };
+  let body: { action?: unknown; domain?: unknown; provider?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -124,6 +127,23 @@ export async function POST(
   }
 
   try {
+    if (action === "set-dns") {
+      const provider = typeof body.provider === "string" ? body.provider : "";
+      if (!provider) {
+        return response({ error: "A DNS provider is required" }, STATUS_BAD_REQUEST);
+      }
+      const baseDomain = process.env.BUILDER_APPS_BASE_DOMAIN ?? process.env.DOMAIN;
+      if (!baseDomain) {
+        return response({ error: "Apps base domain is not configured" }, STATUS_INTERNAL_ERROR);
+      }
+      const credential = await resolveDnsCredentialForOwner(resolved.agentId, provider);
+      const records = planDnsRecords(domain, {
+        cnameTarget: appSubdomain(appId, baseDomain),
+      });
+      const apply = await applyDnsRecords(records, credential);
+      return response({ success: apply.ok, appId, domain, apply, records });
+    }
+
     if (action === "unbind") {
       const domains = await detachAppDomain(appId, domain);
       return response({ success: true, appId, domains });

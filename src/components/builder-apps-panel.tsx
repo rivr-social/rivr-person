@@ -100,6 +100,7 @@ export function BuilderAppsPanel() {
   const [newAppId, setNewAppId] = useState("");
   const [newRuntime, setNewRuntime] = useState<"static" | "node-22">("static");
   const [domainDrafts, setDomainDrafts] = useState<Record<string, string>>({});
+  const [dnsProviders, setDnsProviders] = useState<string[]>([]);
 
   const fetchApps = useCallback(async () => {
     try {
@@ -107,12 +108,14 @@ export function BuilderAppsPanel() {
       const data = (await response.json()) as {
         success?: boolean;
         apps?: RegisteredApp[];
+        dnsProviders?: string[];
         error?: string;
       };
       if (!response.ok || !data.success) {
         throw new Error(data.error || "Failed to load apps");
       }
       setApps(data.apps ?? []);
+      setDnsProviders(data.dnsProviders ?? []);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load apps");
@@ -208,6 +211,32 @@ export function BuilderAppsPanel() {
         await fetchApps();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Domain bind failed");
+      } finally {
+        setBusyAppId(null);
+      }
+    },
+    [domainDrafts, fetchApps],
+  );
+
+  const setDomainDns = useCallback(
+    async (appId: string, provider: string) => {
+      const domain = (domainDrafts[appId] ?? "").trim();
+      if (!domain) return;
+      setBusyAppId(appId);
+      setError(null);
+      try {
+        const response = await fetch(`/api/builder/apps/${appId}/domains`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "set-dns", domain, provider }),
+        });
+        const data = (await response.json()) as { success?: boolean; error?: string };
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || "DNS setup failed");
+        }
+        await fetchApps();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "DNS setup failed");
       } finally {
         setBusyAppId(null);
       }
@@ -482,6 +511,19 @@ export function BuilderAppsPanel() {
                       <CheckCircle2 className="h-3 w-3" />
                       Bind domain
                     </Button>
+                    {dnsProviders.map((provider) => (
+                      <Button
+                        key={provider}
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => void setDomainDns(app.appId, provider)}
+                        disabled={busy || !(domainDrafts[app.appId] ?? "").trim()}
+                      >
+                        <Globe className="h-3 w-3" />
+                        Set DNS ({provider})
+                      </Button>
+                    ))}
                   </div>
                 )}
               </div>

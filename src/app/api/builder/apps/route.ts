@@ -28,6 +28,7 @@ import {
 } from "@/lib/builder/app-manifest";
 import { appTemplateFiles } from "@/lib/builder/app-templates";
 import { isOwnerError, resolveBuilderOwner } from "@/lib/builder/site-owner";
+import { listOwnerDnsProviders } from "@/lib/builder/site-publications";
 import {
   STATUS_BAD_REQUEST,
   STATUS_CONFLICT,
@@ -53,26 +54,29 @@ function response(body: unknown, status = STATUS_OK) {
   });
 }
 
-async function requireOwnerAccess(): Promise<NextResponse | null> {
+async function requireOwnerAccess(): Promise<{ agentId: string } | { error: NextResponse }> {
   try {
     await assertAgentHqAccess();
   } catch (error) {
-    return response(
-      { error: error instanceof Error ? error.message : "Access denied" },
-      STATUS_FORBIDDEN,
-    );
+    return {
+      error: response(
+        { error: error instanceof Error ? error.message : "Access denied" },
+        STATUS_FORBIDDEN,
+      ),
+    };
   }
   const owner = await resolveBuilderOwner();
-  if (isOwnerError(owner)) return owner.error;
-  return null;
+  if (isOwnerError(owner)) return { error: owner.error };
+  return { agentId: owner.agentId };
 }
 
 export async function GET() {
-  const denied = await requireOwnerAccess();
-  if (denied) return denied;
+  const owner = await requireOwnerAccess();
+  if ("error" in owner) return owner.error;
 
   const root = getAgentAppWorkspaceRoot();
-  if (!existsSync(root)) return response({ success: true, apps: [] });
+  const dnsProviders = await listOwnerDnsProviders(owner.agentId);
+  if (!existsSync(root)) return response({ success: true, apps: [], dnsProviders });
 
   try {
     const entries = await readdir(root, { withFileTypes: true });
@@ -102,7 +106,7 @@ export async function GET() {
       });
     }
     apps.sort((a, b) => a.appId.localeCompare(b.appId));
-    return response({ success: true, apps });
+    return response({ success: true, apps, dnsProviders });
   } catch (error) {
     return response(
       { error: `Failed to list apps: ${error instanceof Error ? error.message : "unknown"}` },
@@ -112,8 +116,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const denied = await requireOwnerAccess();
-  if (denied) return denied;
+  const owner = await requireOwnerAccess();
+  if ("error" in owner) return owner.error;
 
   let body: { appId?: unknown; name?: unknown; runtime?: unknown };
   try {
