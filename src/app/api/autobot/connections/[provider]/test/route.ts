@@ -296,6 +296,7 @@ export async function POST(_request: Request, context: RouteContext) {
 
       case "cloudflare": {
         const apiKey = decryptConnectorSecret(connection?.config.apiKey).trim();
+        const zoneId = connection?.config.zoneId?.trim();
         if (!apiKey) {
           result = { valid: false, error: "No Cloudflare API token configured." };
           break;
@@ -309,7 +310,26 @@ export async function POST(_request: Request, context: RouteContext) {
               signal: AbortSignal.timeout(10_000),
             },
           );
-          if (!response.ok) {
+          if (!response.ok && zoneId) {
+            // Some least-privilege zone tokens can use their granted zone/DNS
+            // endpoints but Cloudflare rejects the user-level token-identity
+            // probe. Test the actual capability RIVR needs before declaring a
+            // working connector invalid.
+            const zoneResponse = await fetch(
+              `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=1`,
+              {
+                headers: { Authorization: `Bearer ${apiKey}` },
+                cache: "no-store",
+                signal: AbortSignal.timeout(10_000),
+              },
+            );
+            result = zoneResponse.ok
+              ? { valid: true, label: "Cloudflare zone DNS access" }
+              : {
+                  valid: false,
+                  error: `Cloudflare API returned ${zoneResponse.status}. Token may be invalid or lack DNS access.`,
+                };
+          } else if (!response.ok) {
             result = {
               valid: false,
               error: `Cloudflare API returned ${response.status}. Token may be invalid.`,
