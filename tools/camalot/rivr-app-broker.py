@@ -58,6 +58,9 @@ TRASH_ROOT = APPS_ROOT / ".trash"
 LOCK_PATH = Path("/run/lock/rivr-app-broker.lock")
 
 BASE_DOMAIN = os.environ.get("RIVR_APP_BASE_DOMAIN", "camalot.me").strip().lower()
+ALLOW_PROXIED_DOMAINS = os.environ.get(
+    "RIVR_APP_ALLOW_PROXIED_DOMAINS", "false"
+).strip().lower() in {"1", "true", "yes"}
 PROXY_NETWORK = os.environ.get("RIVR_APP_PROXY_NETWORK", "pmdl_proxy-external")
 DB_NETWORK = os.environ.get("RIVR_APP_DB_NETWORK", "pmdl_db-internal")
 TRAEFIK_ENTRYPOINT = os.environ.get("RIVR_APP_TRAEFIK_ENTRYPOINT", "websecure")
@@ -318,6 +321,14 @@ def load_verified_domains(app_id: str) -> list[str]:
         except OSError:
             continue
         if resolved & host_addresses:
+            verified.append(domain)
+        elif ALLOW_PROXIED_DOMAINS and resolved:
+            # The domains file is written only by the owner-gated Person API,
+            # after that API verifies DNS/origin ownership. A proxied CNAME
+            # deliberately resolves to the CDN rather than this host, so a
+            # second address-intersection check here would reject every valid
+            # Cloudflare-orange-cloud bind. This opt-in trusts that verified
+            # handoff while retaining hostname grammar/namespace checks above.
             verified.append(domain)
     return verified
 
