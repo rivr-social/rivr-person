@@ -54,8 +54,11 @@ async function requireApp(appId: string) {
   if (!APP_ID_PATTERN.test(appId)) {
     return { error: response({ error: "Invalid app id" }, STATUS_BAD_REQUEST) };
   }
-  const workspace = await resolveBuilderWorkspace(`app-${appId}`, true);
-  if (!workspace) {
+  // Broker-managed sibling apps deliberately have no host `deployRoot`; that
+  // field is reserved for fixed workers. GitHub sync still targets them, but
+  // only after positively checking the discovered workspace's app scope/name.
+  const workspace = await resolveBuilderWorkspace(`app-${appId}`);
+  if (!workspace || workspace.scope !== "app" || workspace.name !== appId) {
     return {
       error: response({ error: `App workspace "${appId}" not found` }, STATUS_NOT_FOUND),
     };
