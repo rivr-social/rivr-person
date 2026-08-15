@@ -318,7 +318,8 @@ def load_verified_domains(app_id: str) -> list[str]:
 
 
 def host_public_addresses() -> set[str]:
-    addresses: set[str] = set()
+    configured = os.environ.get("RIVR_APP_PUBLIC_ADDRESSES", "")
+    addresses = {address.strip() for address in configured.split(",") if address.strip()}
     try:
         addresses.update(info[4][0] for info in socket.getaddrinfo(BASE_DOMAIN, None))
     except OSError:
