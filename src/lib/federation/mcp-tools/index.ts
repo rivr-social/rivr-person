@@ -64,12 +64,72 @@ export type McpToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  enabledFor: Array<"session" | "token">;
+  /**
+   * Auth modes this tool is reachable from.
+   *
+   * `"operator"` is a deliberately unreachable mode: no caller ever sets
+   * `authMode: "operator"` on an {@link McpToolCallContext}, so a tool listed
+   * only for `"operator"` is defined and typed but cannot be invoked from the
+   * LLM tool loop or an MCP bearer. It is the parking place for host-mutating
+   * deploy-class tools (PSN-CORE-001 layer 3).
+   */
+  enabledFor: Array<"session" | "token" | "operator">;
   handler: (args: Record<string, unknown>, context: McpToolCallContext) => Promise<McpToolResult>;
 };
 
 function getString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Git ref grammar guard for arguments that reach a process spawn.
+ *
+ * Accepts only the characters git itself permits in a branch name that this
+ * codebase ever uses, and rejects the shapes that turn a ref into an option or
+ * a traversal: a leading `-` (would be parsed as a flag by `git checkout`), a
+ * leading/trailing `/`, `..`, `@{`, and a trailing `.lock`.
+ *
+ * Paired with `execFileSync` (no shell), this is defense in depth rather than
+ * the only barrier — see PSN-CORE-001.
+ */
+const GIT_REF_ALLOWED_CHARS = /^[A-Za-z0-9._\/-]+$/;
+const GIT_REF_MAX_LENGTH = 255;
+
+export function isValidGitRef(ref: string): boolean {
+  if (ref.length === 0 || ref.length > GIT_REF_MAX_LENGTH) return false;
+  if (!GIT_REF_ALLOWED_CHARS.test(ref)) return false;
+  if (ref.startsWith("-")) return false;
+  if (ref.startsWith("/") || ref.endsWith("/")) return false;
+  if (ref.includes("..")) return false;
+  if (ref.includes("@{")) return false;
+  if (ref.endsWith(".lock")) return false;
+  if (ref.endsWith(".")) return false;
+  return true;
+}
+
+/**
+ * Docker compose service-name guard. Same contract as {@link isValidGitRef}:
+ * the value is passed as an `execFileSync` argv element, never interpolated.
+ */
+/** Wall-clock ceiling for a git/compose control command spawned by a tool. */
+const DEPLOY_COMMAND_TIMEOUT_MS = 30_000;
+/** Docker image builds are allowed materially longer than a git fetch. */
+const DOCKER_BUILD_TIMEOUT_MS = 300_000;
+/** Truncation ceiling on command output returned to the caller. */
+const DEPLOY_OUTPUT_MAX_CHARS = 2000;
+/** Compose/systemd unit name of the autobot sidecar. */
+const AUTOBOT_SIDECAR_SERVICE = "openclaw";
+
+const DOCKER_SERVICE_ALLOWED = /^[A-Za-z0-9_-]+$/;
+const DOCKER_SERVICE_MAX_LENGTH = 64;
+
+export function isValidDockerServiceName(service: string): boolean {
+  return (
+    service.length > 0 &&
+    service.length <= DOCKER_SERVICE_MAX_LENGTH &&
+    DOCKER_SERVICE_ALLOWED.test(service) &&
+    !service.startsWith("-")
+  );
 }
 
 function getStringArray(value: unknown): string[] {
@@ -1073,7 +1133,11 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         branch: { type: "string", description: "Git branch to deploy. Default: current branch." },
       },
     },
-    enabledFor: ["session"],
+    // PSN-CORE-001 layer 3: deploy-class tools are host-mutating operator
+    // actions, not assistant capabilities. `"operator"` is a mode no caller
+    // ever sets, so this tool is no longer reachable from the LLM tool loop
+    // (authMode "session") or an MCP bearer (authMode "token").
+    enabledFor: ["operator"],
     handler: async (args) => {
       const cap = getDeployCapability();
       if (!cap.canSelfDeploy) {
@@ -1092,14 +1156,34 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       }
 
       const branch = getString(args.branch) ?? "main";
-      // On sovereign instances, trigger the deploy script
-      const { execSync } = await import("child_process");
+      // PSN-CORE-001: `branch` arrives from tool arguments an LLM emitted, and
+      // the LLM's context contains attacker-influenceable text. Validate against
+      // the git ref grammar AND spawn without a shell — either alone would close
+      // the injection; both are kept.
+      if (!isValidGitRef(branch)) {
+        return {
+          success: false,
+          error:
+            "Invalid branch name. Branch must match the git ref grammar (letters, digits, '.', '_', '-', '/') and may not begin with '-'.",
+        };
+      }
+
+      // On sovereign instances, trigger the deploy script.
+      const { execFileSync } = await import("child_process");
+      const runGit = (gitArgs: string[]): string =>
+        execFileSync("git", gitArgs, {
+          cwd: process.cwd(),
+          timeout: DEPLOY_COMMAND_TIMEOUT_MS,
+          encoding: "utf-8",
+          shell: false,
+        });
       try {
-        const output = execSync(
-          `cd ${process.cwd()} && git fetch origin && git checkout ${branch} && git pull origin ${branch}`,
-          { timeout: 30000, encoding: "utf-8" },
-        );
-        return { success: true, branch, output: output.slice(0, 2000) };
+        const output = [
+          runGit(["fetch", "origin"]),
+          runGit(["checkout", "--", branch]),
+          runGit(["pull", "origin", branch]),
+        ].join("\n");
+        return { success: true, branch, output: output.slice(0, DEPLOY_OUTPUT_MAX_CHARS) };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Deploy script failed";
         return { success: false, error: message };
@@ -1114,7 +1198,11 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       additionalProperties: false,
       properties: {},
     },
-    enabledFor: ["session"],
+    // PSN-CORE-001 layer 3: deploy-class tools are host-mutating operator
+    // actions, not assistant capabilities. `"operator"` is a mode no caller
+    // ever sets, so this tool is no longer reachable from the LLM tool loop
+    // (authMode "session") or an MCP bearer (authMode "token").
+    enabledFor: ["operator"],
     handler: async () => {
       const cap = getDeployCapability();
       if (!cap.canDeployAutobot) {
@@ -1132,17 +1220,29 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         };
       }
 
-      const { execSync } = await import("child_process");
-      try {
-        const output = execSync(
-          "docker compose restart openclaw 2>&1 || systemctl restart openclaw 2>&1",
-          { timeout: 30000, encoding: "utf-8" },
-        );
-        return { success: true, output: output.slice(0, 2000) };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Autobot restart failed";
-        return { success: false, error: message };
+      // PSN-CORE-001: fixed argv, no shell. The previous form relied on `sh` for
+      // the `||` fallback; the fallback is expressed in TypeScript instead so no
+      // shell is involved anywhere in this file.
+      const { execFileSync } = await import("child_process");
+      const attempts: Array<[string, string[]]> = [
+        ["docker", ["compose", "restart", AUTOBOT_SIDECAR_SERVICE]],
+        ["systemctl", ["restart", AUTOBOT_SIDECAR_SERVICE]],
+      ];
+      let lastError = "Autobot restart failed";
+      for (const [command, commandArgs] of attempts) {
+        try {
+          const output = execFileSync(command, commandArgs, {
+            cwd: process.cwd(),
+            timeout: DEPLOY_COMMAND_TIMEOUT_MS,
+            encoding: "utf-8",
+            shell: false,
+          });
+          return { success: true, output: output.slice(0, DEPLOY_OUTPUT_MAX_CHARS) };
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : lastError;
+        }
       }
+      return { success: false, error: lastError };
     },
   },
   {
@@ -1155,7 +1255,11 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         service: { type: "string", description: "Docker compose service name to rebuild. Default: app." },
       },
     },
-    enabledFor: ["session"],
+    // PSN-CORE-001 layer 3: deploy-class tools are host-mutating operator
+    // actions, not assistant capabilities. `"operator"` is a mode no caller
+    // ever sets, so this tool is no longer reachable from the LLM tool loop
+    // (authMode "session") or an MCP bearer (authMode "token").
+    enabledFor: ["operator"],
     handler: async (args) => {
       const cap = getDeployCapability();
       if (!cap.canBuildDocker) {
@@ -1174,19 +1278,30 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       }
 
       const service = getString(args.service) ?? "app";
-      // Sanitize service name to prevent injection
-      const sanitized = service.replace(/[^a-zA-Z0-9_-]/g, "");
-      if (sanitized !== service) {
-        return { success: false, error: "Invalid service name." };
+      // PSN-CORE-001: reject rather than silently rewrite, and spawn without a
+      // shell so the value is an argv element and never a command fragment.
+      if (!isValidDockerServiceName(service)) {
+        return {
+          success: false,
+          error:
+            "Invalid service name. Service must be letters, digits, '_' or '-' and may not begin with '-'.",
+        };
       }
 
-      const { execSync } = await import("child_process");
+      const { execFileSync } = await import("child_process");
+      const runDocker = (dockerArgs: string[]): string =>
+        execFileSync("docker", dockerArgs, {
+          cwd: process.cwd(),
+          timeout: DOCKER_BUILD_TIMEOUT_MS,
+          encoding: "utf-8",
+          shell: false,
+        });
       try {
-        const output = execSync(
-          `cd ${process.cwd()} && docker compose build ${sanitized} && docker compose up -d ${sanitized}`,
-          { timeout: 300000, encoding: "utf-8" },
-        );
-        return { success: true, service: sanitized, output: output.slice(0, 2000) };
+        const output = [
+          runDocker(["compose", "build", service]),
+          runDocker(["compose", "up", "-d", service]),
+        ].join("\n");
+        return { success: true, service, output: output.slice(0, DEPLOY_OUTPUT_MAX_CHARS) };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Docker rebuild failed";
         return { success: false, error: message };
