@@ -1,0 +1,143 @@
+# ── Local development stack ────────────────────────────────────
+# Brings up the backing services a person instance needs, so the Next.js
+# app can run on your HOST (`pnpm dev`, fast refresh, a real debugger):
+#
+#   docker compose -f docker-compose.local.yml up -d --build
+#   pnpm dev            → http://localhost:3003
+#
+# This file is STANDALONE, not an overlay. Unlike rivr-global there is no
+# docker-compose.dev.yml to layer onto: the only stacks this repo shipped
+# were docker-compose.example.yml (the app alone, pointed at a database you
+# were expected to already have) and docker-compose.sidecar.yml (the full
+# production sidecar — Traefik, OpenClaw, WhisperX). Neither is a local
+# development story. scripts/dev-bootstrap.sh drives this file.
+#
+# PORTS are deliberately offset so a person instance and a global instance
+# can run side by side on one machine, which is the whole point of testing
+# federation locally:
+#
+#              rivr-global (dev)    rivr-person (this file)
+#   app        3000                 3003
+#   postgres   5432                 5433
+#   minio      9000 / 9001          9002 / 9003
+#   mailpit    1025 / 8025          1026 / 8026
+#
+# Override the database port with RIVR_DB_PORT if 5433 is also taken; pass
+# the same value to scripts/dev-bootstrap.sh.
+#
+# PORT CONFLICTS: a native Postgres (Postgres.app, or Homebrew) binds
+# 127.0.0.1 specifically, while Docker publishes on the wildcard. Both can
+# bind at once — and `localhost` then resolves to the NATIVE server, so
+# migrations run against the wrong database and fail with an obscure
+# `role "rivr" does not exist`. dev-bootstrap.sh refuses to start when
+# anything but Docker holds the port.
+#
+# Nothing here changes how the containerised app or any deployed instance
+# runs. It only adds a door for host-side tooling.
+
+services:
+  db:
+    build:
+      context: ./docker/db
+      dockerfile: Dockerfile
+    container_name: rivr-person-dev-db
+    restart: unless-stopped
+    networks:
+      - person_net
+    volumes:
+      - person_db_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: rivr_person
+      POSTGRES_USER: rivr
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rivr -d rivr_person"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "${RIVR_DB_PORT:-5433}:5432"
+
+  minio:
+    image: minio/minio:latest
+    container_name: rivr-person-dev-minio
+    restart: unless-stopped
+    networks:
+      - person_net
+    volumes:
+      - person_minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret
+    secrets:
+      - minio_secret
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+
+  createbuckets:
+    image: minio/mc:latest
+    container_name: rivr-person-dev-minio-setup
+    networks:
+      - person_net
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin $$(cat /run/secrets/minio_secret);
+      /usr/bin/mc mb myminio/rivr-uploads --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/rivr-uploads;
+      /usr/bin/mc mb myminio/rivr-avatars --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/rivr-avatars;
+      /usr/bin/mc mb myminio/rivr-exports --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/rivr-exports;
+      exit 0;
+      "
+    secrets:
+      - minio_secret
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: rivr-person-dev-mailpit
+    restart: unless-stopped
+    networks:
+      - person_net
+    ports:
+      - "1026:1025"
+      - "8026:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8025/api/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  person_net:
+    name: rivr_person_dev
+
+volumes:
+  person_db_data:
+    name: rivr_person_dev_db_data
+  person_minio_data:
+    name: rivr_person_dev_minio_data
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  minio_secret:
+    file: ./secrets/minio_secret.txt

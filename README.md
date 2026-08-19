@@ -66,6 +66,123 @@ This repo is the deployment mirror and operator surface for the canonical monore
 
 The canonical source of truth is `rivr-social/rivr-monorepo` under `apps/person`.
 
+## Local Development
+
+Takes a fresh clone to a running instance on your own machine. Everything runs
+in Docker except the Next.js app, which runs on the host so you get fast
+refresh and a debugger.
+
+```bash
+git clone https://github.com/rivr-social/rivr-person.git
+cd rivr-person
+scripts/dev-bootstrap.sh
+pnpm dev                     # → http://localhost:3003
+```
+
+`scripts/dev-bootstrap.sh` is idempotent — re-run it any time. It checks your
+toolchain and ports, generates `secrets/*.txt`, repairs `.env` for this
+machine, starts Postgres/MinIO/Mailpit, installs dependencies, and builds the
+schema. Pass `--seed` to also load development data.
+
+Requirements: Docker, Node 22+, pnpm (`corepack enable`).
+
+| Service        | URL                     |
+| -------------- | ----------------------- |
+| App            | http://localhost:3003   |
+| Postgres       | localhost:5433 (`rivr_person`, user `rivr`) |
+| Mail catcher   | http://localhost:8026   |
+| Object storage | http://localhost:9003   |
+
+Ports are offset from `rivr-global`'s dev stack (3000/5432/9000/1025) so both
+can run side by side — see "Federating with a local Global" below.
+
+```bash
+docker compose -f docker-compose.local.yml down      # stop
+docker compose -f docker-compose.local.yml down -v   # stop and destroy the database
+```
+
+### Creating the first account
+
+A person instance hosts exactly one person, so two things are true out of the
+box that will otherwise stop you:
+
+1. **Local signup is disabled** unless `ALLOW_LOCAL_SIGNUP=true`. The bootstrap
+   sets it for you. Turn it off before exposing the instance to anything but
+   localhost.
+2. **Passwords are not checked locally.** `src/auth.ts` sends the email and
+   password to the global instance's `/api/federation/sso/issue` and only falls
+   back to the local hash when global is *unreachable*; an explicit 401 from
+   global fails the login closed. So an account created by local signup on this
+   instance **cannot log in** while global is reachable and does not know that
+   email.
+
+The practical consequence: **register on your global instance, then sign in
+here with those credentials.** Your session actor id is your *global* agent id.
+
+Then make that identity the instance owner — `/sovereign-merge-confirm`,
+`/settings`, `/builder` and the rest of the control plane are gated on the
+session actor matching `PRIMARY_AGENT_ID`:
+
+```bash
+# the id from GET /api/auth/session after signing in
+echo 'PRIMARY_AGENT_ID=<your-global-agent-id>' >> .env
+# restart pnpm dev — the instance config is cached at module load
+```
+
+`.env.example` ships `PRIMARY_AGENT_ID=replace-with-person-agent-uuid`. That
+placeholder is not inert: it reaches a `uuid` comparison and makes
+`GET /api/federation/manifest` return 500. The bootstrap blanks it, which is a
+supported state (the config type is `string | null`), but the owner-only
+surfaces stay closed until you set it to a real id.
+
+### Federating with a local Global
+
+Run both instances and link them, which is the only way to exercise the
+federation code without deploying:
+
+1. Start `rivr-global` on port 3000 and this instance on 3003.
+2. Sign in to global, open `/settings`, and enter `http://localhost:3003` under
+   the sovereign link.
+3. Approve on this side. Global verifies the token it issued *and* this
+   instance's Ed25519 signature, then writes `nodes`, a `node_peers` row with
+   `trustState: "trusted"`, and a `federation_entity_map` row.
+
+The bootstrap points `REGISTRY_URL`, `NEXT_PUBLIC_GLOBAL_URL` and
+`GLOBAL_IDENTITY_AUTHORITY_URL` at `http://localhost:3000`. Override with
+`RIVR_GLOBAL_URL` if your global runs elsewhere.
+
+> **`GLOBAL_IDENTITY_AUTHORITY_URL` matters.** It is absent from
+> `.env.example`, and unset it defaults to `https://app.rivr.social` on
+> anything that is not `NODE_ENV=production` — meaning a local instance sends
+> real login attempts, passwords included, to the production RIVR. Keep it
+> pinned locally.
+
+Note that the merge is **one-directional**. Global ends up with a trusted peer
+row and a shared secret; this instance records nothing and is never given the
+secret. Wiring the return path is a separate manual step
+(`pnpm federation:connect`, which needs `FEDERATION_*` variables that are also
+not in `.env.example`).
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` | A `node_modules` installed elsewhere (different pnpm store path). Re-run with `CI=true`. |
+| `role "rivr" does not exist` | A native Postgres is answering on the port instead of Docker's. Stop it, or re-run with `RIVR_DB_PORT=5434`. |
+| `unsafe use of new value "..." of enum type` | `pnpm db:migrate` cannot build an empty database — drizzle wraps every migration in one transaction, and an `ALTER TYPE ... ADD VALUE` cannot be used before it commits. Use `scripts/dev-migrate-fresh.sh` (the bootstrap does). |
+| `type "agent_type" already exists` | `dev-migrate-fresh.sh` was run against a database that already has the schema. Use `pnpm db:migrate` for incremental changes, or `down -v` first. |
+| `PostGIS extension failed to install` | You are on a Postgres image without PostGIS. `docker-compose.local.yml` builds `docker/db`, which has it; `docker-compose.sidecar.yml` uses `pgvector/pgvector:pg16`, which does not. |
+| Signup returns "Local signup is disabled on this sovereign instance." | `ALLOW_LOCAL_SIGNUP` is not `true`. See "Creating the first account". |
+| `GET /api/federation/manifest` returns 500 | `PRIMARY_AGENT_ID` still holds the `.env.example` placeholder. |
+| `GET /api/federation/manifest` returns 404 | `PRIMARY_AGENT_ID` is empty — expected until you set it. |
+| Login fails with a correct password | Global is the credential authority. Check `GLOBAL_IDENTITY_AUTHORITY_URL`, that global is running, and that the account exists *there*. First request can also exceed the 10s timeout while global compiles the route in dev — retry. |
+| `/settings` or `/sovereign-merge-confirm` redirects to `/` | The session actor does not match `PRIMARY_AGENT_ID`. These are owner-only. |
+
+Features with no local equivalent — the GPU voice clone (Vast.ai), LiveKit,
+Matrix bridges, Chatterbox TTS, the live-avatar worker — degrade rather than
+block boot. The bootstrap blanks their production endpoints so a local instance
+does not call someone else's servers.
+
 ## High-Level Setup Flow
 
 ### 1. Bring up PM Core / Docker Lab
