@@ -34,6 +34,25 @@ import type { ActionResult, UpdateResourceInput } from "./types";
 import { normalizeEventTickets } from "./types";
 import { syncEventTicketOfferings } from "./events";
 
+/**
+ * External (home-instance) id of a locally mirrored resource, or null when the
+ * row is NATIVE to this instance.
+ *
+ * This is the discriminator the cross-instance branches below key on: a row
+ * with `metadata.externalEntityId` is a federated MIRROR whose authoritative
+ * copy lives on the owner's home instance; a row without it was authored here
+ * and this instance is its single source of truth — regardless of where the
+ * OWNER agent happens to be homed. Routing native rows by the owner's home
+ * forwarded them to an instance with no such resource, which re-authorized
+ * against its own graph and returned FORBIDDEN ("cannot edit my own post",
+ * sovereign-merged steward, 2026-08-24 — same defect class as rivr-global).
+ */
+function mirrorExternalEntityId(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const value = (metadata as Record<string, unknown>).externalEntityId;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export async function updateResource(input: UpdateResourceInput): Promise<ActionResult> {
   const userId = await resolveAuthenticatedUserId();
   if (!userId) {
@@ -73,8 +92,14 @@ export async function updateResource(input: UpdateResourceInput): Promise<Action
   // re-authorizes the federation-resolved actor through its own
   // canModifyResource → hasGroupWriteAccess gate, so admin rights are enforced
   // there, not here.
+  // RESOURCE-ANCHORED: forward ONLY when there is no local row (admin editing a
+  // peer-homed resource this instance keeps no copy of) or when the local row
+  // is a marked MIRROR. A native local row executes locally no matter where the
+  // owner agent is homed — see mirrorExternalEntityId above.
+  const updateExternalId = mirrorExternalEntityId(permission.resource?.metadata ?? null);
+  const updateMustForward = !permission.resource || updateExternalId !== null;
   const updateRoutingOwnerId = input.targetAgentId?.trim() || permission.resource?.ownerId;
-  if (updateRoutingOwnerId) {
+  if (updateMustForward && updateRoutingOwnerId) {
     const updateHome = await resolveHomeInstance(updateRoutingOwnerId);
     if (!updateHome.isLocal) {
       const routed = await routeWrite<UpdateResourceInput, ActionResult>(
@@ -82,7 +107,9 @@ export async function updateResource(input: UpdateResourceInput): Promise<Action
           type: "updateResource",
           actorId: userId,
           targetAgentId: updateRoutingOwnerId,
-          payload: input,
+          // A mirror is keyed on the HOME instance by its external id, not by
+          // this instance's local row id (mirror parity with rivr-group).
+          payload: updateExternalId ? { ...input, resourceId: updateExternalId } : input,
         },
         async () => {
           throw new Error("Remote update must not run the local executor");
@@ -148,14 +175,10 @@ export async function updateResource(input: UpdateResourceInput): Promise<Action
   const verifiedResource = permission.resource!;
 
   // Update + audit entry stay in one transaction so history matches state.
-  const updateTargetAgentId = nextOwnerId;
-  const updateFacadeResult = await updateFacade.execute(
-    {
-      type: "updateResource",
-      actorId: userId,
-      targetAgentId: updateTargetAgentId,
-      payload: input,
-    },
+  // RESOURCE-ANCHORED: the cross-instance branch above already forwarded
+  // mirrors / no-local-row cases; a native row must execute here. `execute()`
+  // would owner-route it (see executeResourceAnchored).
+  const updateFacadeResult = await updateFacade.executeResourceAnchored(
     async () => {
       await db.transaction(async (tx) => {
         await tx
@@ -347,8 +370,12 @@ export async function deleteResource(
   // exists. The home instance re-authorizes the federation-resolved actor and
   // performs the soft-delete + RESOURCE_DELETED emit, so no local row, local
   // permission edge, or local emit is required here.
+  // RESOURCE-ANCHORED: same rule as updateResource — forward only for a
+  // missing local row or a marked mirror; a native row deletes locally.
+  const deleteExternalId = mirrorExternalEntityId(permission.resource?.metadata ?? null);
+  const deleteMustForward = !permission.resource || deleteExternalId !== null;
   const deleteRoutingOwnerId = options?.targetAgentId?.trim() || permission.resource?.ownerId;
-  if (deleteRoutingOwnerId) {
+  if (deleteMustForward && deleteRoutingOwnerId) {
     const deleteHome = await resolveHomeInstance(deleteRoutingOwnerId);
     if (!deleteHome.isLocal) {
       const routed = await routeWrite<{ resourceId: string }, ActionResult>(
@@ -356,7 +383,7 @@ export async function deleteResource(
           type: "deleteResource",
           actorId: userId,
           targetAgentId: deleteRoutingOwnerId,
-          payload: { resourceId },
+          payload: { resourceId: deleteExternalId ?? resourceId },
         },
         async () => {
           throw new Error("Remote delete must not run the local executor");
@@ -388,14 +415,9 @@ export async function deleteResource(
   }
 
   const verifiedDeleteResource = permission.resource!;
-  const deleteTargetAgentId = verifiedDeleteResource.ownerId;
-  const deleteFacadeResult = await updateFacade.execute(
-    {
-      type: "deleteResource",
-      actorId: userId,
-      targetAgentId: deleteTargetAgentId,
-      payload: { resourceId },
-    },
+  // RESOURCE-ANCHORED: mirrors were forwarded above; a native row deletes
+  // here. `execute()` would owner-route it (see executeResourceAnchored).
+  const deleteFacadeResult = await updateFacade.executeResourceAnchored(
     async () => {
       const [hasReceiptHistory] = await db
         .select({ id: resources.id })
